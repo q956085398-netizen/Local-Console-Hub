@@ -12,25 +12,25 @@ T00 Bootstrap
  ├─> T01 Config + schema
  ├─> T02 PTY/ConPTY
  ├─> T03 Process supervisor
- └─> T07 V1 UI shell
+ └─> T06 V1 UI shell
 
 T01 + T02 + T03
  └─> T04 Session runtime/state machine
 
 T04
  ├─> T05 Logging core
- ├─> T08 Interactive terminal integration   (also needs T02 + T07)
- ├─> T09 Service actions/status            (also needs T03 + T07)
- └─> T10 Tray lifecycle                    (also needs T07)
+ ├─> T07 Interactive terminal integration   (also needs T02 + T06)
+ ├─> T08 Service actions/status            (also needs T03 + T06)
+ └─> T09 Tray lifecycle                    (also needs T06)
 
-T05 + T07
- └─> T11 Logs view + run history
+T05 + T06
+ └─> T10 Logs view + run history
 
-T08 + T09 + T10 + T11
- └─> T12 End-to-end MVP verification
+T07 + T08 + T09 + T10
+ └─> T11 End-to-end MVP verification
 
-T12
- └─> T13 Packaging + v0.1.0 RC
+T11
+ └─> T12 Packaging + v0.1.0 RC
 ~~~
 
 Parallel work is encouraged where the graph allows it.
@@ -85,7 +85,7 @@ Dependents must use those contracts rather than duplicating types.
 
 **Priority:** P0  
 **Blocked by:** none  
-**Blocks:** T01, T02, T03, T07
+**Blocks:** T01, T02, T03, T06
 
 Deliver:
 
@@ -107,7 +107,7 @@ Acceptance:
 
 **Priority:** P0  
 **Blocked by:** T00  
-**Blocks:** T04, T05, T09
+**Blocks:** T04, T05, T08
 
 Deliver:
 
@@ -129,7 +129,7 @@ Acceptance:
 
 **Priority:** P0 / release blocker  
 **Blocked by:** T00  
-**Blocks:** T04, T08
+**Blocks:** T04, T07
 
 Deliver:
 
@@ -153,7 +153,7 @@ Acceptance:
 
 **Priority:** P0 / safety blocker  
 **Blocked by:** T00  
-**Blocks:** T04, T09
+**Blocks:** T04, T08
 
 Deliver:
 
@@ -176,7 +176,7 @@ Acceptance:
 
 **Priority:** P0  
 **Blocked by:** T01, T02, T03  
-**Blocks:** T05, T08, T09, T10
+**Blocks:** T05, T07, T08, T09
 
 Deliver:
 
@@ -198,7 +198,7 @@ Acceptance:
 
 **Priority:** P1  
 **Blocked by:** T01, T04  
-**Blocks:** T11
+**Blocks:** T10
 
 Deliver:
 
@@ -217,12 +217,12 @@ Acceptance:
 - external log is not duplicated;
 - run-specific captured log can be located from metadata.
 
-### T07 — V1 UI shell
+### T06 — V1 UI shell
 
 **Priority:** P1  
 **Blocked by:** T00  
 **Soft blocked by:** runtime integration  
-**Blocks:** T08, T09, T10, T11
+**Blocks:** T07, T08, T09, T10
 
 Normative references:
 
@@ -248,11 +248,11 @@ Acceptance:
 - terminal remains dominant;
 - fixture data may be used before runtime integration.
 
-### T08 — Interactive terminal integration
+### T07 — Interactive terminal integration
 
 **Priority:** P1 / release blocker  
-**Blocked by:** T02, T04, T07  
-**Blocks:** T12
+**Blocked by:** T02, T04, T06  
+**Blocks:** T11
 
 Deliver:
 
@@ -270,11 +270,11 @@ Acceptance:
 - switching does not destroy PTY;
 - large output does not freeze UI.
 
-### T09 — Service session actions, URL/port status, and health hooks
+### T08 — Service session actions, URL/port status, and health hooks
 
 **Priority:** P1  
-**Blocked by:** T01, T03, T04, T07  
-**Blocks:** T12
+**Blocked by:** T01, T03, T04, T06  
+**Blocks:** T11
 
 Deliver:
 
@@ -292,11 +292,11 @@ Acceptance:
 - port/URL are not treated as lifecycle truth;
 - actions affect only the selected managed session.
 
-### T10 — Tray lifecycle and quick controls
+### T09 — Tray lifecycle and quick controls
 
 **Priority:** P1  
-**Blocked by:** T04, T07  
-**Blocks:** T12
+**Blocked by:** T04, T06  
+**Blocks:** T11
 
 Deliver:
 
@@ -316,11 +316,11 @@ Acceptance:
 - Exit never silently kills active sessions;
 - taskbar/tray icon matches V1.
 
-### T11 — Logs view, run history, and retention UI
+### T10 — Logs view, run history, and retention UI
 
 **Priority:** P1  
-**Blocked by:** T05, T07  
-**Blocks:** T12
+**Blocked by:** T05, T06  
+**Blocks:** T11
 
 Deliver:
 
@@ -338,11 +338,11 @@ Acceptance:
 - logging-off terminal does not create a fake empty log entry;
 - no redundant global Logs section is introduced.
 
-### T12 — End-to-end MVP verification and regression suite
+### T11 — End-to-end MVP verification and regression suite
 
 **Priority:** P1 / release gate  
-**Blocked by:** T08, T09, T10, T11  
-**Blocks:** T13
+**Blocked by:** T07, T08, T09, T10  
+**Blocks:** T12
 
 Deliver:
 
@@ -359,10 +359,10 @@ Acceptance:
 - logging defaults verified;
 - UI compared with V1 reference.
 
-### T13 — Windows packaging and v0.1.0 release candidate
+### T12 — Windows packaging and v0.1.0 release candidate
 
 **Priority:** P1  
-**Blocked by:** T12  
+**Blocked by:** T11  
 **Blocks:** public v0.1.0
 
 Deliver:
@@ -392,11 +392,11 @@ T01 -> T04 -> T05
 
 ### Lane B — Terminal/process
 
-T02 + T03 -> T04 -> T08/T09
+T02 + T03 -> T04 -> T07/T08
 
 ### Lane C — UI
 
-T07 -> T08/T09/T10/T11
+T06 -> T07/T08/T09/T10
 
 Lane C must not invent backend state models. It should use fixtures shaped exactly like the spec until runtime contracts land.
 
@@ -404,15 +404,15 @@ Lane C must not invent backend state models. It should use fixtures shaped exact
 
 ~~~text
 T00
-T01 / T02 / T03 / T07  (parallel)
+T01 / T02 / T03 / T06  (parallel)
 T04
-T05 / T08 / T09 / T10 (parallel where practical)
+T05 / T07 / T08 / T09 (parallel where practical)
+T10
 T11
 T12
-T13
 ~~~
 
-T07 may merge early as a fixture-driven shell if it contains no fake runtime logic.
+T06 may merge early as a fixture-driven shell if it contains no fake runtime logic.
 
 ## 7. Definition of Ready for an agent ticket
 
