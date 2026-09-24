@@ -426,3 +426,21 @@ Before assigning a ticket to another AI, verify:
 - no unresolved design question is hidden inside the task.
 
 If one item is false, resolve the blocker before asking the agent to guess.
+
+
+## 8. GitHub issue mapping
+
+- T00 → [#1](https://github.com/q956085398-netizen/Local-Console-Hub/issues/1)
+- T01 → [#2](https://github.com/q956085398-netizen/Local-Console-Hub/issues/2)
+- T02 → [#3](https://github.com/q956085398-netizen/Local-Console-Hub/issues/3)
+- T03 → [#4](https://github.com/q956085398-netizen/Local-Console-Hub/issues/4)
+- T04 → [#5](https://github.com/q956085398-netizen/Local-Console-Hub/issues/5)
+- T05 → [#6](https://github.com/q956085398-netizen/Local-Console-Hub/issues/6)
+- T06 → [#7](https://github.com/q956085398-netizen/Local-Console-Hub/issues/7)
+- T07 → [#8](https://github.com/q956085398-netizen/Local-Console-Hub/issues/8)
+- T08 → [#9](https://github.com/q956085398-netizen/Local-Console-Hub/issues/9)
+- T09 → [#10](https://github.com/q956085398-netizen/Local-Console-Hub/issues/10)
+- T10 → [#11](https://github.com/q956085398-netizen/Local-Console-Hub/issues/11)
+- T11 → [#12](https://github.com/q956085398-netizen/Local-Console-Hub/issues/12)
+- T12 → [#13](https://github.com/q956085398-netizen/Local-Console-Hub/issues/13)
+- Coordination epic → [#14](https://github.com/q956085398-netizen/Local-Console-Hub/issues/14)
