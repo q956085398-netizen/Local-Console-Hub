@@ -218,6 +218,9 @@ sessions:
 ## 文档
 
 - [产品与行为规范](docs/PRODUCT_SPEC.md)
+- [MVP 实现规范](docs/MVP_IMPLEMENTATION_SPEC.md)
+- [任务依赖与执行计划](docs/EXECUTION_PLAN.md)
+- [V1 UI 制作规范](docs/UI_STYLE_GUIDE.md)
 - [日志规范](docs/LOGGING.md)
 - [Roadmap](docs/ROADMAP.md)
 - [开发与贡献规范](docs/DEVELOPMENT.md)
