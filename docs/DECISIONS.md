@@ -203,9 +203,9 @@ AI Agent、IDE、第三方工具自己创建的后台终端默认保持原样。
 
 ---
 
-## D-013：应用图标按 UI 视觉语言自绘（待确认）
+## D-013：应用图标按 UI 视觉语言自绘
 
-**状态：Proposed（等待所有者确认）**
+**状态：Accepted（2026-09-28，仓库所有者签认）**
 
 T00 落地时仓库中不存在已批准的应用图标（`assets/` 仅含 V2 UI 参考图）。为实现「Approved application icon is used」验收项，按 `docs/UI_STYLE_GUIDE.md` §10 的视觉语言自绘了图标：深色近黑圆角方形 + 蓝色终端提示符 `>` + 浅色块状光标（`assets/brand/app-icon.svg`），并由 `scripts/generate-icon.mjs` + `npx tauri icon` 生成完整图标集。
 
@@ -215,10 +215,7 @@ T00 落地时仓库中不存在已批准的应用图标（`assets/` 仅含 V2 UI
 - UI 规范已冻结视觉语言，可推导出一致的图标方向；
 - 不引入额外设计依赖即可保持可复现（SVG 源 + 脚本）。
 
-待办：
-
-- [ ] 所有者查看 `assets/brand/app-icon.svg` 并确认或提出修改；
-- 确认后本条状态改为 Accepted；如否决，替换 SVG 源并重新生成图标集即可，不影响其它层。
+后续如需更换：替换 `assets/brand/app-icon.svg` 源文件并重新执行 `node scripts/generate-icon.mjs && npx tauri icon assets/brand/app-icon.png` 即可，不影响其它层。
 
 ---
 
