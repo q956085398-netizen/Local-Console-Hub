@@ -9,7 +9,7 @@ export default defineConfig({
   // Vite features aimed at Tauri development: https://vitejs.dev/config/server-options.html#server-strictport
   clearScreen: false,
   server: {
-    port: 1420,
+    port: 24120,
     strictPort: true,
   },
   build: {

@@ -5,7 +5,7 @@
   "identifier": "com.localconsolehub.hub",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:24120",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
