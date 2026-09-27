@@ -1,6 +1,7 @@
-# Normalize text files to LF in the repository so Windows checkouts stop
-# showing phantom whole-file modifications.
-* text=auto
+# Normalize text files to LF in the repository AND on checkout so Windows
+# runners/machines (git autocrlf=true) don't produce CRLF working copies that
+# break prettier's endOfLine=lf and cause phantom whole-file diffs.
+* text=auto eol=lf
 
 # Binary assets — never normalize
 *.png binary
