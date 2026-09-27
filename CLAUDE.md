@@ -45,3 +45,11 @@ PRODUCT_SPEC / MVP_IMPLEMENTATION_SPEC / EXECUTION_PLAN / UI_STYLE_GUIDE / LOGGI
   （默认智谱开放平台 `https://open.bigmodel.cn/api/paas/v4`；可指向
   `https://api.z.ai/api/paas/v4` 或本地 vLLM/Ollama 的 OpenAI 兼容端点）
 - 排障与冒烟测试见 `tools/vision-mcp/README.md`
+
+## Agent skills
+
+本仓库的议题以 GitHub Issues 形式追踪（`q956085398-netizen/Local-Console-Hub`），使用 `gh` CLI。
+
+- **Issue tracker**：见 `docs/agents/issue-tracker.md`。
+- **Triage labels**：使用默认分诊标签，原样沿用：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
+- **Domain docs**：单一上下文（single-context）：仓库根目录一个 `CONTEXT.md`，加上根目录 `docs/adr/`。见 `docs/agents/domain.md`。
