@@ -1,0 +1,11 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+src-tauri/icons
+package-lock.json
+
+# Hand-authored prose is not mechanically formatted — avoid whole-file churn
+docs/
+README.md
+CLAUDE.md

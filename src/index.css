@@ -1,0 +1,38 @@
+/*
+ * Local Console Hub base styles.
+ *
+ * This is only the bootstrap theme (T00). The approved V2 workspace layout
+ * (sidebar, session header, terminal host, status bar) arrives with T06 (#7)
+ * and must follow docs/UI_STYLE_GUIDE.md — do not grow a UI here.
+ */
+
+:root {
+  color-scheme: dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  --surface-0: #0f1115;
+  --surface-1: #15181e;
+  --border-subtle: #262b35;
+  --text-primary: #e6e8ee;
+  --text-secondary: #9aa1ad;
+  --accent: #4c8dff;
+  --danger: #e5484d;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+}

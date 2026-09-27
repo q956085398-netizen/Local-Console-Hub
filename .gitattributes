@@ -1,0 +1,8 @@
+# Normalize text files to LF in the repository so Windows checkouts stop
+# showing phantom whole-file modifications.
+* text=auto
+
+# Binary assets — never normalize
+*.png binary
+*.ico binary
+*.icns binary

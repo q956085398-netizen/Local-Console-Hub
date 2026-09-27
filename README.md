@@ -226,6 +226,22 @@ sessions:
 - [开发与贡献规范](docs/DEVELOPMENT.md)
 - [关键设计决策](docs/DECISIONS.md)
 
+## 开发
+
+技术栈：Tauri 2 + React + TypeScript + Vite（后端 Rust）。Windows 优先，构建需要 Node.js 22+、Rust stable（MSVC）与 WebView2。
+
+```bash
+npm install        # 安装前端依赖
+npm run tauri dev  # 开发模式：打开桌面窗口
+npm run check      # TypeScript 类型检查
+npm test           # 前端单元测试（Vitest）
+npm run lint       # ESLint
+npm run format     # Prettier 格式化
+npm run tauri build # 产出 Windows 安装包
+```
+
+CI（GitHub Actions，`windows-latest`）在每次 push/PR 时执行前端检查与 Rust `fmt` / `clippy` / `test` / `build`。
+
 ## 项目边界
 
 初期 **不以** 以下目标为重点：

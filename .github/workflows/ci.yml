@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows-build:
+    name: Windows build check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck frontend
+        run: npm run check
+
+      - name: Frontend unit tests
+        run: npm test
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      # generate_context! embeds ../dist, so the frontend must build before
+      # any cargo step.
+      - name: Build frontend
+        run: npm run build
+
+      - name: Rust format check
+        run: cargo fmt --all --check
+        working-directory: src-tauri
+
+      - name: Clippy
+        run: cargo clippy --all-targets -D warnings
+        working-directory: src-tauri
+
+      - name: Rust unit tests
+        run: cargo test
+        working-directory: src-tauri
+
+      - name: Build backend (debug)
+        run: cargo build
+        working-directory: src-tauri
