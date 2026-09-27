@@ -19,9 +19,10 @@ The MVP is complete when a Windows user can:
 7. locate any persisted log by session and run;
 8. stop one managed session without killing unrelated processes.
 
-The approved V1 UI references are:
+The approved V2 UI references are:
 
-- assets/ui/ui-v1-preview.png
+- assets/ui/ui-v2-service.png
+- assets/ui/ui-v2-terminal.png
 - docs/UI_STYLE_GUIDE.md
 
 ## 2. Technical baseline
@@ -453,7 +454,9 @@ v0.1.0 reaches release-candidate status only when:
 - no known issue can terminate unrelated processes;
 - PTY interaction is real, not read-only emulation;
 - logging defaults conform to LOGGING.md;
-- UI preserves the approved V1 information hierarchy;
+- UI preserves the approved V2 information hierarchy;
+- live managed sessions expose clear close-impact context before destructive actions;
+- Terminal / Logs / Details keep interactive, persisted and low-frequency information separated;
 - tray behavior is implemented;
 - a fresh user can configure a SillyTavern/ComfyUI-like service and a PowerShell terminal without modifying source code.
 
@@ -467,7 +470,7 @@ An implementation agent must not silently change:
 - logging defaults;
 - session state model;
 - process stop semantics;
-- V1 UI information hierarchy.
+- V2 UI information hierarchy.
 
 If a blocker requires such a change:
 

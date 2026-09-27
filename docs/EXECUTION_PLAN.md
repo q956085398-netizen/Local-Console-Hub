@@ -12,7 +12,7 @@ T00 Bootstrap
  ├─> T01 Config + schema
  ├─> T02 PTY/ConPTY
  ├─> T03 Process supervisor
- └─> T06 V1 UI shell
+ └─> T06 V2 UI shell
 
 T01 + T02 + T03
  └─> T04 Session runtime/state machine
@@ -93,7 +93,7 @@ Deliver:
 - Rust/backend and frontend module boundaries;
 - formatter/linter/test commands;
 - basic CI build check;
-- app identity and V1 icon wiring;
+- app identity and approved icon wiring;
 - tray can be stubbed, but no business behavior yet.
 
 Acceptance:
@@ -217,7 +217,7 @@ Acceptance:
 - external log is not duplicated;
 - run-specific captured log can be located from metadata.
 
-### T06 — V1 UI shell
+### T06 — V2 UI shell
 
 **Priority:** P1  
 **Blocked by:** T00  
@@ -227,15 +227,18 @@ Acceptance:
 Normative references:
 
 - docs/UI_STYLE_GUIDE.md
-- assets/ui/ui-v1-preview.png
+- assets/ui/ui-v2-service.png
+- assets/ui/ui-v2-terminal.png
 
 Deliver:
 
 - left compact session list;
 - status dots;
-- selected-session header;
-- Open / Restart / Stop / More actions;
-- Terminal / Logs tabs;
+- selected-session header with type and lifecycle/readiness state;
+- concise close-impact callout for live sessions;
+- PID / port / uptime / cwd / effective logging metadata;
+- Start/Stop / Restart / Open or Directory / More actions;
+- Terminal / Logs / Details tabs;
 - terminal host area;
 - minimal status bar;
 - responsive desktop sizing.
@@ -244,8 +247,11 @@ Acceptance:
 
 - no permanent right-side dashboard;
 - no decorative per-session icons;
-- no duplicate Logs navigation;
+- no duplicate global Logs navigation;
 - terminal remains dominant;
+- service and interactive-terminal states match the V2 reference hierarchy;
+- close impact is visible before destructive stop actions;
+- Details keeps low-frequency metadata out of the terminal surface;
 - fixture data may be used before runtime integration.
 
 ### T07 — Interactive terminal integration
@@ -314,7 +320,7 @@ Acceptance:
 - sessions continue while hidden;
 - summary updates with runtime;
 - Exit never silently kills active sessions;
-- taskbar/tray icon matches V1.
+- taskbar/tray icon matches the approved application identity.
 
 ### T10 — Logs view, run history, and retention UI
 
@@ -357,7 +363,7 @@ Acceptance:
 - full MVP_IMPLEMENTATION_SPEC.md matrix passes;
 - no P0 safety or PTY blocker remains;
 - logging defaults verified;
-- UI compared with V1 reference.
+- UI compared with the V2 service and terminal references.
 
 ### T12 — Windows packaging and v0.1.0 release candidate
 
