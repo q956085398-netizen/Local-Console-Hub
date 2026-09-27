@@ -104,7 +104,7 @@ async function callVision(text, images) {
       signal: AbortSignal.timeout(180000),
     });
   } catch (e) {
-    throw new Error(`请求视觉模型失败（${BASE_URL}）: ${e.message}`);
+    throw new Error(`请求视觉模型失败（${BASE_URL}）: ${e.message}`, { cause: e });
   }
 
   const raw = await res.text();
