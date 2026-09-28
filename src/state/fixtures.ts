@@ -14,6 +14,13 @@
  * (E:/Grok-UI-Design/LocalConsoleHub, the source of the reference screenshots)
  * so the shell can be compared against them visually.
  *
+ * One deliberate departure from the reference prototype's demo data: its
+ * service rows are labelled "PTY attached · stdin 可用", which no supervised
+ * service can be — Session Core sets `pty_attached` only for a terminal run it
+ * actually attached, and refuses input for a service outright. Those fixtures
+ * therefore report `ptyAttached: false` (T07 #8), so the preview does not
+ * repeat a claim the product cannot produce.
+ *
  * Timestamps are minted relative to module load so uptimes stay plausible
  * (3h 12m, 2h 14m, 12m …) without becoming clock fixtures.
  */
@@ -60,7 +67,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       pid: 18420,
       runId: "a91c",
       startedAt: iso(3 * H + 12 * M),
-      ptyAttached: true,
+      ptyAttached: false,
       logging: {
         mode: "off",
         source: "external",
@@ -112,7 +119,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       pid: 19002,
       runId: "c8aa",
       startedAt: iso(2 * H + 14 * M),
-      ptyAttached: true,
+      ptyAttached: false,
       logging: { mode: "always", source: "captured", external_path: undefined },
       buffer: { bytes: 24576, lines: 14, droppedBytes: 0 },
     },
@@ -178,7 +185,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       pid: 17611,
       runId: "k02e",
       startedAt: iso(H + 4 * M),
-      ptyAttached: true,
+      ptyAttached: false,
       logging: { mode: "on_error", source: "captured", external_path: undefined },
       buffer: { bytes: 7340, lines: 7, droppedBytes: 0 },
     },

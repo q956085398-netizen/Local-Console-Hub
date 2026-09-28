@@ -18,6 +18,7 @@ import {
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
+  acceptsTerminalInput,
   ptyChromeLabel,
   runOutcome,
   runOutcomeBadge,
@@ -269,6 +270,28 @@ describe("availableActions", () => {
     expect(availableActions(config(), runtime()).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopping" })).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopped" })).forceStop).toBe(false);
+  });
+});
+
+describe("acceptsTerminalInput", () => {
+  it("lets a running interactive terminal take typing", () => {
+    expect(
+      acceptsTerminalInput(config({ sessionType: "terminal" }), runtime({ ptyAttached: true })),
+    ).toBe(true);
+  });
+
+  it("refuses input for a terminal that is not running", () => {
+    expect(
+      acceptsTerminalInput(config({ sessionType: "terminal" }), runtime({ ptyAttached: false })),
+    ).toBe(false);
+  });
+
+  it("refuses input for a service, whatever the snapshot claims", () => {
+    // The backend refuses a service at `terminal_write` because a supervised run
+    // has no attached stdin; the view must not offer what will be refused, so
+    // the session type gates it independently of the attachment flag.
+    expect(acceptsTerminalInput(config(), runtime({ ptyAttached: true }))).toBe(false);
+    expect(acceptsTerminalInput(config(), runtime({ ptyAttached: false }))).toBe(false);
   });
 });
 

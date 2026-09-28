@@ -3,7 +3,7 @@ import { Play } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { bufferDiscardNotice, ptyChromeLabel } from "../../state/derivations";
+import { acceptsTerminalInput, bufferDiscardNotice, ptyChromeLabel } from "../../state/derivations";
 import type { SessionView } from "../../state/session-view";
 import { decodeBase64 } from "../../types/terminal";
 import { useTerminalStream } from "../../app/useTerminalStream";
@@ -103,6 +103,26 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
     streamRef.current = stream;
   }, [stream]);
 
+  // Whether this pane takes typing at all. A supervised service has no stdin
+  // to type into and the backend refuses every byte (with a test that says so),
+  // so offering the input would answer each keystroke with a refusal notice —
+  // and a terminal that is not running has nothing to type into either. The
+  // gate is also what keeps a keystroke from being swallowed before the
+  // attachment resolves: until the view is attached, nothing can deliver it.
+  const canType = live && acceptsTerminalInput(session.config, session.runtime) && stream.attached;
+  const canTypeRef = useRef(canType);
+  useEffect(() => {
+    canTypeRef.current = canType;
+    const term = termRef.current;
+    if (term !== null) {
+      term.options.disableStdin = !canType;
+      // A blinking caret is the emulator's own "ready for input" signal, so a
+      // pane that refuses typing does not blink it — otherwise the pane says
+      // "type here" in the one way the chrome label cannot contradict.
+      term.options.cursorBlink = canType;
+    }
+  }, [canType]);
+
   useEffect(() => {
     if (!live) {
       return;
@@ -123,8 +143,12 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    term.options.disableStdin = !canTypeRef.current;
     termRef.current = term;
 
+    // Only reached when the pane takes input at all (`disableStdin` above);
+    // when it opens, every keystroke it forwards is one the backend accepts.
+    //
     // Ctrl+C needs no special path here: xterm sends the byte a terminal sends
     // (0x03) through the same route as any other key, and the backend raises it
     // as an interrupt for the shell's process group. Interrupting is not
