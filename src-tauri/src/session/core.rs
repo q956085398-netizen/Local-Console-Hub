@@ -694,26 +694,11 @@ impl SessionCore {
         port: u16,
         generation: u64,
     ) {
-        let reading =
-            health::ServiceHealth::read(run.exit_status().is_none(), port, health::PROBE_TIMEOUT);
-        let changed = {
-            let mut state = lock(handle);
-            // A probe outlives the lock it was started under, so the run it was
-            // taken for may be gone by now — a restart, or a stop that has
-            // already cleared the reading. This one belongs to a run the
-            // session has moved past, and writing it would report the old
-            // process's health as the new run's.
-            if state.generation != generation {
-                return;
-            }
-            if state.runtime.health == Some(reading) {
-                false
-            } else {
-                state.runtime.health = Some(reading);
-                true
-            }
-        };
-        if changed {
+        let reading = health::ServiceHealth::read(run.exit_status().is_none(), port);
+        // The probe takes time and holds no lock, so the session may have moved
+        // on while it was in flight; recording it under the session's own lock
+        // is what decides whether this reading is still about anything.
+        if lock(handle).record_health(generation, reading) {
             self.publish_state(session_id);
         }
     }
@@ -2166,14 +2151,30 @@ impl SessionState {
         // A reading describes a run in flight. Once there is none, the last one
         // is not a fact about now, and leaving it up would have the Details tab
         // report "not listening" for a service the user has just stopped — a
-        // sentence about nothing being wrong rather than nothing being checked
-        // (T08 §12).
+        // sentence about something being wrong rather than nothing being
+        // checked (T08 §12).
         self.runtime.health = None;
 
         if let Some(record) = self.record.as_mut() {
             record.ended_at = Some(Timestamp::now());
             record.exit_code = code;
         }
+    }
+
+    /// Record a health reading taken for the run `generation` names.
+    ///
+    /// `true` when the snapshot changed and the reading is worth announcing.
+    /// Two things answer `false`, and both are about the reading no longer
+    /// being news: the session has moved past that run — a restart replaced it,
+    /// or a stop has already cleared the reading — so writing it would report
+    /// the old process's health as the new run's; or it is the reading already
+    /// on the snapshot, which nothing needs republishing for.
+    fn record_health(&mut self, generation: u64, reading: health::ServiceHealth) -> bool {
+        if self.generation != generation || self.runtime.health == Some(reading) {
+            return false;
+        }
+        self.runtime.health = Some(reading);
+        true
     }
 
     /// The run this session's log answers for: the live one, or the last one
@@ -2343,7 +2344,7 @@ fn watch_run(
     session_id: String,
     generation: u64,
 ) {
-    let (run, health_port) = {
+    let (run, polled_port) = {
         let state = lock(&handle);
         if state.generation != generation {
             return;
@@ -2360,7 +2361,7 @@ fn watch_run(
     // monitor behind (spec §12, §14). The first probe is due immediately — a
     // service that is already listening should not wait an interval to be
     // called ready — and every one after it is an interval apart.
-    let mut next_probe = health_port.map(|_| std::time::Instant::now());
+    let mut next_probe = polled_port.map(|_| std::time::Instant::now());
 
     loop {
         if run.wait_for_exit(WATCH_TICK).is_some() {
@@ -2377,7 +2378,7 @@ fn watch_run(
         // reader ticks faster and this is usually a no-op.
         core.flush_output(&session_id, generation, false);
 
-        if let (Some(port), Some(due)) = (health_port, next_probe) {
+        if let (Some(port), Some(due)) = (polled_port, next_probe) {
             let now = std::time::Instant::now();
             if now >= due {
                 core.read_health(&session_id, &handle, &run, port, generation);
@@ -2777,15 +2778,6 @@ mod tests {
         (core, sink)
     }
 
-    /// A port on this machine that nothing is listening on: the OS hands one
-    /// out, and the listener is released so a probe finds it closed.
-    fn closed_port() -> u16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
-        let port = listener.local_addr().expect("the bound address").port();
-        drop(listener);
-        port
-    }
-
     /// T08 §12, first half: a running service that names a port gets a reading.
     ///
     /// The listener here is the *test's*, not the service's — `cmd.exe /c ping`
@@ -2816,7 +2808,7 @@ mod tests {
     /// reading says both facts rather than picking one (D-008).
     #[test]
     fn a_running_service_whose_port_is_closed_reports_both_facts() {
-        let (core, _sink) = core_with_port("svc", closed_port(), health::POLL_INTERVAL);
+        let (core, _sink) = core_with_port("svc", health::closed_port(), health::POLL_INTERVAL);
         core.start("svc").expect("start succeeds");
 
         let reading = wait_for_health(
@@ -2858,13 +2850,17 @@ mod tests {
         core.force_stop("svc").expect("cleanup");
     }
 
-    /// A reading describes a run in flight. Once there is none, the last
-    /// reading is not a fact about now and must not outlive the run.
+    /// A reading describes a run in flight, and the polling stops with it
+    /// (spec §12: "cancellable with session lifecycle").
+    ///
+    /// The port stays open across the stop — the test's listener, not the
+    /// service's — so a poller that outlived its run would keep finding it
+    /// listening and put a reading back.
     #[test]
-    fn a_reading_goes_away_with_the_run_it_described() {
+    fn a_reading_and_its_polling_go_away_with_the_run_they_described() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
         let port = listener.local_addr().expect("the bound address").port();
-        let (core, _sink) = core_with_port("svc", port, health::POLL_INTERVAL);
+        let (core, _sink) = core_with_port("svc", port, std::time::Duration::from_millis(40));
         core.start("svc").expect("start succeeds");
         wait_for_health(
             &core,
@@ -2874,12 +2870,14 @@ mod tests {
         );
 
         let stopped = core.force_stop("svc").expect("stop succeeds");
-
         assert_eq!(stopped.health, None, "a stopped session reports no reading");
+
+        // Several poll intervals' worth of time with the port still listening.
+        std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(
             core.snapshot("svc").expect("registered").health,
             None,
-            "and the reading stays gone"
+            "something is still probing a run that has ended"
         );
         drop(listener);
     }

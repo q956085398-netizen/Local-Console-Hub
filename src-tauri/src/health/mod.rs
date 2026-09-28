@@ -85,10 +85,10 @@ impl ServiceHealth {
     /// that owns the process handle is the one that can answer without guessing
     /// at a PID (`crate::process` — D-008's "never kill by name" has the same
     /// root: a number is not an identity).
-    pub fn read(process_alive: bool, port: u16, timeout: Duration) -> Self {
+    pub fn read(process_alive: bool, port: u16) -> Self {
         ServiceHealth {
             process_alive,
-            port_open: port_open(port, timeout),
+            port_open: port_open(port),
         }
     }
 }
@@ -98,9 +98,28 @@ impl ServiceHealth {
 /// A refused connection (nothing listening) and a timed-out one are both
 /// "closed" as far as a user is concerned: the service is not answering on the
 /// port its config names.
-pub fn port_open(port: u16, timeout: Duration) -> bool {
+///
+/// The timeout is [`PROBE_TIMEOUT`] rather than a parameter: it bounds one call
+/// the product always wants bounded the same way, and a knob with one setting
+/// is a knob that only misleads.
+pub fn port_open(port: u16) -> bool {
     let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
-    TcpStream::connect_timeout(&address, timeout).is_ok()
+    TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok()
+}
+
+/// A port on this machine that nothing is listening on.
+///
+/// For tests: the OS hands out an ephemeral port and the listener is released
+/// so a probe finds it closed. Here rather than in each test module because
+/// "a port nobody answers on" is this layer's idea, and two copies could drift
+/// into two different notions of it.
+#[cfg(test)]
+pub(crate) fn closed_port() -> u16 {
+    let listener =
+        std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
+    let port = listener.local_addr().expect("the bound address").port();
+    drop(listener);
+    port
 }
 
 #[cfg(test)]
@@ -118,15 +137,12 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
         let port = listener.local_addr().expect("the bound address").port();
 
-        assert!(
-            port_open(port, PROBE_TIMEOUT),
-            "a bound port accepts a connection"
-        );
+        assert!(port_open(port), "a bound port accepts a connection");
 
         drop(listener);
 
         assert!(
-            !port_open(port, PROBE_TIMEOUT),
+            !port_open(port),
             "the port is closed once the listener is gone"
         );
     }
@@ -139,9 +155,9 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
         let port = listener.local_addr().expect("the bound address").port();
 
-        let up = ServiceHealth::read(true, port, PROBE_TIMEOUT);
-        let booting = ServiceHealth::read(true, closed_port(), PROBE_TIMEOUT);
-        let gone = ServiceHealth::read(false, closed_port(), PROBE_TIMEOUT);
+        let up = ServiceHealth::read(true, port);
+        let booting = ServiceHealth::read(true, closed_port());
+        let gone = ServiceHealth::read(false, closed_port());
 
         assert_eq!(
             up,
@@ -164,15 +180,6 @@ mod tests {
                 port_open: false
             }
         );
-    }
-
-    /// A port nothing is listening on: a listener is bound to get a port the OS
-    /// hands out, then released so the probe finds it closed.
-    fn closed_port() -> u16 {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
-        let port = listener.local_addr().expect("the bound address").port();
-        drop(listener);
-        port
     }
 
     /// The wire shape the frontend mirror is written against
