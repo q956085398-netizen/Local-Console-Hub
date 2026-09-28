@@ -14,6 +14,15 @@
  * The mirror below is deliberately faithful to the actual wire shape; if the
  * backend unifies the casing (a one-line serde change), update this mirror
  * together with it.
+ *
+ * Wire note 2: a session-layer `Option<T>` is serialized as **`null`**, not as
+ * an absent key — those structs have no `skip_serializing_if`, and the Rust
+ * tests assert exactly that (`value["pid"].is_null()`). So an optional field
+ * here is `T | null`, and a site that reads one asks `isPresent(...)` rather
+ * than comparing against `undefined`. The *config* DTOs are the other way
+ * round (they do skip absent fields), which is why `types/config.ts` keeps
+ * `undefined`-only optionals: the two layers differ, and each mirror says what
+ * its own layer does.
  */
 
 import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue } from "./config";
@@ -37,8 +46,8 @@ export interface RuntimeEffectiveLoggingDto {
   source: LogSourceValue;
   /** Application-owned log path; snake_case on this nested block (see the
    * file note above — config DTOs use `externalPath`, runtime embeds the
-   * config-layer struct verbatim). */
-  external_path?: string;
+   * config-layer struct verbatim). `null` when the session has none. */
+  external_path?: string | null;
 }
 
 /** Bounded in-memory scrollback summary; the content is read on demand. */
@@ -58,18 +67,18 @@ export interface SessionErrorInfoDto {
 export interface SessionRuntimeDto {
   sessionId: string;
   status: SessionStatusValue;
-  /** Set while a run is starting or running. */
-  pid?: number;
-  /** The run this snapshot describes; absent before the first start. */
-  runId?: string;
-  /** RFC 3339 UTC timestamp of the current run's start. */
-  startedAt?: string;
+  /** Set while a run is starting or running; `null` when it is not. */
+  pid?: number | null;
+  /** The run this snapshot describes; `null` before the first start. */
+  runId?: string | null;
+  /** RFC 3339 UTC timestamp of the current run's start; `null` before it. */
+  startedAt?: string | null;
   /** Known once a run has ended, including an unexpected exit. */
-  exitCode?: number;
+  exitCode?: number | null;
   ptyAttached: boolean;
   logging: RuntimeEffectiveLoggingDto;
   buffer: BufferSummaryDto;
-  lastError?: SessionErrorInfoDto;
+  lastError?: SessionErrorInfoDto | null;
 }
 
 /** App-wide session counts for the window chrome and tray summary. */
@@ -109,8 +118,9 @@ export interface SessionErrorDto {
   sessionId: string;
   operation: string;
   message: string;
-  /** The state the session was in when the move was refused. */
-  from?: SessionStatusValue;
+  /** The state the session was in when the move was refused; `null` when the
+   * refusal was not about a state (an unknown session, a bad payload). */
+  from?: SessionStatusValue | null;
 }
 
 /** One managed start, live (`endedAt` absent) or finished. */
@@ -118,12 +128,14 @@ export interface RunRecordDto {
   runId: string;
   sessionId: string;
   startedAt: string;
-  endedAt?: string;
-  exitCode?: number;
-  pid?: number;
+  /** `null` while the run is live. */
+  endedAt?: string | null;
+  exitCode?: number | null;
+  pid?: number | null;
   logMode: EffectiveLogModeValue;
   logSource: LogSourceValue;
-  logFile?: string;
+  /** `null` for the modes that only learn their file when the run ends. */
+  logFile?: string | null;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -132,12 +144,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function optionalInteger(source: Record<string, unknown>, key: string): boolean {
   const value = source[key];
-  return value === undefined || (typeof value === "number" && Number.isInteger(value));
+  return (
+    value === undefined || value === null || (typeof value === "number" && Number.isInteger(value))
+  );
 }
 
 function optionalString(source: Record<string, unknown>, key: string): boolean {
   const value = source[key];
-  return value === undefined || typeof value === "string";
+  return value === undefined || value === null || typeof value === "string";
 }
 
 /** Runtime guard for the nested effective-logging block. */
@@ -196,7 +210,7 @@ export function isSessionRuntimeDto(value: unknown): value is SessionRuntimeDto 
 }
 
 function isSessionErrorInfoDtoOrAbsent(value: unknown): boolean {
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return true;
   }
   if (!isObject(value)) {
@@ -244,9 +258,22 @@ export function isSessionErrorDto(value: unknown): value is SessionErrorDto {
     typeof candidate.operation === "string" &&
     typeof candidate.message === "string" &&
     (candidate.from === undefined ||
+      candidate.from === null ||
       (typeof candidate.from === "string" &&
         SESSION_STATUSES.includes(candidate.from as SessionStatusValue)))
   );
+}
+
+/**
+ * Whether a wire optional carries a value.
+ *
+ * The one way to read an optional on these DTOs: `null` is what the backend
+ * writes for "nothing", `undefined` is what a JavaScript object literal may
+ * have, and a check for only one of them is a bug that renders `PID null` or
+ * `run-undefined` — or throws, where the value is dereferenced.
+ */
+export function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 /**

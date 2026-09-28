@@ -7,6 +7,7 @@ import {
   runOutcomeBadge,
 } from "../../state/derivations";
 import type { SessionView } from "../../state/session-view";
+import { isPresent } from "../../types/runtime";
 import "./LogsPanel.css";
 
 export interface LogsPanelProps {
@@ -27,7 +28,7 @@ export default function LogsPanel({ session, onAction }: LogsPanelProps) {
   const { config, runtime, runs } = session;
   const logging = runtime.logging ?? config.logging;
   const visibleRuns = runs.filter(
-    (run) => run.logFile !== undefined || runOutcome(run) === "error" || logging.source !== "none",
+    (run) => isPresent(run.logFile) || runOutcome(run) === "error" || logging.source !== "none",
   );
   const current = runs.find((run) => run.runId === runtime.runId) ?? runs[runs.length - 1];
   const policy = logPolicyBadge(logging, runtime.status);
@@ -49,7 +50,7 @@ export default function LogsPanel({ session, onAction }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={current?.logFile === undefined}
+            disabled={!isPresent(current?.logFile)}
             onClick={() => onAction("打开日志")}
           >
             <ScrollText size={14} />
@@ -58,7 +59,7 @@ export default function LogsPanel({ session, onAction }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={current?.logFile === undefined}
+            disabled={!isPresent(current?.logFile)}
             onClick={() => onAction("打开目录")}
           >
             <FolderOpen size={14} />
@@ -67,7 +68,7 @@ export default function LogsPanel({ session, onAction }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--ghost btn--sm"
-            disabled={current?.logFile === undefined}
+            disabled={!isPresent(current?.logFile)}
             onClick={() => onAction("复制路径")}
           >
             <Copy size={14} />
@@ -109,8 +110,8 @@ export default function LogsPanel({ session, onAction }: LogsPanelProps) {
                   </div>
                   <p className="logs-panel__run-detail">
                     {run.logFile ?? "未落盘"}
-                    {run.pid !== undefined ? ` · PID ${run.pid}` : ""}
-                    {run.exitCode !== undefined && run.endedAt !== undefined
+                    {isPresent(run.pid) ? ` · PID ${run.pid}` : ""}
+                    {isPresent(run.exitCode) && isPresent(run.endedAt)
                       ? ` · exit ${run.exitCode}`
                       : ""}
                   </p>

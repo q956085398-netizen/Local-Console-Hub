@@ -17,6 +17,7 @@ import type {
   SessionRuntimeDto,
   SessionStatusValue,
 } from "../types/runtime";
+import { isPresent } from "../types/runtime";
 import type { SessionView, WorkloadGroup } from "./session-view";
 
 /** Pip/badge tone semantics (UI_STYLE_GUIDE §10). */
@@ -223,7 +224,7 @@ export function headerCallout(
   if (isLive(runtime.status)) {
     return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
   }
-  if (runtime.lastError !== undefined) {
+  if (isPresent(runtime.lastError)) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };
   }
   return null;
@@ -278,10 +279,10 @@ export function metadataPairs(
         ? "external"
         : logModeLabel(logging.mode);
   const pairs: Array<{ label: string; value: string }> = [
-    { label: "PID", value: runtime.pid !== undefined ? String(runtime.pid) : "—" },
+    { label: "PID", value: isPresent(runtime.pid) ? String(runtime.pid) : "—" },
   ];
   if (config.port !== undefined) pairs.push({ label: "port", value: `:${config.port}` });
-  if (runtime.startedAt !== undefined && runtime.status === "running") {
+  if (isPresent(runtime.startedAt) && runtime.status === "running") {
     pairs.push({ label: "up", value: formatDuration(runtime.startedAt, now) });
   }
   pairs.push({ label: "cwd", value: config.cwd ?? "—" });
@@ -329,7 +330,7 @@ export function sidebarRowMeta(session: SessionView): RowMetaChip[] {
 
 /** Outcome of a run record for the history list. */
 export function runOutcome(run: RunRecordDto): "running" | "ok" | "error" {
-  if (run.endedAt === undefined) return "running";
+  if (!isPresent(run.endedAt)) return "running";
   return run.exitCode === 0 ? "ok" : "error";
 }
 

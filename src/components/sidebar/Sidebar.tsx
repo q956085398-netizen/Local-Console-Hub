@@ -7,6 +7,7 @@ import {
   type SessionGroup,
 } from "../../state/derivations";
 import type { SessionView } from "../../state/session-view";
+import { isPresent } from "../../types/runtime";
 import "./Sidebar.css";
 
 export interface SidebarProps {
@@ -102,7 +103,7 @@ function SessionRow({ item, selected, now, onSelect }: SessionRowProps) {
     runtime.status === "stopping" ||
     (runtime.status === "running" && (item.busy ?? false));
   const tail =
-    live && runtime.startedAt !== undefined
+    live && isPresent(runtime.startedAt)
       ? formatDuration(runtime.startedAt, now)
       : statusLabel(runtime.status, item.busy ?? false, item.ready ?? false);
   const meta = sidebarRowMeta(item);
