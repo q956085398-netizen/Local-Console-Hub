@@ -61,8 +61,17 @@ mod tests {
     fn ping_serializes_to_the_camel_case_contract() {
         let value = serde_json::to_value(ping()).expect("ping response serializes");
         assert!(value.get("appName").is_some(), "missing appName in {value}");
-        assert!(value.get("appVersion").is_some(), "missing appVersion in {value}");
-        assert!(value.get("protocol").is_some(), "missing protocol in {value}");
-        assert!(value.get("app_name").is_none(), "snake_case leaked into {value}");
+        assert!(
+            value.get("appVersion").is_some(),
+            "missing appVersion in {value}"
+        );
+        assert!(
+            value.get("protocol").is_some(),
+            "missing protocol in {value}"
+        );
+        assert!(
+            value.get("app_name").is_none(),
+            "snake_case leaked into {value}"
+        );
     }
 }
