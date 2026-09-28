@@ -15,7 +15,7 @@
  *   - `lines` — the live PTY stream (T07);
  *   - `FixtureRun.logFilePresent` — the one thing a run record cannot say
  *     about itself, carried by the entry around it in the real payload
- *     (`types/logs.ts`, `DECISIONS.md` D-019).
+ *     (`types/logs.ts`, `DECISIONS.md` D-022).
  *
  * Timestamps are minted relative to module load so uptimes stay plausible
  * (3h 12m, 2h 14m, 12m …) without becoming clock fixtures.
@@ -171,7 +171,7 @@ export const FIXTURE_SESSIONS: FixtureSession[] = [
         logFile:
           "%LOCALAPPDATA%\\LocalConsoleHub\\logs\\comfyui\\2026-09\\2026-09-26_02-21-00__run-c711.log",
         // The row state retention creates and the tab has to render: the run
-        // is in the history, the log it names was swept (D-019). The fixture
+        // is in the history, the log it names was swept (D-022). The fixture
         // carries it because there is otherwise no way to look at this row
         // without a live backend and a real sweep.
         logFilePresent: false,

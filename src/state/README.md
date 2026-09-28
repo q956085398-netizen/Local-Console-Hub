@@ -15,7 +15,7 @@ and lifecycle changes originate in Session Core.
   payloads.
 - `logs.ts` — the Logs tab's rules (T10): the state badge, "is this being
   logged?", which file an action points at, whether a run's log is still on
-  disk (retention deletes files, not run records — `DECISIONS.md` D-019), and
+  disk (retention deletes files, not run records — `DECISIONS.md` D-022), and
   the retention wording. Also turns a fixture session into the payloads
   `get_log_info` / `get_run_history` answer with, so the tab renders live and
   preview data through one path.
@@ -33,7 +33,7 @@ per field on the type, and are not a second runtime model:
   lifecycle state and never replace it.
 - `lines` — the terminal stream T07 (#8) replaces with the PTY.
 - `runs[].logFilePresent` — the entry-level field the real payload carries
-  around a run record (`RunHistoryEntryDto`, D-019). A fixture has no entry
+  around a run record (`RunHistoryEntryDto`, D-022). A fixture has no entry
   wrapper, so the one run whose log was swept says so here.
 - `group` / `dependsOn` — **no landed field and no owning ticket yet** (the
   session config schema has neither). They are recorded as `FixtureExtras`
