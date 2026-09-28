@@ -9,7 +9,3 @@ package-lock.json
 docs/
 README.md
 CLAUDE.md
-
-# Standalone zero-dependency tool (authored before the formatter landed);
-# ESLint still covers it
-tools/
