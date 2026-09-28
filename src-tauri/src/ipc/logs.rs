@@ -6,19 +6,26 @@
 //! policy's "I want this one after all") and switch recording on or off
 //! (`set_log_recording`, the `manual` policy).
 //!
-//! Like the lifecycle commands, each one names a single Core operation and
-//! adds nothing to it: the logs *view* is T10's, and a command that decided
-//! anything here would be a second place the UI's behaviour could come from.
+//! T10 adds the logs *view*'s four actions (`docs/LOGGING.md` §10): open the
+//! log file, open the folder that holds it, and the two halves of retention —
+//! what a sweep would remove (`preview_log_cleanup`) and the sweep itself
+//! (`cleanup_logs`). Like the lifecycle commands, each names a single Core
+//! operation and adds nothing to it, and none of them decides anything the
+//! view could have decided for itself.
 //!
-//! `docs/LOGGING.md` §10 lists opening the log file and its folder as UI
-//! actions. Those are shell actions rather than Session Core operations and
-//! belong to the view that offers them (T10); what they need from here —
-//! `logFile`, `sessionLogDir` — `get_log_info` already reports.
+//! ## Why opening a file is a command rather than a path argument
+//!
+//! `open_log_file` takes a session id and an optional run id, never a path.
+//! Session Core resolves those to a file the session actually owns, so the
+//! webview cannot ask the OS to open an arbitrary path — the command's shape is
+//! what makes that impossible, not a check inside it
+//! (`crate::shell`'s module note).
 
 use tauri::State;
 
-use crate::logging::{LogStatus, RunHistory};
+use crate::logging::{CleanupReport, LogStatus, RunHistory};
 use crate::session::core::{SessionCore, SessionError};
+use crate::shell;
 
 /// What this session's logging is doing, and where it writes
 /// (`docs/LOGGING.md` §1.4).
@@ -60,4 +67,186 @@ pub fn set_log_recording(
     recording: bool,
 ) -> Result<LogStatus, SessionError> {
     core.set_log_recording(&session_id, recording)
+}
+
+/// Open the log file this session's logging owns
+/// (`docs/LOGGING.md` §10).
+///
+/// `run_id` names one entry of the run history; without it the session's
+/// current file is opened — what it is writing now, or what its last run left
+/// behind. A session that persists nothing answers with the reason its policy
+/// gives rather than with an empty success.
+#[tauri::command]
+pub fn open_log_file(
+    core: State<'_, SessionCore>,
+    session_id: String,
+    run_id: Option<String>,
+) -> Result<(), SessionError> {
+    let target = core.log_file_target(&session_id, run_id.as_deref())?;
+    shell::open_path(&target.path)
+        .map_err(|error| hand_over_failed(&session_id, "open_log_file", error))
+}
+
+/// Open the folder that holds this session's log file
+/// (`docs/LOGGING.md` §10).
+///
+/// Deliberately the *file's* folder rather than the session's log root: an
+/// `external` session's log belongs to the application (`docs/DECISIONS.md`
+/// D-005), and sending a user to the Hub's own directory to look for it would
+/// be showing them an empty folder as if it were the answer.
+#[tauri::command]
+pub fn open_log_folder(
+    core: State<'_, SessionCore>,
+    session_id: String,
+    run_id: Option<String>,
+) -> Result<(), SessionError> {
+    let target = core.log_folder_target(&session_id, run_id.as_deref())?;
+    shell::open_path(&target.path)
+        .map_err(|error| hand_over_failed(&session_id, "open_log_folder", error))
+}
+
+/// What `cleanup_logs` would remove, without removing anything
+/// (`docs/LOGGING.md` §10).
+///
+/// The confirmation step: a destructive action says how many files and how many
+/// bytes it would take before the user agrees to it. Answers with an empty
+/// report for a session with nothing past keeping, so "nothing to clean" is not
+/// a failure.
+#[tauri::command]
+pub fn preview_log_cleanup(core: State<'_, SessionCore>, session_id: String) -> CleanupReport {
+    core.cleanup_preview(Some(&session_id))
+}
+
+/// Remove the Hub's own log files that retention says are past keeping for one
+/// session (`docs/LOGGING.md` §9).
+///
+/// Only files under the Hub's logs root for *this* session are candidates: an
+/// application-owned log linked with `source: external` lives elsewhere and is
+/// never touched, and neither is another session's history. What was removed,
+/// how much was freed, and what the OS refused all come back in the report.
+#[tauri::command]
+pub fn cleanup_logs(core: State<'_, SessionCore>, session_id: String) -> CleanupReport {
+    core.cleanup_logs(Some(&session_id))
+}
+
+/// Report a failed handoff as the session operation it was.
+///
+/// The shell layer knows the path and the OS's answer; the frontend knows one
+/// structured error shape per session operation, so the two are joined here
+/// rather than by teaching the window about a second error type.
+fn hand_over_failed(session_id: &str, operation: &str, error: shell::ShellError) -> SessionError {
+    SessionError::failed(
+        session_id,
+        operation,
+        format!("{} ({})", error.message, error.path),
+        None,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{EffectiveLogMode, LogSource};
+    use crate::logging::{BufferSummary, LogState, LogStatus};
+    use crate::session::runtime::{RunId, RunRecord, Timestamp};
+
+    // The payload fixtures mirrored by `src/types/logs.ts` — if a field name
+    // changes on this side, the frontend's guards start rejecting the value and
+    // both files have to change together.
+
+    fn status() -> LogStatus {
+        LogStatus {
+            session_id: "comfyui".to_owned(),
+            mode: EffectiveLogMode::Always,
+            source: LogSource::Captured,
+            state: LogState::Capturing,
+            log_file: Some("C:/logs/comfyui/2026-09/run.log".to_owned()),
+            external_log: None,
+            session_log_dir: Some("C:/logs/comfyui/2026-09".to_owned()),
+            records_input: false,
+            buffer: BufferSummary {
+                bytes: 24,
+                lines: 3,
+                dropped_bytes: 0,
+            },
+            truncated: false,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn the_log_status_payload_is_the_camel_case_contract() {
+        let value = serde_json::to_value(status()).expect("the status serializes");
+
+        for key in [
+            "sessionId",
+            "mode",
+            "source",
+            "state",
+            "logFile",
+            "sessionLogDir",
+            "recordsInput",
+            "buffer",
+            "truncated",
+        ] {
+            assert!(value.get(key).is_some(), "missing {key} in {value}");
+        }
+        assert!(
+            value.get("log_file").is_none(),
+            "snake_case leaked into {value}"
+        );
+        // An absent optional arrives as `null`, not as a missing key: these
+        // structs carry `Option` fields without `skip_serializing_if`, unlike
+        // the config DTOs. Pinned here because the frontend mirror has to spell
+        // "nothing here" the same way (`src/types/logs.ts`).
+        assert_eq!(value["externalLog"], serde_json::Value::Null, "{value}");
+        assert_eq!(value["lastError"], serde_json::Value::Null, "{value}");
+    }
+
+    /// One run record as the history carries it, so the history's own payload
+    /// is pinned and not only the status's.
+    #[test]
+    fn the_run_history_payload_is_the_camel_case_contract() {
+        let history = RunHistory {
+            runs: vec![RunRecord {
+                run_id: RunId::mint(),
+                session_id: "comfyui".to_owned(),
+                started_at: Timestamp::now(),
+                ended_at: None,
+                exit_code: None,
+                pid: Some(19002),
+                log_mode: EffectiveLogMode::Always,
+                log_source: LogSource::Captured,
+                log_file: None,
+            }],
+            unreadable: Vec::new(),
+        };
+
+        let value = serde_json::to_value(history).expect("the history serializes");
+        let run = &value["runs"][0];
+
+        for key in ["runId", "sessionId", "startedAt", "logMode", "logSource"] {
+            assert!(run.get(key).is_some(), "missing {key} in {run}");
+        }
+        assert!(value.get("unreadable").is_some(), "{value}");
+    }
+
+    #[test]
+    fn a_cleanup_report_serializes_what_the_view_reads() {
+        let report = CleanupReport {
+            removed: vec![std::path::PathBuf::from("C:/logs/svc/2026-09/run.log")],
+            freed_bytes: 2048,
+            failures: Vec::new(),
+        };
+
+        let value = serde_json::to_value(report).expect("the report serializes");
+
+        assert_eq!(value["freedBytes"], serde_json::json!(2048));
+        assert_eq!(
+            value["removed"],
+            serde_json::json!(["C:/logs/svc/2026-09/run.log"]),
+            "a path must cross as a string the view can show"
+        );
+        assert!(value.get("failures").is_some(), "{value}");
+    }
 }

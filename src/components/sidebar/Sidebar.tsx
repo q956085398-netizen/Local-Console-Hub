@@ -102,7 +102,7 @@ function SessionRow({ item, selected, now, onSelect }: SessionRowProps) {
     runtime.status === "stopping" ||
     (runtime.status === "running" && (item.busy ?? false));
   const tail =
-    live && runtime.startedAt !== undefined
+    live && runtime.startedAt != null
       ? formatDuration(runtime.startedAt, now)
       : statusLabel(runtime.status, item.busy ?? false, item.ready ?? false);
   const meta = sidebarRowMeta(item);

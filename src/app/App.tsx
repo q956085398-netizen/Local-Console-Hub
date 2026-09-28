@@ -36,9 +36,11 @@ const CLOCK_TICK_MS = 5000;
  *
  * Structure per docs/UI_STYLE_GUIDE.md: compact title bar, grouped session
  * sidebar, selected-session workspace (header + 终端/日志/详情 tabs, terminal
- * dominant), minimal status bar. Data is fixture-driven until the runtime
- * tickets land; every fixture value already passes the landed DTO guards, so
- * swapping in live snapshots is a data change only.
+ * dominant), minimal status bar. The session list and header are fixture-driven
+ * until the runtime tickets land (T07/T08); the Logs tab reads Session Core
+ * already and labels the sessions it must still show from fixtures (T10).
+ * Every fixture value passes the landed DTO guards, so swapping in live
+ * snapshots is a data change only.
  */
 export default function App() {
   // `#session=<id>` deep link (tray/restore surfaces can target a session).
@@ -126,7 +128,11 @@ export default function App() {
           <WorkspaceTabs active={tab} onChange={setTab} />
           <div className="workspace__content">
             {tab === "terminal" && <TerminalHost fixture={selected} onAction={onFixtureAction} />}
-            {tab === "logs" && <LogsPanel fixture={selected} onAction={onFixtureAction} />}
+            {/* Keyed by session so the Logs tab's own state — the pending
+                retention question above all — belongs to one session. */}
+            {tab === "logs" && (
+              <LogsPanel key={selected.config.id} session={selected} onNotice={setNotice} />
+            )}
             {tab === "details" && <DetailsPanel fixture={selected} />}
           </div>
         </section>

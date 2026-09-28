@@ -223,7 +223,7 @@ export function headerCallout(
   if (isLive(runtime.status)) {
     return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
   }
-  if (runtime.lastError !== undefined) {
+  if (runtime.lastError != null) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };
   }
   return null;
@@ -278,10 +278,10 @@ export function metadataPairs(
         ? "external"
         : logModeLabel(logging.mode);
   const pairs: Array<{ label: string; value: string }> = [
-    { label: "PID", value: runtime.pid !== undefined ? String(runtime.pid) : "—" },
+    { label: "PID", value: runtime.pid != null ? String(runtime.pid) : "—" },
   ];
   if (config.port !== undefined) pairs.push({ label: "port", value: `:${config.port}` });
-  if (runtime.startedAt !== undefined && runtime.status === "running") {
+  if (runtime.startedAt != null && runtime.status === "running") {
     pairs.push({ label: "up", value: formatDuration(runtime.startedAt, now) });
   }
   pairs.push({ label: "cwd", value: config.cwd ?? "—" });
@@ -327,9 +327,15 @@ export function sidebarRowMeta(session: FixtureSession): RowMetaChip[] {
   return chips;
 }
 
-/** Outcome of a run record for the history list. */
+/**
+ * Outcome of a run record for the history list.
+ *
+ * `== null`, not `=== undefined`: an unfinished run arrives with `endedAt` as
+ * `null` (see the note in `types/runtime.ts`), and reading that as an ended run
+ * would file every live run under "error".
+ */
 export function runOutcome(run: RunRecordDto): "running" | "ok" | "error" {
-  if (run.endedAt === undefined) return "running";
+  if (run.endedAt == null) return "running";
   return run.exitCode === 0 ? "ok" : "error";
 }
 

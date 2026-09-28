@@ -31,8 +31,8 @@ export default function DetailsPanel({ fixture }: DetailsPanelProps) {
     ["类型", typeLabel(config.sessionType)],
     ["状态", statusLabel(runtime.status, fixture.busy ?? false, fixture.ready ?? false)],
     ["启动命令", config.command ?? config.shell ?? "—"],
-    ["Run", runtime.runId !== undefined ? `run-${runtime.runId}` : "—"],
-    ["退出码", runtime.exitCode !== undefined ? String(runtime.exitCode) : "—"],
+    ["Run", runtime.runId != null ? `run-${runtime.runId}` : "—"],
+    ["退出码", runtime.exitCode != null ? String(runtime.exitCode) : "—"],
     ["PTY", runtime.ptyAttached ? "attached" : "未附加"],
     [
       "日志模式",
@@ -44,7 +44,7 @@ export default function DetailsPanel({ fixture }: DetailsPanelProps) {
         runtime.buffer.droppedBytes > 0 ? ` · 已丢弃 ${runtime.buffer.droppedBytes} B` : ""
       }`,
     ],
-    ...(runtime.lastError !== undefined
+    ...(runtime.lastError != null
       ? ([[`最近错误（${runtime.lastError.operation}）`, runtime.lastError.message]] as Array<
           [string, string]
         >)

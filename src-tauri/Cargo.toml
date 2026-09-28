@@ -44,6 +44,11 @@ dirs = "7"
 # run's log belongs to (`docs/DECISIONS.md` D-011). It replaces pulling
 # chrono's `clock` feature in for one integer: chrono's `Local` needs the
 # iana-time-zone crate on Windows, where the OS call is already a dependency.
+#
+# Win32_UI_Shell + Win32_UI_WindowsAndMessaging carry the T10 shell handoff
+# (`shell/win.rs`): `ShellExecuteW` is gated behind the first feature, and its
+# `nshowcmd` parameter behind the second, so both are required for one call.
+# Enabling them downloads nothing — windows-sys gates modules, not packages.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -53,4 +58,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_Time",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }

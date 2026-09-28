@@ -28,13 +28,53 @@
   font-size: 14px;
 }
 
-.logs-panel__path {
-  margin: 4px 0 0;
+/* The provenance badge is the one place this tab distinguishes where its
+   values came from; a dashed outline reads as "not the real thing yet"
+   without borrowing a lifecycle colour. */
+.logs-panel__provenance--preview {
+  border-style: dashed;
+}
+
+.logs-panel__paths {
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.logs-panel__path-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.logs-panel__path-row dt {
+  flex: none;
+  min-width: 96px;
+  font-size: 11px;
+  color: var(--muted-fg);
+}
+
+.logs-panel__path-row dd {
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.625;
   color: var(--muted-fg);
   overflow-wrap: anywhere;
+}
+
+.logs-panel__warning {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.625;
+  color: var(--status-busy);
+  overflow-wrap: anywhere;
+}
+
+.logs-panel__warning--list {
+  padding: 8px 12px 0;
+  color: var(--status-err);
 }
 
 .logs-panel__actions {
@@ -96,6 +136,51 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.logs-panel__run-tail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.logs-panel__run-actions {
+  display: flex;
+  align-items: center;
+}
+
+/* One destructive action, and it is never the reachable default: the confirm
+   strip appears first, states the count and the bytes, and only then offers
+   the button that deletes (`docs/LOGGING.md` §9). */
+.logs-panel__destructive {
+  background: var(--secondary);
+  color: var(--status-err);
+  box-shadow: var(--shadow-border);
+}
+
+.logs-panel__destructive:hover:not(:disabled) {
+  background: var(--accent-surface);
+}
+
+.logs-panel__confirm {
+  flex: none;
+  margin: 0 8px 8px;
+  border-radius: 8px;
+  border-left: 2px solid var(--status-err);
+  background: var(--impact-bg);
+  padding: 8px 12px;
+}
+
+.logs-panel__confirm-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logs-panel__confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .logs-panel__run-id {

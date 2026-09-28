@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 
-use crate::config::{self, LogSource, SessionConfig, SessionType};
+use crate::config::{self, EffectiveLogMode, LogSource, SessionConfig, SessionType};
 use crate::logging::{
     self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
     RunLogHandle, RunOutcome, Stream, TerminalBuffer, DEFAULT_LOG_LIMITS,
@@ -167,6 +167,22 @@ impl std::fmt::Display for SessionError {
 }
 
 impl std::error::Error for SessionError {}
+
+/// The file a log action points at (`docs/LOGGING.md` §10).
+///
+/// Resolved by Session Core rather than handed in by the caller: the frontend
+/// can name a session and a run, and this is the layer that knows which file
+/// those two produced. The alternative — an IPC command that opens whatever
+/// path it is given — would make the window a general file launcher, which is
+/// not a capability a logs view needs (`shell`'s module note).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogTarget {
+    pub session_id: String,
+    /// The run this file belongs to; absent when the target is the session's
+    /// application-owned log, which is not per-run (`docs/DECISIONS.md` D-005).
+    pub run_id: Option<String>,
+    pub path: std::path::PathBuf,
+}
 
 /// One session's mutable state, behind its own lock.
 struct SessionState {
@@ -954,6 +970,161 @@ impl SessionCore {
         logging::run_history(&roots.metadata_dir, session_id)
     }
 
+    /// What a cleanup would remove, without removing anything
+    /// (`docs/LOGGING.md` §10).
+    ///
+    /// The confirmation step before [`SessionCore::cleanup_logs`]: a
+    /// destructive action says how many files and how many bytes it is about
+    /// to take before it takes them.
+    pub fn cleanup_preview(&self, session_id: Option<&str>) -> logging::CleanupReport {
+        let Some(roots) = &self.roots else {
+            return logging::CleanupReport::default();
+        };
+        logging::cleanup_preview(
+            &roots.logs_dir,
+            session_id,
+            &logging::DEFAULT_RETENTION,
+            logging::clock::now(),
+        )
+    }
+
+    /// The file "open this session's log" should hand to the OS
+    /// (`docs/LOGGING.md` §10).
+    pub fn log_file_target(
+        &self,
+        session_id: &str,
+        run_id: Option<&str>,
+    ) -> Result<LogTarget, SessionError> {
+        self.log_target(session_id, run_id, "open_log_file")
+    }
+
+    /// The folder "open the containing folder" should hand to the OS.
+    ///
+    /// The same resolution as [`SessionCore::log_file_target`], followed by the
+    /// folder that holds the file: a user asking where a log lives is asking
+    /// about the folder, and it is still the right answer when the log itself
+    /// has since been cleaned up.
+    pub fn log_folder_target(
+        &self,
+        session_id: &str,
+        run_id: Option<&str>,
+    ) -> Result<LogTarget, SessionError> {
+        const OPERATION: &str = "open_log_folder";
+        let target = self.log_target(session_id, run_id, OPERATION)?;
+        match target.path.parent() {
+            Some(folder) => Ok(LogTarget {
+                session_id: target.session_id,
+                run_id: target.run_id,
+                path: folder.to_path_buf(),
+            }),
+            None => Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                format!(
+                    "`{}` has no containing folder to open",
+                    target.path.display()
+                ),
+                None,
+            )),
+        }
+    }
+
+    /// Resolve one log action to a file, or explain why there is none.
+    ///
+    /// The three answers, in order (`docs/LOGGING.md` §1.4 — the UI must never
+    /// have to infer persistence from the presence of a file):
+    ///
+    /// 1. an `external` session points at the application's own log, whatever
+    ///    run was asked for: the Hub linked that file rather than copying it
+    ///    (D-005), and the application owns its own retention;
+    /// 2. a named run resolves through *that run's* record, which is the only
+    ///    place that knows which file the run produced;
+    /// 3. no run named means the session's current answer: the file being
+    ///    written now, or the one the last run left behind.
+    fn log_target(
+        &self,
+        session_id: &str,
+        run_id: Option<&str>,
+        operation: &str,
+    ) -> Result<LogTarget, SessionError> {
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
+        let (status, current_run) = {
+            let state = lock(&handle);
+            (
+                state.log_status(session_id, self.roots.as_ref()),
+                state.current_run_id(),
+            )
+        };
+
+        // 1. The application's own log. Linked, never written by the Hub.
+        if let Some(external) = status.external_log {
+            return Ok(LogTarget {
+                session_id: session_id.to_owned(),
+                run_id: None,
+                path: std::path::PathBuf::from(external),
+            });
+        }
+
+        // 2. A named run.
+        if let Some(wanted) = run_id {
+            // A run that is still in flight has no metadata on disk yet, and its
+            // file is the one the status is already naming.
+            if current_run.as_deref() == Some(wanted) {
+                if let Some(path) = status.log_file {
+                    return Ok(hub_target(session_id, Some(wanted.to_owned()), path));
+                }
+            }
+            let history = self.run_history(session_id);
+            let Some(record) = history
+                .runs
+                .iter()
+                .find(|record| record.run_id.as_str() == wanted)
+            else {
+                return Err(SessionError::failed(
+                    session_id,
+                    operation,
+                    format!(
+                        "session `{session_id}` has no run `{wanted}` in its history — the list \
+                         may have been cleaned up, or the id may be from another session"
+                    ),
+                    None,
+                ));
+            };
+            return match &record.log_file {
+                Some(path) => Ok(hub_target(
+                    session_id,
+                    Some(wanted.to_owned()),
+                    path.clone(),
+                )),
+                None => Err(SessionError::failed(
+                    session_id,
+                    operation,
+                    format!(
+                        "run `{wanted}` of session `{session_id}` left no log file — {}",
+                        policy_reason(&status)
+                    ),
+                    None,
+                )),
+            };
+        }
+
+        // 3. The session's current file.
+        match status.log_file {
+            Some(path) => Ok(hub_target(session_id, current_run, path)),
+            None => Err(SessionError::failed(
+                session_id,
+                operation,
+                format!(
+                    "session `{session_id}` has no log file to open — {}",
+                    policy_reason(&status)
+                ),
+                None,
+            )),
+        }
+    }
+
     /// Close the current run's log, finish its record, and file the record.
     ///
     /// Every path that ends a run calls this — a stop the user asked for, a
@@ -1215,6 +1386,18 @@ impl SessionState {
         }
     }
 
+    /// The run this session's log answers for: the live one, or the last one
+    /// that ran. `None` before the session has ever started.
+    ///
+    /// Paired with [`SessionState::log_status`]'s `log_file` — the file is the
+    /// current run's while it is being written and the last run's afterwards,
+    /// so the id that names it has to follow the same rule.
+    fn current_run_id(&self) -> Option<String> {
+        self.record
+            .as_ref()
+            .map(|record| record.run_id.as_str().to_owned())
+    }
+
     /// The effective logging state of this session (`docs/LOGGING.md` §1.4).
     fn log_status(&self, session_id: &str, roots: Option<&LogRoots>) -> LogStatus {
         let logging = &self.config.logging;
@@ -1298,6 +1481,44 @@ fn session_dir(
         config::local_utc_offset_secs(),
     )?;
     Some(dir.display().to_string())
+}
+
+/// A log target for a file the Hub wrote.
+fn hub_target(session_id: &str, run_id: Option<String>, path: String) -> LogTarget {
+    LogTarget {
+        session_id: session_id.to_owned(),
+        run_id,
+        path: std::path::PathBuf::from(path),
+    }
+}
+
+/// Why this session has no log file, in the policy's own words.
+///
+/// `docs/DEVELOPMENT.md` §9 asks an error for a cause *and* something to do.
+/// "No log file" has four different causes here, and the one that matters is
+/// `on_error`: the user asked for the log of a run that has not failed, and the
+/// answer is that they can commit the buffer right now.
+fn policy_reason(status: &LogStatus) -> String {
+    match (status.source, status.mode) {
+        (LogSource::None, _) => {
+            "`source: none` keeps output in the in-memory buffer and writes nothing to disk"
+                .to_owned()
+        }
+        (_, EffectiveLogMode::Off) => {
+            "`mode: off` keeps output in the in-memory buffer and writes nothing to disk".to_owned()
+        }
+        (_, EffectiveLogMode::Manual) => {
+            "`mode: manual` writes nothing until recording is switched on for the run".to_owned()
+        }
+        (_, EffectiveLogMode::OnError) => {
+            "`mode: on_error` writes a file only when a run ends badly — `save_run_log` commits \
+             the buffer now"
+                .to_owned()
+        }
+        (_, EffectiveLogMode::Always) => {
+            "`mode: always` writes a file as soon as the session runs".to_owned()
+        }
+    }
 }
 
 /// How often a run watcher re-checks whether it has been superseded.
@@ -2261,6 +2482,19 @@ mod tests {
             fs::read_to_string(path).unwrap_or_default()
         }
 
+        /// Wait until the ended run has been filed: its record on disk, which
+        /// is what a log action resolves through.
+        ///
+        /// `Exited` is set before the ending is finalised — the state moves,
+        /// then the run's pipes are drained, its log closed and its record
+        /// written — so a test that read the target the moment it saw `Exited`
+        /// would race the very step it is asserting on.
+        fn wait_for_filing(core: &SessionCore, session_id: &str) {
+            wait_until("the ended run to be filed", || {
+                !core.run_history(session_id).runs.is_empty()
+            });
+        }
+
         /// The run's log file, named the moment the run starts.
         fn announced_log(core: &SessionCore, session_id: &str) -> PathBuf {
             let status = core.log_status(session_id).expect("the session exists");
@@ -2874,6 +3108,267 @@ mod tests {
             wait_until("the short run's output to reach its file", || {
                 read(&file).contains("gone-already")
             });
+        }
+
+        // ---- T10 (#11): resolving a log action to a file -------------------
+
+        /// "Open this session's log" is resolved by Core, and what it resolves
+        /// to is the file the run history names — not a path the caller handed
+        /// in (`docs/LOGGING.md` §10).
+        #[test]
+        fn opening_a_log_opens_the_file_its_run_record_names() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo open-me",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_for_filing(&core, "svc");
+
+            let target = core.log_file_target("svc", None).expect("a target");
+            let run = core.run_history("svc").latest().cloned().expect("a run");
+
+            assert_eq!(
+                target.path,
+                PathBuf::from(run.log_file.clone().expect("the record names a file")),
+                "the target is not the file the history points at"
+            );
+            assert_eq!(target.run_id.as_deref(), Some(run.run_id.as_str()));
+            assert!(target.path.exists(), "the resolved file is not on disk");
+        }
+
+        /// A run named explicitly resolves to *that* run's file, so opening a
+        /// file from the history opens the one the user clicked.
+        #[test]
+        fn a_named_run_resolves_to_its_own_file() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo first-run",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_for_filing(&core, "svc");
+            let first = core.run_history("svc").latest().cloned().expect("a run");
+
+            // A second run replaces the current file; the first one stays.
+            core.start("svc").expect("restart succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the second run to be filed", || {
+                core.run_history("svc").runs.len() >= 2
+            });
+            let newest = core.log_file_target("svc", None).expect("a target");
+
+            let older = core
+                .log_file_target("svc", Some(first.run_id.as_str()))
+                .expect("the first run is still in the history");
+
+            assert_eq!(
+                older.path,
+                PathBuf::from(first.log_file.clone().expect("a file"))
+            );
+            assert_ne!(older.path, newest.path, "both runs resolved to one file");
+        }
+
+        /// A run that has left nothing on disk says so, and says what to do.
+        ///
+        /// This is §1.4's real test: the user asked for the log of a run that
+        /// is still healthy under `on_error`, and the answer must not be a
+        /// silent success or a bare failure but the way to get the file.
+        #[test]
+        fn a_run_with_nothing_persisted_explains_how_to_save_it() {
+            let dir = TempDir::new();
+            let config = service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::OnError));
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+
+            let error = core
+                .log_file_target("svc", None)
+                .expect_err("a healthy on_error run has no file yet");
+
+            assert_eq!(error.kind, SessionErrorKind::Failed);
+            assert_eq!(error.operation, "open_log_file");
+            assert!(
+                error.message.contains("save_run_log"),
+                "the message does not say how to get the file: {}",
+                error.message
+            );
+
+            // And the action it names works, exactly as the message promised.
+            let status = core.save_run_log("svc").expect("the buffer can be saved");
+            let target = core
+                .log_file_target("svc", None)
+                .expect("now there is a file");
+            assert_eq!(target.path, PathBuf::from(status.log_file.expect("a file")));
+            assert!(target.path.exists());
+
+            core.force_stop("svc").expect("cleanup");
+        }
+
+        /// An `external` session's log belongs to the application, so every
+        /// action points at that file and never at anything the Hub wrote
+        /// (`docs/DECISIONS.md` D-005).
+        #[test]
+        fn an_external_session_points_at_the_application_own_log() {
+            let dir = TempDir::new();
+            let mut config =
+                service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::Always));
+            config.logging = EffectiveLogging {
+                mode: EffectiveLogMode::Always,
+                source: LogSource::External,
+                external_path: Some("D:/Tools/SillyTavern/data/access.log".to_owned()),
+            };
+            // Registered, never started: the link exists whether or not the Hub
+            // has ever run the session.
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let file = core.log_file_target("svc", None).expect("a target");
+            let folder = core.log_folder_target("svc", None).expect("a folder");
+
+            assert_eq!(
+                file.path,
+                PathBuf::from("D:/Tools/SillyTavern/data/access.log")
+            );
+            assert_eq!(file.run_id, None, "an external log is not per-run");
+            assert_eq!(folder.path, PathBuf::from("D:/Tools/SillyTavern/data"));
+        }
+
+        /// Naming something unknown is refused with the thing that was wrong,
+        /// not with a generic failure.
+        #[test]
+        fn an_unknown_session_or_run_is_named_in_the_refusal() {
+            let dir = TempDir::new();
+            let config = service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::Always));
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let missing_session = core
+                .log_file_target("nobody", None)
+                .expect_err("no such session");
+            assert_eq!(missing_session.kind, SessionErrorKind::UnknownSession);
+            assert_eq!(missing_session.session_id, "nobody");
+
+            let missing_run = core
+                .log_file_target("svc", Some("deadbeef"))
+                .expect_err("no such run");
+            assert_eq!(missing_run.kind, SessionErrorKind::Failed);
+            assert!(
+                missing_run.message.contains("deadbeef"),
+                "the refusal does not name the run: {}",
+                missing_run.message
+            );
+        }
+
+        /// The folder action answers with the folder that holds the file, which
+        /// is what "where does this session write?" means
+        /// (`docs/LOGGING.md` §5, D-011).
+        #[test]
+        fn the_folder_action_resolves_to_the_folder_holding_the_file() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo where-am-i",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_for_filing(&core, "svc");
+
+            let file = core.log_file_target("svc", None).expect("a target");
+            let folder = core.log_folder_target("svc", None).expect("a folder");
+
+            assert_eq!(
+                folder.path,
+                file.path.parent().expect("a month folder").to_path_buf()
+            );
+            assert!(folder.path.is_dir());
+            assert!(
+                folder.path.starts_with(dir.join("logs")),
+                "the folder is not the Hub's own log layout: {}",
+                folder.path.display()
+            );
+        }
+
+        /// A preview describes a sweep and performs none of it, and the sweep
+        /// that follows takes exactly what the preview named.
+        ///
+        /// The file is aged past the retention limit directly, because the
+        /// shipped policy keeps 30 days and a test cannot wait for one.
+        #[test]
+        fn a_cleanup_preview_describes_the_sweep_without_making_it() {
+            let dir = TempDir::new();
+            let config = service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::Always));
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let month = dir.join("logs/svc/2026-09");
+            fs::create_dir_all(&month).expect("the month folder is creatable");
+            let stale = month.join("2026-09-24_09-30-15__run-old.log");
+            let fresh = month.join("2026-09-29_09-30-15__run-new.log");
+            fs::write(&stale, b"old output").expect("writable");
+            fs::write(&fresh, b"new output").expect("writable");
+            age_by_days(&stale, 45);
+
+            let preview = core.cleanup_preview(Some("svc"));
+
+            assert_eq!(preview.removed, vec![stale.clone()]);
+            assert_eq!(preview.freed_bytes, "old output".len() as u64);
+            assert!(stale.exists(), "a preview deleted the file it described");
+
+            let swept = core.cleanup_logs(Some("svc"));
+
+            assert_eq!(swept.removed, preview.removed);
+            assert_eq!(swept.freed_bytes, preview.freed_bytes);
+            assert!(swept.failures.is_empty(), "{:?}", swept.failures);
+            assert!(!stale.exists());
+            assert!(fresh.exists(), "the newest run's log was swept");
+        }
+
+        /// A core with nowhere to write answers both retention questions with
+        /// "nothing", rather than reaching for a root it does not have.
+        #[test]
+        fn a_rootless_core_previews_and_sweeps_nothing() {
+            let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+
+            assert_eq!(core.cleanup_preview(Some("svc")).removed.len(), 0);
+            assert_eq!(core.cleanup_logs(Some("svc")).removed.len(), 0);
+        }
+
+        /// Move a file's modification time into the past, the way retention
+        /// measures age.
+        fn age_by_days(path: &FsPath, days: u64) {
+            let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .expect("the file is openable for write")
+                .set_modified(when)
+                .expect("the timestamp is settable");
         }
     }
 }

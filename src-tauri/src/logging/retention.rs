@@ -29,6 +29,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use serde::Serialize;
+
 use super::error::{io_error, LogError};
 
 /// How long a session's logs are kept, and how much disk they may use.
@@ -69,7 +71,13 @@ pub struct LogFile {
 }
 
 /// What a cleanup did, or would do.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Serializable because it is the answer to a user action: the Logs tab shows
+/// what a sweep removed (or, through [`preview`], what it would remove), and
+/// `failures` is how a log directory the Hub may not write to reaches the
+/// person who can fix it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CleanupReport {
     /// Files that were (or would be) removed, in the order they were chosen.
     pub removed: Vec<PathBuf>,
@@ -146,6 +154,27 @@ pub fn cleanup_plan(files: &[LogFile], policy: &RetentionPolicy, now: SystemTime
     doomed
 }
 
+/// What a cleanup would remove, without removing anything.
+///
+/// The step a destructive action owes its user: `docs/LOGGING.md` §10 lists
+/// "clean old logs" as a UI action, and a UI that cannot say how many files
+/// and how many bytes a sweep would take *before* taking them is asking for
+/// consent it has not described. Returns the same shape [`enforce`] does, so
+/// the confirmation and the result are read by the same code.
+pub fn cleanup_preview(
+    logs_dir: &Path,
+    session_id: Option<&str>,
+    policy: &RetentionPolicy,
+    now: SystemTime,
+) -> CleanupReport {
+    let doomed = select(logs_dir, session_id, policy, now);
+    CleanupReport {
+        freed_bytes: doomed.iter().map(|(_, bytes)| bytes).sum(),
+        removed: doomed.into_iter().map(|(path, _)| path).collect(),
+        failures: Vec::new(),
+    }
+}
+
 /// Remove the files [`cleanup_plan`] selects for one session, or for every
 /// session when `session_id` is `None`.
 pub fn enforce(
@@ -154,18 +183,11 @@ pub fn enforce(
     policy: &RetentionPolicy,
     now: SystemTime,
 ) -> CleanupReport {
-    let files = scan(logs_dir, session_id);
-    let doomed = cleanup_plan(&files, policy, now);
-    let sizes: std::collections::BTreeMap<&Path, u64> = files
-        .iter()
-        .map(|file| (file.path.as_path(), file.bytes))
-        .collect();
-
     let mut report = CleanupReport::default();
-    for path in doomed {
+    for (path, bytes) in select(logs_dir, session_id, policy, now) {
         match fs::remove_file(&path) {
             Ok(()) => {
-                report.freed_bytes += sizes.get(path.as_path()).copied().unwrap_or(0);
+                report.freed_bytes += bytes;
                 report.removed.push(path);
             }
             Err(error) => report
@@ -174,6 +196,31 @@ pub fn enforce(
         }
     }
     report
+}
+
+/// The files a sweep selects, each with the size to report it by.
+///
+/// One walk feeds both [`preview`] and [`enforce`], so what a user was told
+/// would go and what goes cannot be two different sets.
+fn select(
+    logs_dir: &Path,
+    session_id: Option<&str>,
+    policy: &RetentionPolicy,
+    now: SystemTime,
+) -> Vec<(PathBuf, u64)> {
+    let files = scan(logs_dir, session_id);
+    let sizes: std::collections::BTreeMap<&Path, u64> = files
+        .iter()
+        .map(|file| (file.path.as_path(), file.bytes))
+        .collect();
+
+    cleanup_plan(&files, policy, now)
+        .into_iter()
+        .map(|path| {
+            let bytes = sizes.get(path.as_path()).copied().unwrap_or(0);
+            (path, bytes)
+        })
+        .collect()
 }
 
 /// Every Hub-written log file under `logs_dir`, optionally for one session.
@@ -404,5 +451,76 @@ mod tests {
         let report = enforce(&dir.join("does-not-exist"), None, &policy(), now());
 
         assert_eq!(report, CleanupReport::default());
+    }
+
+    /// A preview names what a sweep would take and takes nothing.
+    ///
+    /// This is the property a destructive action depends on: the user is shown
+    /// the file count and the bytes before agreeing, and the disk is exactly as
+    /// it was until they do.
+    #[test]
+    fn a_preview_reports_what_a_sweep_would_take_and_deletes_nothing() {
+        let dir = TempDir::new();
+        let kept = dir.join("svc/2026-09/run-new.log");
+        let doomed = dir.join("svc/2026-09/run-old.log");
+        fs::create_dir_all(kept.parent().expect("a month folder")).expect("creatable");
+        fs::write(&doomed, b"0123456789").expect("writable");
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(&kept, b"0123456789").expect("writable");
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+
+        let preview = cleanup_preview(dir.path(), None, &policy, now());
+
+        assert_eq!(preview.removed, vec![doomed.clone()]);
+        assert_eq!(preview.freed_bytes, 10);
+        assert!(preview.failures.is_empty());
+        assert!(
+            doomed.exists(),
+            "a preview deleted the file it was only describing"
+        );
+        assert!(kept.exists());
+    }
+
+    /// What the user was told would go is what goes.
+    ///
+    /// The two share one walk on purpose; a preview computed by a second code
+    /// path could promise a different set than the sweep removes.
+    #[test]
+    fn a_preview_and_the_sweep_that_follows_it_agree() {
+        let dir = TempDir::new();
+        for name in ["run-a.log", "run-b.log", "run-c.log"] {
+            let path = dir.join("svc/2026-09").join(name);
+            fs::create_dir_all(path.parent().expect("a month folder")).expect("creatable");
+            fs::write(&path, b"0123456789").expect("writable");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+
+        let preview = cleanup_preview(dir.path(), None, &policy, now());
+        let swept = enforce(dir.path(), None, &policy, now());
+
+        assert_eq!(preview.removed, swept.removed);
+        assert_eq!(preview.freed_bytes, swept.freed_bytes);
+    }
+
+    /// A plan nobody has confirmed is not a sweep: a directory with nothing
+    /// past keeping previews as empty rather than as an error.
+    #[test]
+    fn a_preview_of_a_session_within_its_budget_is_empty() {
+        let dir = TempDir::new();
+        let path = dir.join("svc/2026-09/run-only.log");
+        fs::create_dir_all(path.parent().expect("a month folder")).expect("creatable");
+        fs::write(&path, b"0123456789").expect("writable");
+
+        let preview = cleanup_preview(dir.path(), Some("svc"), &policy(), now());
+
+        assert_eq!(preview, CleanupReport::default());
+        assert!(path.exists());
     }
 }

@@ -226,6 +226,17 @@ describe("runOutcomeBadge / logPolicyBadge", () => {
     logSource: "captured",
   };
 
+  /// The wire spells "this run is still going" as `endedAt: null` as often as
+  /// as a missing key, and reading only the missing key files every live run
+  /// under "error" (see the note in `types/runtime.ts`).
+  it("reads both spellings of an unfinished run as running", () => {
+    expect(runOutcome({ ...live, endedAt: null, exitCode: null })).toBe("running");
+    expect(runOutcomeBadge({ ...live, endedAt: null, exitCode: null })).toEqual({
+      label: "running",
+      tone: "run",
+    });
+  });
+
   it("labels a run outcome with its tone", () => {
     expect(runOutcomeBadge(live)).toEqual({ label: "running", tone: "run" });
     expect(runOutcomeBadge({ ...live, endedAt: "2026-09-28T06:00:00Z", exitCode: 0 })).toEqual({

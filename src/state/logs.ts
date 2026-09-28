@@ -1,0 +1,245 @@
+/**
+ * Pure derivations for the Logs tab (T10 #11).
+ *
+ * Everything the tab renders by — the effective-state badge, "is this being
+ * logged?", which paths to show, what a retention sweep is about to do — is a
+ * pure function of the logging DTOs (`src/types/logs.ts`), so the component
+ * stays thin and the rules are unit-tested without a DOM. The wording follows
+ * `docs/LOGGING.md` §1.4/§9/§10 and the V2 shell's label vocabulary.
+ *
+ * ## One code path for live and preview data
+ *
+ * [`previewLogStatus`] turns a T06 fixture into the same DTO the backend
+ * answers `get_log_info` with, so the tab never branches on where its data
+ * came from. Provenance is displayed (see `useSessionLogs`), not inferred.
+ */
+
+import type { EffectiveLogModeValue, LogSourceValue } from "../types/config";
+import type { CleanupReportDto, LogStatusDto } from "../types/logs";
+import type { RunRecordDto } from "../types/runtime";
+import type { FixtureSession } from "./fixtures";
+import type { StatusTone } from "./derivations";
+
+/** Human label of the effective persistence state (`LOGGING.md` §1.4). */
+export function logStateLabel(state: LogStatusDto["state"]): string {
+  switch (state) {
+    case "off":
+      return "Off";
+    case "capturing":
+      return "Capturing";
+    case "external":
+      return "External";
+    case "on_error":
+      return "On error";
+  }
+}
+
+/** Tone for the state badge (UI_STYLE_GUIDE §10: colour is lifecycle truth).
+ *
+ * Only "recording right now" earns a colour; the states that mean "nothing is
+ * being written" stay neutral, because a green badge next to an idle session
+ * is exactly the "you thought it was recording" reading §1.4 forbids.
+ */
+export function logStateTone(state: LogStatusDto["state"]): StatusTone {
+  switch (state) {
+    case "capturing":
+      return "run";
+    case "on_error":
+    case "external":
+      return "warn";
+    case "off":
+      return "idle";
+  }
+}
+
+/**
+ * The file a "open this log" action should act on, or `undefined`.
+ *
+ * Mirrors Session Core's own resolution order: an `external` session's log
+ * belongs to the application (D-005), so the current Hub-written file is not
+ * offered for it even if a run record happens to name one.
+ */
+export function currentLogPath(status: LogStatusDto): string | undefined {
+  // `?? undefined` is not decoration: the wire says `null` for "no file", and
+  // the rest of this module asks the question with `undefined` (see the note in
+  // `types/logs.ts`).
+  return (status.source === "external" ? status.externalLog : status.logFile) ?? undefined;
+}
+
+/** Which of the tab's actions this session's policy actually offers. */
+export interface LogActionAvailability {
+  /** Open/reveal/copy the *current* run's file. */
+  openCurrent: boolean;
+  /** Commit an `on_error` run's buffer now (`LOGGING.md` §3). */
+  saveRunLog: boolean;
+  /** Switch a `manual` run's recording, or `null` when the mode is not manual. */
+  recording: "start" | "stop" | null;
+  /** Offer a retention sweep. */
+  cleanup: boolean;
+}
+
+/** Derive the action set from the effective policy, not from what renders. */
+export function logActionAvailability(status: LogStatusDto): LogActionAvailability {
+  const current = currentLogPath(status) !== undefined;
+  // `manual` reads its own switch state off the state badge: `capturing` means
+  // this run is being recorded right now (`docs/LOGGING.md` §3).
+  const recording =
+    status.mode === "manual" ? (status.state === "capturing" ? "stop" : "start") : null;
+  return {
+    openCurrent: current,
+    // Offered whenever the policy *could* produce a file on request. A run
+    // that has none yet is the case this exists for, and the backend answers
+    // with the reason when there is no run to save — better than a button that
+    // silently disappears while the session is starting.
+    saveRunLog: status.mode === "on_error" && status.source === "captured",
+    recording,
+    cleanup: true,
+  };
+}
+
+/** Path rows for the policy card, in the order a user asks about them. */
+export function logPathEntries(status: LogStatusDto): Array<{ label: string; value: string }> {
+  const entries: Array<{ label: string; value: string }> = [];
+  const current = currentLogPath(status);
+  if (current !== undefined) {
+    entries.push({
+      label: status.source === "external" ? "应用日志" : "当前运行",
+      value: current,
+    });
+  }
+  if (status.sessionLogDir != null) {
+    // An `external` session still has a Hub log folder — the one it does *not*
+    // write into. Naming it answers "where would a Hub log go?" without
+    // implying one exists there (D-011).
+    entries.push({
+      label: status.source === "external" ? "Hub 日志目录（本会话空白）" : "日志目录",
+      value: status.sessionLogDir,
+    });
+  }
+  return entries;
+}
+
+/** One-line answer to "what is the scrollback I am looking at?" (§8). */
+export function bufferNote(status: LogStatusDto): string {
+  const scope = `内存缓冲 ${formatBytes(status.buffer.bytes)} · ${status.buffer.lines} 行`;
+  if (status.buffer.droppedBytes <= 0) {
+    return `${scope} · 未写盘`;
+  }
+  return `${scope} · 更早的 ${formatBytes(status.buffer.droppedBytes)} 已丢弃`;
+}
+
+/** `12.4 MiB` / `512 B` — sizes a person reads, not byte counts. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * What a confirmed sweep would do, before it does it.
+ *
+ * A destructive action describes itself in the same units the result is
+ * reported in, and states the one rule that keeps it safe to agree to
+ * (`docs/LOGGING.md` §9: the newest run of a session is always kept).
+ */
+export function cleanupPrompt(report: CleanupReportDto): string {
+  if (report.removed.length === 0) {
+    return "没有超过保留规则的日志需要清理。";
+  }
+  return `将删除 ${report.removed.length} 个文件 · 释放 ${formatBytes(report.freedBytes)} · 最近一次运行的日志始终保留`;
+}
+
+/** What a sweep did, as the notice after it ran. */
+export function cleanupOutcome(report: CleanupReportDto): string {
+  const failed = report.failures.length;
+  if (report.removed.length === 0 && failed === 0) {
+    return "没有超过保留规则的日志需要清理。";
+  }
+  const removed = `已删除 ${report.removed.length} 个文件 · 释放 ${formatBytes(report.freedBytes)}`;
+  if (failed === 0) {
+    return removed;
+  }
+  // A folder the OS refused to clean is something the user has to know about;
+  // reporting "cleaned" over a partial sweep would be a lie of omission.
+  return `${removed} · ${failed} 个文件无法删除（${report.failures[0].message}）`;
+}
+
+/** Whether a run's row can offer the file actions. */
+export function runHasLog(run: RunRecordDto): boolean {
+  return run.logFile != null;
+}
+
+/** Run history, newest first, whatever order the source listed it in. */
+export function runsNewestFirst(runs: RunRecordDto[]): RunRecordDto[] {
+  return [...runs].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+}
+
+/**
+ * A fixture session's logging status, shaped like `get_log_info`'s answer.
+ *
+ * This is a *mirror*, not an invention: state comes from the same rule the
+ * backend applies to a configured policy (`policy_state`, `docs/LOGGING.md`
+ * §3), the paths come from the fixture's own run records, and the buffer is the
+ * fixture snapshot's. A session the backend does not know therefore renders
+ * through exactly the code path a registered one does — which is what makes
+ * the fixtures useful for looking at the tab without a live run.
+ */
+export function previewLogStatus(session: FixtureSession): LogStatusDto {
+  // The snapshot's block, not the config's: it is the same shape a live
+  // runtime reports, which is what the tab renders from.
+  const logging = session.runtime.logging;
+  // The live run's record when there is one, and otherwise the last run's —
+  // which is what a stopped session's `log_file` means in Core ("the file this
+  // session is writing now, else the one the last run left behind").
+  const currentRun =
+    session.runs.find((run) => run.runId === session.runtime.runId) ??
+    runsNewestFirst(session.runs)[0];
+  return {
+    sessionId: session.config.id,
+    mode: logging.mode,
+    source: logging.source,
+    state: policyState(logging.source, logging.mode),
+    // The Hub writes no file for an `external` session (D-005), so its current
+    // file is the application's — reported through `externalLog`, never here.
+    logFile: logging.source === "external" ? undefined : currentRun?.logFile,
+    externalLog: logging.external_path,
+    sessionLogDir: undefined,
+    recordsInput: false,
+    buffer: session.runtime.buffer,
+    truncated: false,
+    lastError: undefined,
+  };
+}
+
+/** The state a configured policy implies, for a session with no live run.
+ *
+ * The backend's `policy_state` (`src-tauri/src/logging/plan.rs`), spelled out
+ * here because a fixture has no run log to ask.
+ */
+function policyState(source: LogSourceValue, mode: EffectiveLogModeValue): LogStatusDto["state"] {
+  if (source === "none") {
+    return "off";
+  }
+  if (source === "external") {
+    return "external";
+  }
+  switch (mode) {
+    case "off":
+      return "off";
+    case "always":
+      return "capturing";
+    case "on_error":
+      return "on_error";
+    case "manual":
+      // `manual` permits recording, it does not start it (§3).
+      return "off";
+  }
+}

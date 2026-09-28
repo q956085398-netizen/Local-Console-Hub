@@ -299,11 +299,21 @@ get_run_history
 get_log_info
 save_run_log
 set_log_recording
+open_log_file
+open_log_folder
+preview_log_cleanup
+cleanup_logs
 ~~~
 
 `save_run_log` commits an `on_error` run's log on demand and `set_log_recording`
 switches a `manual` run's recording on or off (LOGGING.md §3). Both name a
 single operation; neither is a generic "do something to this session".
+
+`open_log_file` and `open_log_folder` hand one file — or the folder holding it —
+to the OS, and `preview_log_cleanup` / `cleanup_logs` are the two halves of
+retention (LOGGING.md §9, §10). They take a session id and an optional run id,
+never a path: Session Core resolves which file a session owns, and the command
+cannot be used to open anything else (DECISIONS.md D-018).
 
 Do not introduce one generic "execute arbitrary backend action" command.
 
