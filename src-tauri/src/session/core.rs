@@ -26,6 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -34,13 +35,20 @@ use crate::logging::{
     self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
     RunLogHandle, RunOutcome, Stream, TerminalBuffer, DEFAULT_LOG_LIMITS,
 };
-use crate::process::{ManagedProcess, OutputMode, ProcessSpec};
+use crate::process::{
+    ExitStatus, ManagedProcess, OutputMode, ProcessSpec, StopOutcome, StopReport,
+};
+use crate::pty::{Pty, PtySpec, DEFAULT_COLS, DEFAULT_ROWS, MAX_DIMENSION};
 
 use super::event::{
     AppSummary, AppSummaryChanged, RunRecordUpdated, SessionEvent, SessionStateChanged,
+    TerminalOutput,
 };
 use super::runtime::{RunId, RunRecord, SessionErrorInfo, SessionRuntime, Timestamp};
 use super::state::SessionStatus;
+use super::terminal::{
+    OutputBatch, OutputRelay, RetainedChunk, TerminalAttachment, TerminalPump, PUMP_TICK,
+};
 
 /// Something that wants to hear about lifecycle changes.
 ///
@@ -174,7 +182,7 @@ struct SessionState {
     runtime: SessionRuntime,
     /// The current run, shared with its watcher so the watcher can wait on it
     /// without holding this lock.
-    run: Option<Arc<ManagedProcess>>,
+    run: Option<Run>,
     /// Bumped on every start. A watcher captures the generation it was started
     /// for and refuses to publish an exit that belongs to a superseded run.
     generation: u64,
@@ -189,15 +197,279 @@ struct SessionState {
     /// the logging policy is. Shared rather than owned so a reader outside this
     /// lock can hold the scrollback while a batch arrives.
     buffer: Arc<Mutex<TerminalBuffer>>,
+    /// How this session's output becomes the batches the UI is sent (T07).
+    ///
+    /// Driven under this lock, so the offset it reports and the scrollback it
+    /// describes are always read together (`session::terminal`).
+    relay: OutputRelay,
     /// The current run's log, present while a run is in flight.
     log: Option<Arc<RunLogHandle>>,
     /// The threads reading the run's pipes, if it was started with capture.
     pump_drain: Option<PumpDrain>,
+    /// The thread reading a terminal's output, for a terminal run.
+    terminal_pump: Option<TerminalPump>,
+    /// The geometry a terminal view has asked for (T07).
+    ///
+    /// Remembered while no terminal is running: the view knows its own size
+    /// before the session starts, and a shell spawned at the default 80×24 and
+    /// corrected a moment later would render its first screen at the wrong
+    /// width — for a shell that draws a progress bar or wraps a banner, the
+    /// corrected screen is not the same screen. `None` means the view has not
+    /// said, and the PTY layer's default applies.
+    terminal_size: Option<(u16, u16)>,
     /// Why logging is not working as configured, kept after the run's log is
     /// closed: a run whose file never appeared has to stay explainable
     /// (`docs/LOGGING.md` §1.4 — the user must never be left thinking output is
     /// being recorded when it is not).
     log_problem: Option<LogError>,
+}
+
+/// One session's current run, whichever kind it is.
+///
+/// A service runs as a supervised process (T03) and an interactive terminal as
+/// a PTY (T02); the lifecycle above them is the same one, so the difference is
+/// confined to this enum rather than to two copies of the state machine. The
+/// methods here are exactly the questions the lifecycle asks of a run.
+///
+/// Cloning it clones a handle (`Arc`), never a run: a caller that needs to work
+/// on a run without holding the session lock takes one of these, and the run it
+/// refers to is the same run.
+#[derive(Clone)]
+enum Run {
+    Process(Arc<ManagedProcess>),
+    Terminal(Arc<Pty>),
+}
+
+impl Run {
+    /// The terminal this run hosts, for the operations only a terminal has
+    /// (typing into it, resizing it). `None` for a supervised process, which
+    /// has no attached stdin in the MVP.
+    fn as_terminal(&self) -> Option<&Arc<Pty>> {
+        match self {
+            Run::Process(_) => None,
+            Run::Terminal(pty) => Some(pty),
+        }
+    }
+
+    /// Wait up to `timeout` for the run to end on its own.
+    fn wait_for_exit(&self, timeout: std::time::Duration) -> Option<ExitStatus> {
+        match self {
+            Run::Process(run) => run.wait_for_exit(timeout),
+            Run::Terminal(pty) => pty.wait_for_exit(timeout),
+        }
+    }
+
+    fn exit_status(&self) -> Option<ExitStatus> {
+        match self {
+            Run::Process(run) => run.exit_status(),
+            Run::Terminal(pty) => pty.exit_status(),
+        }
+    }
+
+    /// End the run, waiting at most `timeout` for a graceful exit.
+    ///
+    /// The two kinds do not share a ladder, and that is the platform's answer
+    /// rather than a shortcut here: a supervised service is asked to stop and
+    /// then has to be terminated (`docs/DECISIONS.md` D-007), while a terminal's
+    /// graceful gesture is *input* — Ctrl+C, which the user sends through the
+    /// keyboard and which does not close the session (spec §7). Closing a
+    /// terminal is closing the console, so there is nothing to ask gracefully;
+    /// [`Pty::kill`] terminates the shell and confirms it is gone.
+    fn stop(&self, timeout: std::time::Duration) -> Result<StopReport, String> {
+        match self {
+            Run::Process(run) => run.stop(timeout).map_err(|error| error.to_string()),
+            Run::Terminal(pty) => stop_terminal(pty),
+        }
+    }
+
+    /// End the run now, without waiting for it to unwind.
+    fn force_stop(&self) -> Result<StopReport, String> {
+        match self {
+            Run::Process(run) => run.force_stop().map_err(|error| error.to_string()),
+            Run::Terminal(pty) => stop_terminal(pty),
+        }
+    }
+}
+
+/// Close a terminal and confirm the shell is gone.
+///
+/// `Pty::kill` is its own barrier — it returns `Ok` only once the shell's exit
+/// has been observed (`crate::pty`) — so the report describes an outcome that
+/// has already happened. `graceful_delivered` is `false` because no signal was
+/// delivered: there is no graceful channel to a console, and claiming one
+/// would tell the UI a courtesy was extended that never was (the same reason
+/// the process layer reports that flag rather than assuming it).
+fn stop_terminal(pty: &Pty) -> Result<StopReport, String> {
+    let already_exited = pty.exit_status();
+    pty.kill().map_err(|error| error.to_string())?;
+    Ok(StopReport {
+        outcome: match already_exited {
+            Some(_) => StopOutcome::AlreadyExited,
+            None => StopOutcome::Exited,
+        },
+        exit: pty.exit_status().unwrap_or(ExitStatus { code: None }),
+        graceful_delivered: false,
+    })
+}
+
+/// What a start will spawn, decided before anything is mutated.
+///
+/// Resolving this first is what keeps "a session that cannot start" from
+/// passing through `Starting`: an unusable shell or command is refused while
+/// the session is still exactly as it was.
+#[derive(Debug)]
+enum StartSpec {
+    Process(ProcessSpec),
+    Terminal(PtySpec),
+}
+
+/// A run that has been spawned but not yet wired into its session.
+enum Spawned {
+    Process(ManagedProcess),
+    Terminal(Arc<Pty>),
+}
+
+impl Spawned {
+    fn pid(&self) -> u32 {
+        match self {
+            Spawned::Process(run) => run.pid(),
+            Spawned::Terminal(pty) => pty.pid(),
+        }
+    }
+}
+
+/// What a successful start still has to wire, once the state is `Running`.
+///
+/// The generation travels with it so the watcher that is started afterwards
+/// waits on the run this start produced, not on whatever replaced it.
+enum Started {
+    Process {
+        output: Option<crate::process::ProcessOutput>,
+        generation: u64,
+    },
+    Terminal {
+        pty: Arc<Pty>,
+        generation: u64,
+        /// The configured `initial_command`, typed once the terminal is up.
+        initial: Option<String>,
+    },
+}
+
+impl Started {
+    fn generation(&self) -> u64 {
+        match self {
+            Started::Process { generation, .. } | Started::Terminal { generation, .. } => {
+                *generation
+            }
+        }
+    }
+}
+
+/// Build the spec for a startable session, or explain why it has none.
+///
+/// The session's type decides which layer hosts it: a service is a supervised
+/// process (T03), an interactive terminal is a PTY (T02, T07). One dispatch
+/// rather than a type check inside each builder, so neither builder can be
+/// asked to host something it does not own.
+fn start_spec(
+    config: &SessionConfig,
+    terminal_size: Option<(u16, u16)>,
+    id: &str,
+    planned: &PlannedRun,
+) -> Result<StartSpec, SessionError> {
+    match config.session_type {
+        SessionType::Service => process_spec(config, id, planned).map(StartSpec::Process),
+        SessionType::Terminal => terminal_spec(config, terminal_size, id).map(StartSpec::Terminal),
+    }
+}
+
+/// Build the spec for an interactive terminal.
+///
+/// `shell` may carry arguments (`pwsh -NoProfile`), split exactly as a
+/// service's `command` is, so the two configuration forms behave alike. The
+/// geometry is the one a view asked for, or the PTY layer's default before any
+/// view has said (T07).
+fn terminal_spec(
+    config: &SessionConfig,
+    terminal_size: Option<(u16, u16)>,
+    id: &str,
+) -> Result<PtySpec, SessionError> {
+    const OPERATION: &str = "start";
+
+    // Validation (T01) guarantees both of these for a terminal session; the
+    // checks are here for the same reason `process_spec` has them — the
+    // message a user needs if a config ever reaches here through some other
+    // path, rather than a panic or a shell in the wrong directory.
+    let shell = config
+        .shell
+        .as_deref()
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .ok_or_else(|| {
+            SessionError::failed(
+                id,
+                OPERATION,
+                format!("session `{id}` has no `shell` to host on a terminal"),
+                None,
+            )
+        })?;
+    let Some(cwd) = config.cwd.clone() else {
+        return Err(SessionError::failed(
+            id,
+            OPERATION,
+            format!(
+                "session `{id}` has no `cwd`; add one so the terminal opens in a known \
+                 directory"
+            ),
+            None,
+        ));
+    };
+    let (program, args) = split_command(shell).map_err(|reason| {
+        SessionError::failed(
+            id,
+            OPERATION,
+            format!("session `{id}` has an unusable shell: {reason}"),
+            None,
+        )
+    })?;
+
+    let (cols, rows) = terminal_size.unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
+    Ok(PtySpec::new(program, cwd)
+        .with_args(args)
+        .with_size(cols, rows))
+}
+
+/// Read an interactive terminal's output into its session, until it stops.
+///
+/// The loop is the terminal's whole output path: it takes what the console
+/// host produced, hands it to the session (which is where the scrollback, the
+/// run log and the batches the UI is sent all come from), and publishes what
+/// is due on every tick. It ends when the run is over — the caller sets the
+/// flag once the run has been finalized — or when the console host itself has
+/// gone away.
+fn pump_terminal(
+    core: SessionCore,
+    session_id: String,
+    generation: u64,
+    pty: Arc<Pty>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+
+    loop {
+        match pty.read_output(PUMP_TICK) {
+            Some(chunk) => core.take_output_batch(&session_id, generation, Stream::Stdout, &chunk),
+            // Nothing arrived: this is the tick that publishes output which has
+            // waited out its batch window.
+            None => core.flush_output(&session_id, generation, false),
+        }
+        if stop.load(Ordering::Acquire) || pty.output_ended() {
+            break;
+        }
+    }
+    // The last bytes of a run must not wait for a window that will never be
+    // needed again.
+    core.flush_output(&session_id, generation, true);
 }
 
 /// The registry plus everything needed to publish.
@@ -304,8 +576,11 @@ impl SessionCore {
                 generation: 0,
                 record: None,
                 buffer: Arc::new(Mutex::new(TerminalBuffer::new(self.scrollback))),
+                relay: OutputRelay::new(),
                 log: None,
                 pump_drain: None,
+                terminal_pump: None,
+                terminal_size: None,
                 log_problem: None,
             })),
         );
@@ -442,9 +717,9 @@ impl SessionCore {
             // find that out before it has a process, not after.
             let planned = self.plan_run(&state.config, session_id);
 
-            // Refuse before mutating anything: a session with no usable
-            // command has not "tried to start".
-            let spec = process_spec(&state.config, session_id, &planned)?;
+            // Refuse before mutating anything: a session that cannot be
+            // started has not "tried to start".
+            let spec = start_spec(&state.config, state.terminal_size, session_id, &planned)?;
 
             state.runtime.status = SessionStatus::Starting;
             state.runtime.last_error = None;
@@ -454,25 +729,22 @@ impl SessionCore {
         // keep the action buttons from lying about what is happening.
         self.publish_state_and_summary(session_id);
 
-        let spawned = ManagedProcess::spawn(spec);
+        let spawned = match spec {
+            StartSpec::Process(spec) => ManagedProcess::spawn(spec)
+                .map(Spawned::Process)
+                .map_err(|error| error.to_string()),
+            StartSpec::Terminal(spec) => Pty::spawn(spec)
+                .map(|pty| Spawned::Terminal(Arc::new(pty)))
+                .map_err(|error| error.to_string()),
+        };
 
         let outcome = {
             let mut state = lock(&handle);
 
             match spawned {
-                Ok(run) => {
-                    let pid = run.pid();
+                Ok(spawned) => {
+                    let pid = spawned.pid();
                     let started_at = planned.started_at;
-                    // Taken before the run goes into the registry: the pumping
-                    // threads are started once this lock is released, and an
-                    // untaken pipe would leave a chatty service blocked on its
-                    // own output.
-                    let output = planned
-                        .plan
-                        .persistence
-                        .captures_output()
-                        .then(|| run.take_output())
-                        .flatten();
 
                     let log = Arc::new(RunLogHandle::new(RunLog::start(
                         planned.plan.persistence.clone(),
@@ -499,7 +771,11 @@ impl SessionCore {
                     // The generation marks this run; a watcher started for it
                     // must not be able to publish an exit against a later one.
                     state.generation += 1;
-                    state.run = Some(Arc::new(run));
+                    // The relay's offsets start over with the run they belong
+                    // to; a view attached to the previous run must not be able
+                    // to confuse its tail with this one's head.
+                    let generation = state.generation;
+                    state.relay.begin(generation);
                     state.record = Some(record);
                     state.log = Some(Arc::clone(&log));
                     state.log_problem = planned.plan.problem.clone();
@@ -512,13 +788,58 @@ impl SessionCore {
                     state.runtime.exit_code = None;
                     state.runtime.status = SessionStatus::Running;
 
-                    Ok((state.runtime.clone(), output, state.generation))
+                    let started = match spawned {
+                        Spawned::Process(run) => {
+                            // Taken before the run goes into the registry: the
+                            // pumping threads are started once this lock is
+                            // released, and an untaken pipe would leave a
+                            // chatty service blocked on its own output.
+                            let output = planned
+                                .plan
+                                .persistence
+                                .captures_output()
+                                .then(|| run.take_output())
+                                .flatten();
+                            state.run = Some(Run::Process(Arc::new(run)));
+                            state.runtime.pty_attached = false;
+                            Started::Process {
+                                output,
+                                generation: state.generation,
+                            }
+                        }
+                        Spawned::Terminal(pty) => {
+                            // The reader is started and registered under this
+                            // same lock: a stop arriving between the state
+                            // update and the registration would find no reader
+                            // to end, and the thread would then outlive the run
+                            // it was reading for.
+                            let stop = TerminalPump::stop_flag();
+                            let reader = Arc::clone(&stop);
+                            let core = self.clone();
+                            let id = session_id.to_owned();
+                            let generation = state.generation;
+                            let read = Arc::clone(&pty);
+                            let handle = std::thread::spawn(move || {
+                                pump_terminal(core, id, generation, read, reader);
+                            });
+                            state.terminal_pump = Some(TerminalPump::new(stop, handle));
+                            state.run = Some(Run::Terminal(Arc::clone(&pty)));
+                            state.runtime.pty_attached = true;
+                            Started::Terminal {
+                                pty,
+                                generation: state.generation,
+                                initial: state.config.initial_command.clone(),
+                            }
+                        }
+                    };
+
+                    Ok((state.runtime.clone(), started))
                 }
-                Err(error) => {
-                    let message = error.to_string();
+                Err(message) => {
                     state.runtime.status = SessionStatus::Error;
                     state.runtime.pid = None;
                     state.runtime.run_id = None;
+                    state.runtime.pty_attached = false;
                     state.run = None;
                     state.record = None;
                     state.log = None;
@@ -540,12 +861,21 @@ impl SessionCore {
         // Published after the session lock is released, so a sink can never
         // deadlock against the operation that produced the event.
         match outcome {
-            Ok((runtime, output, generation)) => {
-                // Capture is wired before anything is published or watched: a
-                // run can exit instantly, and a watcher that got there first
-                // would close the log before the pipes that feed it were even
-                // handed over — losing the whole of a short run's output.
-                self.start_capturing(session_id, generation, output);
+            Ok((runtime, started)) => {
+                // The run's output is wired before anything is published or
+                // watched: a run can exit instantly, and a watcher that got
+                // there first would close the log before the pipes (or the
+                // terminal) that feed it were even handed over — losing the
+                // whole of a short run's output.
+                let generation = started.generation();
+                match started {
+                    Started::Process { output, .. } => {
+                        self.start_capturing(session_id, generation, output);
+                    }
+                    Started::Terminal { pty, initial, .. } => {
+                        self.type_initial_command(session_id, &pty, initial.as_deref());
+                    }
+                }
                 self.publish_ending(session_id);
 
                 // Started only after `Running` is on the wire. A run can end very
@@ -615,34 +945,123 @@ impl SessionCore {
         }
     }
 
-    /// Take one batch of a run's captured output.
+    /// Type a terminal's configured `initial_command` into it.
     ///
-    /// Reached from a pumping thread, never from a lifecycle call. The
-    /// generation check is what keeps a superseded run's last bytes out of the
-    /// session's buffer: after a restart, output that was already in the pipe
-    /// belongs to the run that produced it, and showing it as the new run's
-    /// output would be a lie the user cannot detect.
-    fn take_output_batch(&self, session_id: &str, generation: u64, stream: Stream, bytes: &[u8]) {
+    /// Sent as input rather than assembled onto the shell's command line: it
+    /// works for every shell without the session layer having to learn each
+    /// one's "run this, then stay interactive" flag, and it is what actually
+    /// happens — the command appears in the terminal as if it had been typed,
+    /// which is also why the screen afterwards is explainable.
+    ///
+    /// A failure here is not a failed start: the terminal is up and the user
+    /// can type. It is recorded as the session's last error, where it sits next
+    /// to a running terminal that plainly did not run the command.
+    fn type_initial_command(&self, session_id: &str, pty: &Pty, command: Option<&str>) {
+        let Some(command) = command.map(str::trim).filter(|line| !line.is_empty()) else {
+            return;
+        };
         let Some(handle) = self.handle(session_id) else {
             return;
         };
-        let mut state = lock(&handle);
-        if state.generation != generation {
-            return;
-        }
 
-        // The run's log first, then the session's scrollback: a batch that
-        // reaches the buffer but not the file would be a scrollback a user can
-        // read but cannot recover, which is the one direction D-004 lets us
-        // choose (memory is replenishable; a lost log is not).
-        if let Some(log) = state.log.as_ref() {
-            log.append(stream, bytes);
+        // Enter is carried as a carriage return, which is the byte a terminal
+        // sends for the Enter key (`crate::pty`).
+        let mut line = command.as_bytes().to_vec();
+        line.push(b'\r');
+
+        if let Err(error) = pty.write(&line) {
+            lock(&handle).runtime.last_error = Some(SessionErrorInfo {
+                operation: "start".to_owned(),
+                message: format!(
+                    "session `{session_id}` started, but its `initial_command` could not be \
+                     sent to the terminal: {error}"
+                ),
+            });
         }
-        state.runtime.buffer = {
-            let mut buffer = lock(&state.buffer);
-            buffer.push(stream, bytes);
-            buffer.summary()
+    }
+
+    /// Take one batch of a run's output.
+    ///
+    /// Reached from a pumping thread — a service's pipe reader or a terminal's
+    /// [`pump_terminal`] — never from a lifecycle call. The generation check is
+    /// what keeps a superseded run's last bytes out of the session's buffer:
+    /// after a restart, output that was already in the pipe belongs to the run
+    /// that produced it, and showing it as the new run's output would be a lie
+    /// the user cannot detect.
+    ///
+    /// The bytes go to three places, in this order, and the order is the
+    /// decision D-004 records: the run's log first, then the session's
+    /// scrollback, then the UI. A batch that reached the buffer but not the
+    /// file would be a scrollback a user can read but cannot recover (memory
+    /// is replenishable; a lost log is not), and a batch the UI missed is
+    /// recoverable from the scrollback on the next attach.
+    fn take_output_batch(&self, session_id: &str, generation: u64, stream: Stream, bytes: &[u8]) {
+        let batch = {
+            let Some(handle) = self.handle(session_id) else {
+                return;
+            };
+            let mut state = lock(&handle);
+            if state.generation != generation {
+                return;
+            }
+
+            if let Some(log) = state.log.as_ref() {
+                log.append(stream, bytes);
+            }
+            state.runtime.buffer = {
+                let mut buffer = lock(&state.buffer);
+                buffer.push(stream, bytes);
+                buffer.summary()
+            };
+
+            // Published after the lock is released: the relay advances the
+            // offset an attachment reads at the same moment the scrollback
+            // takes these bytes, and a sink must not be able to deadlock
+            // against the operation that produced its event.
+            state.relay.push(generation, bytes, Instant::now())
         };
+
+        if let Some(batch) = batch {
+            self.publish_output(session_id, &batch);
+        }
+    }
+
+    /// Publish whatever of a session's output is due.
+    ///
+    /// `force` publishes bytes that have not yet reached their batch window,
+    /// which is what a run ending needs: the last lines of a session must not
+    /// wait for a window nothing will ever open again.
+    ///
+    /// A no-op for a generation that is no longer current — checkable, since a
+    /// reader thread can outlive the run it was reading for by a few bytes.
+    fn flush_output(&self, session_id: &str, generation: u64, force: bool) {
+        let Some(handle) = self.handle(session_id) else {
+            return;
+        };
+
+        let batches = {
+            let mut state = lock(&handle);
+            if state.generation != generation {
+                return;
+            }
+            let mut batches = Vec::new();
+            while let Some(batch) = state.relay.take(Instant::now(), force) {
+                batches.push(batch);
+            }
+            batches
+        };
+
+        for batch in &batches {
+            self.publish_output(session_id, batch);
+        }
+    }
+
+    /// Announce one batch of a run's output to the listeners.
+    fn publish_output(&self, session_id: &str, batch: &OutputBatch) {
+        self.sink
+            .publish(SessionEvent::TerminalOutput(TerminalOutput::from_batch(
+                session_id, batch,
+            )));
     }
 
     /// Stop a session, giving it the default grace period to unwind.
@@ -838,6 +1257,197 @@ impl SessionCore {
         Some(buffer.chunks().cloned().collect())
     }
 
+    /// What a terminal view needs to start rendering a session's stream.
+    ///
+    /// A terminal view is created when the user selects a session, and again
+    /// whenever it is shown after being hidden — but the session itself is not
+    /// restarted by either, so the view has to be able to pick up a stream that
+    /// is already in flight. This answers with the retained scrollback, the
+    /// run's generation, and the byte offset the scrollback reaches: the view
+    /// replays the chunks, then appends the batches whose `end` is beyond that
+    /// offset and drops the ones it has already shown — append or drop, never
+    /// splice.
+    ///
+    /// That rule only holds if no batch can *straddle* the offset, and the
+    /// flush below is what buys it. Output taken but not yet published would
+    /// otherwise be published later as a batch starting before this offset and
+    /// ending after it, and a view that has already replayed those bytes would
+    /// have to cut the batch in half. Publishing what is pending, in the same
+    /// lock hold that reads the offset, makes the offset a batch boundary by
+    /// construction: every later batch starts exactly where this one ended.
+    ///
+    /// Answering for a session that is not running is deliberate: the view
+    /// renders the last run's scrollback under its "not running" state rather
+    /// than an empty panel that pretends there is nothing to see.
+    pub fn terminal_attachment(
+        &self,
+        session_id: &str,
+    ) -> Result<TerminalAttachment, SessionError> {
+        const OPERATION: &str = "attach_terminal";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        // Cut, read and release under one lock (see the note above); the
+        // batches go out once it is released, as every publish in this module
+        // does.
+        let (attached, batches) = {
+            let mut state = lock(&handle);
+
+            let mut batches = Vec::new();
+            while let Some(batch) = state.relay.take(Instant::now(), true) {
+                batches.push(batch);
+            }
+
+            let (chunks, summary) = {
+                let buffer = lock(&state.buffer);
+                let chunks = buffer.chunks().map(RetainedChunk::encode).collect();
+                (chunks, buffer.summary())
+            };
+
+            let attached = TerminalAttachment {
+                session_id: session_id.to_owned(),
+                pty_attached: state.runtime.pty_attached,
+                generation: state.relay.generation(),
+                emitted: state.relay.emitted(),
+                chunks,
+                buffer: summary,
+            };
+            (attached, batches)
+        };
+
+        for batch in &batches {
+            self.publish_output(session_id, batch);
+        }
+        Ok(attached)
+    }
+
+    /// Send input to a session's terminal.
+    ///
+    /// Keystrokes go to the shell exactly as a terminal would deliver them, so
+    /// Ctrl+C is the byte `0x03` travelling this way rather than an operation
+    /// of its own: it interrupts what the shell is running, and does not close
+    /// the session (spec §7). Only an interactive terminal has this path — a
+    /// supervised service in the MVP runs without an attached stdin, and saying
+    /// so beats accepting bytes that would go nowhere.
+    pub fn terminal_write(&self, session_id: &str, bytes: &[u8]) -> Result<(), SessionError> {
+        const OPERATION: &str = "terminal_write";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        /// Where input could go for this session right now.
+        enum Input {
+            Pty(Arc<Pty>),
+            /// A supervised run, which has no attached stdin in the MVP.
+            Unattached,
+            /// Nothing is running.
+            Idle,
+        }
+
+        let (input, session_type) = {
+            let state = lock(&handle);
+            // A session accepts input while it is *running*: the handle alone
+            // is not enough, because a session that has been stopped keeps it
+            // (as a stopped service keeps its process handle) and the shell
+            // behind it is gone.
+            let input = match (&state.run, state.runtime.status) {
+                (Some(Run::Terminal(pty)), SessionStatus::Running) => Input::Pty(Arc::clone(pty)),
+                (Some(Run::Process(_)), _) => Input::Unattached,
+                _ => Input::Idle,
+            };
+            (input, state.config.session_type)
+        };
+
+        match input {
+            Input::Pty(pty) => pty.write(bytes).map_err(|error| {
+                SessionError::failed(session_id, OPERATION, error.to_string(), None)
+            }),
+            Input::Unattached => Err(SessionError::unsupported(
+                session_id,
+                OPERATION,
+                format!(
+                    "session `{session_id}` runs as a supervised service, which has no \
+                     attached stdin to type into"
+                ),
+            )),
+            Input::Idle => Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                match session_type {
+                    SessionType::Terminal => format!(
+                        "session `{session_id}` has no running terminal; start it before \
+                         typing into it"
+                    ),
+                    SessionType::Service => format!(
+                        "session `{session_id}` is not running, and a service has no \
+                         attached stdin to type into"
+                    ),
+                },
+                None,
+            )),
+        }
+    }
+
+    /// Tell a session's terminal how large its view is.
+    ///
+    /// A live terminal is resized immediately. One that is not running
+    /// *remembers* the size instead of refusing it, and that is the interesting
+    /// half: a shell is started at the geometry its view has already measured,
+    /// so its first screen is drawn at the right width rather than at the
+    /// default and re-flowed a moment later. A resize is also not a user
+    /// command that can fail — the view reports its own size whenever it
+    /// changes — so a size arriving for a stopped session is not an error.
+    pub fn terminal_resize(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), SessionError> {
+        const OPERATION: &str = "terminal_resize";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        if cols == 0 || rows == 0 || cols > MAX_DIMENSION || rows > MAX_DIMENSION {
+            return Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                format!(
+                    "a terminal needs at least 1x1 and at most {MAX_DIMENSION}x{MAX_DIMENSION} \
+                     cells, got {cols}x{rows}"
+                ),
+                None,
+            ));
+        }
+
+        let live = {
+            let mut state = lock(&handle);
+            state.terminal_size = Some((cols, rows));
+            state.run.as_ref().and_then(Run::as_terminal).cloned()
+        };
+
+        if let Some(pty) = live {
+            pty.resize(cols, rows).map_err(|error| {
+                SessionError::failed(session_id, OPERATION, error.to_string(), None)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Every registered session's validated configuration, in id order.
+    ///
+    /// The window renders a session from its configuration (name, purpose,
+    /// close impact, port, cwd) and its snapshot (state, pid, uptime); this is
+    /// the first half, and it is the same set the snapshots come from — one
+    /// registry, so a session the window lists is one Session Core can act on.
+    pub fn configs(&self) -> Vec<SessionConfig> {
+        lock(&self.sessions)
+            .values()
+            .map(|state| lock(state).config.clone())
+            .collect()
+    }
+
     /// Commit the current run's `on_error` log now, instead of waiting for the
     /// run to end (`docs/LOGGING.md` §3: "save this run's log").
     ///
@@ -968,6 +1578,28 @@ impl SessionCore {
         // lines a user opens it for.
         if let Some(drain) = lock(handle).pump_drain.take() {
             drain.wait();
+        }
+
+        // A terminal's reader is stopped rather than waited for. The console
+        // host outlives the shell it hosted (`crate::pty`), so a reader that
+        // only stopped when its stream ended would keep reading a terminal
+        // that is over until the session's next run replaced it — an invisible
+        // terminal still working, which spec §14 rules out. Stopping it takes
+        // the last of the output with it: the reader flushes before it returns.
+        //
+        // Taken out of the lock before it is waited on, and not joined from
+        // inside a guard: that flush needs this very lock, so waiting on the
+        // thread with it held would wait forever.
+        let pump = lock(handle).terminal_pump.take();
+        if let Some(pump) = pump {
+            pump.stop_and_wait();
+        }
+
+        // Anything taken but not yet published is due: the run is over, so no
+        // batch window will open for these bytes again.
+        {
+            let generation = lock(handle).generation;
+            self.flush_output(session_id, generation, true);
         }
 
         let record = {
@@ -1208,6 +1840,11 @@ impl SessionState {
         self.runtime.status = status;
         self.runtime.exit_code = code;
         self.runtime.pid = None;
+        // Nothing is attached to a session that is not running. The terminal
+        // handle stays where it is (as a stopped service's process handle
+        // does) and is released when the next run replaces it; what must not
+        // survive is the claim that a terminal view could type into it.
+        self.runtime.pty_attached = false;
 
         if let Some(record) = self.record.as_mut() {
             record.ended_at = Some(Timestamp::now());
@@ -1330,7 +1967,7 @@ fn watch_run(
             return;
         }
         match &state.run {
-            Some(run) => Arc::clone(run),
+            Some(run) => run.clone(),
             None => return,
         }
     };
@@ -1343,6 +1980,12 @@ fn watch_run(
         if lock(&handle).generation != generation {
             return;
         }
+        // This tick is also the pipeline's slow flush for a run whose output
+        // arrives in bursts that never fill a batch: a service's reader has no
+        // tick of its own (it blocks on the pipe), so without this the last
+        // lines before a quiet spell would sit unpublished. For a terminal the
+        // reader ticks faster and this is usually a no-op.
+        core.flush_output(&session_id, generation, false);
     }
 
     let ending = {
@@ -1387,12 +2030,11 @@ fn watch_run(
     core.publish_ending(&session_id);
 }
 
-/// Build the spec for a startable session, or explain why it has none.
+/// Build the spec for a supervised service run, or explain why there is none.
 ///
-/// Only service sessions get a supervised process here. A terminal session's
-/// run is a PTY, which T07 wires to this timeline; spawning a plain process
-/// for one now would be a second, competing terminal implementation
-/// (EXECUTION_PLAN §2.3).
+/// Reached only for a service session ([`start_spec`] dispatches by type); a
+/// terminal's run is a PTY, which T02 hosts and T07 wires to this same
+/// timeline.
 ///
 /// The run's resolved logging decides whether its output is piped back: a
 /// session whose policy captures (`docs/LOGGING.md` §8 — every session keeps a
@@ -1405,17 +2047,6 @@ fn process_spec(
     planned: &PlannedRun,
 ) -> Result<ProcessSpec, SessionError> {
     const OPERATION: &str = "start";
-
-    if config.session_type != SessionType::Service {
-        return Err(SessionError::unsupported(
-            id,
-            OPERATION,
-            format!(
-                "session `{id}` is an interactive terminal; its run is a PTY, which T07 \
-                 attaches — Session Core does not start one"
-            ),
-        ));
-    }
 
     let Some(command) = config.command.as_deref() else {
         return Err(SessionError::failed(
@@ -2167,20 +2798,76 @@ mod tests {
         assert!(error.message.contains("cwd"), "message: {}", error.message);
     }
 
-    /// `process_spec` is the seam between a configured session and a supervised
-    /// run; only services have one until T07 wires terminals.
+    /// The seam between a configured session and the run it gets: a service is
+    /// supervised (T03), an interactive terminal is hosted on a PTY (T02,
+    /// wired here by T07 #8). The dispatch is by session type, so neither
+    /// builder can be asked to host something it does not own.
     #[test]
-    fn a_terminal_session_has_no_supervised_process() {
+    fn a_terminal_is_hosted_on_a_terminal_and_a_service_on_a_supervised_process() {
+        let mut terminal = service("term");
+        terminal.session_type = SessionType::Terminal;
+        terminal.command = None;
+        terminal.shell = Some("powershell".to_owned());
+        terminal.cwd = Some(PathBuf::from("C:\\work"));
+
+        match start_spec(&terminal, None, "term", &planned_for(&terminal)).expect("a terminal spec")
+        {
+            StartSpec::Terminal(spec) => {
+                assert_eq!(spec.program, PathBuf::from("powershell"));
+                assert_eq!(spec.cwd, PathBuf::from("C:\\work"));
+                assert_eq!(
+                    (spec.cols, spec.rows),
+                    (DEFAULT_COLS, DEFAULT_ROWS),
+                    "a view that has not measured itself gets the PTY default"
+                );
+            }
+            StartSpec::Process(_) => panic!("a terminal must not run as a supervised process"),
+        }
+
+        let service = service("svc");
+        match start_spec(&service, None, "svc", &planned_for(&service)).expect("a service spec") {
+            StartSpec::Process(spec) => assert_eq!(spec.program, PathBuf::from("cmd.exe")),
+            StartSpec::Terminal(_) => panic!("a service must not be hosted on a terminal"),
+        }
+    }
+
+    /// A view measures itself before its session starts, and that measurement
+    /// is what the shell is born with (T07): a shell started at the default and
+    /// corrected a moment later draws its first screen at the wrong width.
+    #[test]
+    fn a_terminal_is_hosted_at_the_geometry_its_view_asked_for() {
+        let mut terminal = service("term");
+        terminal.session_type = SessionType::Terminal;
+        terminal.command = None;
+        terminal.shell = Some("powershell".to_owned());
+        terminal.cwd = Some(PathBuf::from("C:\\work"));
+
+        match start_spec(&terminal, Some((120, 30)), "term", &planned_for(&terminal))
+            .expect("a terminal spec")
+        {
+            StartSpec::Terminal(spec) => assert_eq!((spec.cols, spec.rows), (120, 30)),
+            StartSpec::Process(_) => panic!("a terminal must not run as a supervised process"),
+        }
+    }
+
+    /// A terminal's `shell` is required for the same reason a service's
+    /// `command` is: the refusal names what is missing rather than hosting
+    /// something arbitrary.
+    #[test]
+    fn a_terminal_without_a_shell_is_refused_with_a_reason() {
         let mut config = service("term");
         config.session_type = SessionType::Terminal;
         config.command = None;
-        config.shell = Some("powershell".to_owned());
+        config.shell = None;
 
-        let error =
-            process_spec(&config, "term", &planned_for(&config)).expect_err("terminals are T07");
-        assert_eq!(error.kind, SessionErrorKind::Unsupported);
+        let error = start_spec(&config, None, "term", &planned_for(&config)).expect_err("refused");
+        assert_eq!(error.kind, SessionErrorKind::Failed);
         assert_eq!(error.session_id, "term");
-        assert!(error.message.contains("T07"), "message: {}", error.message);
+        assert!(
+            error.message.contains("shell"),
+            "message: {}",
+            error.message
+        );
     }
 
     /// The pipe decision is made from the resolved policy, not from the
@@ -2874,6 +3561,549 @@ mod tests {
             wait_until("the short run's output to reach its file", || {
                 read(&file).contains("gone-already")
             });
+        }
+    }
+
+    /// The terminal half of Session Core (T07 #8).
+    ///
+    /// These host a real PowerShell, like T02's own tests: the PTY contract was
+    /// validated there, so what is under test here is what the *session* makes
+    /// of it — which kind of run a terminal session starts, where its output
+    /// goes, what the offsets an attached view reads actually promise, and what
+    /// happens to the shell when the session is stopped.
+    mod terminal_tests {
+        use super::*;
+        use crate::pty::INTERRUPT_BYTE;
+
+        /// The absolute path T02's tests use, so these do not depend on how
+        /// PATH happens to be set in the environment the tests run in.
+        const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe";
+
+        /// Cold PowerShell on a busy machine can take a while to render its
+        /// first prompt.
+        const STARTUP: std::time::Duration = std::time::Duration::from_secs(40);
+
+        fn terminal(id: &str) -> SessionConfig {
+            SessionConfig {
+                id: id.to_owned(),
+                name: format!("Terminal {id}"),
+                session_type: SessionType::Terminal,
+                cwd: Some(test_cwd()),
+                command: None,
+                url: None,
+                port: None,
+                purpose: None,
+                close_impact: None,
+                shell: Some(format!("{POWERSHELL} -NoLogo -NoProfile")),
+                initial_command: None,
+                // A terminal's default policy: nothing is persisted
+                // (`docs/LOGGING.md` §1.2), while its scrollback is still kept.
+                logging: EffectiveLogging {
+                    mode: EffectiveLogMode::Off,
+                    source: LogSource::None,
+                    external_path: None,
+                },
+            }
+        }
+
+        fn core_with_terminal(
+            id: &str,
+            configure: impl FnOnce(&mut SessionConfig),
+        ) -> (SessionCore, Arc<RecordingSink>) {
+            let sink = Arc::new(RecordingSink::default());
+            let core = SessionCore::new(sink.clone());
+            let mut config = terminal(id);
+            configure(&mut config);
+            core.register(config).expect("registration succeeds");
+            (core, sink)
+        }
+
+        /// Everything the session has taken from the shell so far.
+        fn scrollback(core: &SessionCore, id: &str) -> String {
+            core.terminal_buffer(id)
+                .unwrap_or_default()
+                .iter()
+                .map(|chunk| chunk.text())
+                .collect()
+        }
+
+        /// Poll until `check` holds, so a test asserts on what the terminal
+        /// actually produced rather than on how long it took.
+        fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + STARTUP;
+            while !check() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        /// Wait for `marker` to be rendered by the hosted shell.
+        ///
+        /// The marker strings in these tests are assembled inside the shell at
+        /// run time, so only the executed command's output can satisfy the
+        /// wait — the echoed command line cannot (`LCH-ECHO-` + `1A` never
+        /// appears literally in what was sent).
+        fn expect_in_scrollback(core: &SessionCore, id: &str, marker: &str) {
+            wait_until(&format!("`{marker}` to render"), || {
+                scrollback(core, id).contains(marker)
+            });
+        }
+
+        /// Send one command line, the way a terminal sends Enter.
+        fn send(core: &SessionCore, id: &str, line: &str) {
+            core.terminal_write(id, format!("{line}\r").as_bytes())
+                .expect("input reaches the terminal");
+        }
+
+        #[test]
+        fn starting_a_terminal_hosts_a_shell_and_reports_it_attached() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+
+            let runtime = core.start("term").expect("start succeeds");
+
+            assert_eq!(runtime.status, SessionStatus::Running);
+            assert!(runtime.pid.is_some(), "a running terminal has a pid");
+            assert!(runtime.run_id.is_some(), "a run has an id");
+            assert!(
+                runtime.pty_attached,
+                "a terminal run reports the PTY the view types into"
+            );
+            assert_eq!(runtime.last_error, None);
+
+            let attached = core
+                .terminal_attachment("term")
+                .expect("the session attaches");
+            assert!(attached.pty_attached);
+            assert!(attached.generation > 0, "the attachment names a run");
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// The whole point of T07: what the shell prints reaches the session
+        /// the UI renders, through the terminal the user is actually driving.
+        #[test]
+        fn a_command_in_the_hosted_shell_reaches_the_sessions_scrollback() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+
+            send(&core, "term", "Write-Host (\"LCH-ECHO-\" + \"1A\")");
+
+            expect_in_scrollback(&core, "term", "LCH-ECHO-1A");
+            core.stop("term").expect("cleanup");
+        }
+
+        /// Spec §7: "For terminal sessions, Ctrl+C is not the same action as
+        /// closing the session." The interrupt travels as input (T02's
+        /// `INTERRUPT_BYTE`), so the session must still be running after it and
+        /// must still accept the next command.
+        #[test]
+        fn ctrl_c_is_input_and_does_not_close_the_session() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            expect_in_scrollback(&core, "term", "PS");
+
+            // Interrupt whatever is (or is about to be) running, then prove the
+            // shell still answers.
+            core.terminal_write("term", &[INTERRUPT_BYTE])
+                .expect("the interrupt reaches the terminal");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            send(&core, "term", "Write-Host (\"LCH-AFTER-\" + \"CTRLC\")");
+
+            expect_in_scrollback(&core, "term", "LCH-AFTER-CTRLC");
+            let runtime = core.snapshot("term").expect("the session is registered");
+            assert_eq!(
+                runtime.status,
+                SessionStatus::Running,
+                "Ctrl+C must not close the session"
+            );
+            assert!(runtime.pty_attached);
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// Stopping a terminal closes the console, and the shell with it: the
+        /// session is not stopped while a shell it accounted for keeps running.
+        #[test]
+        fn stopping_a_terminal_ends_the_run_and_closes_the_shell() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            let started = core.start("term").expect("start succeeds");
+            let pid = started.pid.expect("a running terminal has a pid");
+
+            let stopped = core.stop("term").expect("stop succeeds");
+
+            assert_eq!(stopped.status, SessionStatus::Stopped);
+            assert!(!stopped.pty_attached, "nothing is attached after a stop");
+            assert_eq!(stopped.pid, None);
+            wait_until("the hosted shell to be gone", || !pid_is_alive(pid));
+
+            // The session is still there, and says why it cannot be typed into
+            // rather than accepting bytes that would go nowhere.
+            let error = core
+                .terminal_write("term", b"echo hi\r")
+                .expect_err("a stopped terminal takes no input");
+            assert!(
+                error.message.contains("no running terminal"),
+                "unexpected message: {}",
+                error.message
+            );
+        }
+
+        #[test]
+        fn restarting_a_terminal_replaces_the_run_and_leaves_one_shell() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            let first = core.start("term").expect("start succeeds");
+            let first_pid = first.pid.expect("a running terminal has a pid");
+
+            let second = core.restart("term").expect("restart succeeds");
+
+            assert_eq!(second.status, SessionStatus::Running);
+            assert_ne!(second.run_id, first.run_id, "a restart is a new run");
+            assert_ne!(second.pid, first.pid, "a restart is a new shell");
+            assert!(second.pty_attached);
+            wait_until("the replaced shell to be gone", || !pid_is_alive(first_pid));
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// A supervised service has no attached stdin in the MVP; saying so is
+        /// the difference between a UI that explains itself and one that sends
+        /// keystrokes into nothing.
+        #[test]
+        fn input_into_a_service_is_refused() {
+            let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+            core.start("svc").expect("start succeeds");
+
+            let error = core
+                .terminal_write("svc", b"hello\r")
+                .expect_err("a service takes no terminal input");
+            assert_eq!(error.kind, SessionErrorKind::Unsupported);
+            assert!(
+                error.message.contains("supervised service"),
+                "unexpected message: {}",
+                error.message
+            );
+
+            core.force_stop("svc").expect("cleanup");
+        }
+
+        #[test]
+        fn input_into_a_session_that_never_started_is_refused() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+
+            let error = core
+                .terminal_write("term", b"echo hi\r")
+                .expect_err("nothing is running");
+            assert!(
+                error.message.contains("no running terminal"),
+                "unexpected message: {}",
+                error.message
+            );
+        }
+
+        /// An attachment is the whole handover: the scrollback so far, the
+        /// generation it belongs to, and the offset it reaches. A view replays
+        /// the chunks and appends what comes after the offset — which is only
+        /// sound if the offset is where the *next* batch begins.
+        #[test]
+        fn every_batch_after_an_attachment_begins_where_the_attachment_ended() {
+            let (core, sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            // Some output before the attach, so the scrollback is not empty and
+            // the offset is not zero.
+            send(&core, "term", "Write-Host (\"LCH-BEFORE-\" + \"ATTACH\")");
+            expect_in_scrollback(&core, "term", "LCH-BEFORE-ATTACH");
+
+            let attached = core
+                .terminal_attachment("term")
+                .expect("the session attaches");
+            let after_attach = sink.events().len();
+            assert!(attached.emitted > 0, "the replay covers what was printed");
+            let replayed: usize = attached
+                .chunks
+                .iter()
+                .map(|chunk| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(&chunk.data)
+                        .expect("chunks arrive as base64")
+                        .len()
+                })
+                .sum();
+            assert_eq!(
+                replayed as u64, attached.emitted,
+                "the offset must be exactly what the replay covers"
+            );
+
+            send(&core, "term", "Write-Host (\"LCH-AFTER-\" + \"ATTACH\")");
+            expect_in_scrollback(&core, "term", "LCH-AFTER-ATTACH");
+
+            // The scrollback takes bytes before the batch that carries them is
+            // published, so wait for the publication rather than assume it.
+            let published = || -> Vec<TerminalOutput> {
+                sink.events()
+                    .into_iter()
+                    .skip(after_attach)
+                    .filter_map(|event| match event {
+                        SessionEvent::TerminalOutput(output) => Some(output),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            wait_until("the later output to be published", || {
+                published().iter().any(|batch| batch.end > attached.emitted)
+            });
+
+            let live: Vec<TerminalOutput> = published()
+                .into_iter()
+                .filter(|batch| batch.end > attached.emitted)
+                .collect();
+            for batch in &live {
+                assert!(
+                    batch.start >= attached.emitted,
+                    "batch {}..{} straddles the attachment offset {}, so a view \
+                     that replayed the scrollback would have to splice it",
+                    batch.start,
+                    batch.end,
+                    attached.emitted
+                );
+                assert_eq!(
+                    batch.generation, attached.generation,
+                    "a batch from another run must not be appended"
+                );
+            }
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// A view measures itself before the session starts, and a shell
+        /// started at the default 80×24 and corrected a moment later is not the
+        /// same screen — so the size is remembered rather than dropped.
+        #[test]
+        fn a_resize_before_the_start_geometries_the_shell() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.terminal_resize("term", 120, 30)
+                .expect("a stopped session accepts a size");
+
+            core.start("term").expect("start succeeds");
+            send(
+                &core,
+                "term",
+                "Write-Host (\"LCH-GEO-\" + \
+                 \"$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height)\")",
+            );
+
+            expect_in_scrollback(&core, "term", "LCH-GEO-120x30");
+            core.stop("term").expect("cleanup");
+        }
+
+        #[test]
+        fn a_resize_of_a_live_terminal_reaches_the_shell() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            expect_in_scrollback(&core, "term", "PS");
+
+            core.terminal_resize("term", 100, 25)
+                .expect("the terminal resizes");
+            // A keystroke racing the console host's resize reinitialization can
+            // be dropped by conhost — the ConPTY quirk noted on #3, and the
+            // reason a view debounces its resize forwarding. Let the resize
+            // settle before typing.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            send(
+                &core,
+                "term",
+                "Write-Host (\"LCH-GEO-\" + \
+                 \"$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height)\")",
+            );
+
+            expect_in_scrollback(&core, "term", "LCH-GEO-100x25");
+            core.stop("term").expect("cleanup");
+        }
+
+        #[test]
+        fn an_unhostable_size_is_refused() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+
+            for (cols, rows) in [(0, 24), (80, 0), (MAX_DIMENSION + 1, 24)] {
+                let error = core
+                    .terminal_resize("term", cols, rows)
+                    .expect_err("the size is not hostable");
+                assert!(
+                    error.message.contains("cells"),
+                    "unexpected message for {cols}x{rows}: {}",
+                    error.message
+                );
+            }
+        }
+
+        #[test]
+        fn an_initial_command_is_typed_into_the_terminal() {
+            let (core, _sink) = core_with_terminal("term", |config| {
+                config.initial_command = Some("Write-Host (\"LCH-INIT-\" + \"2B\")".to_owned());
+            });
+
+            core.start("term").expect("start succeeds");
+
+            expect_in_scrollback(&core, "term", "LCH-INIT-2B");
+            core.stop("term").expect("cleanup");
+        }
+
+        /// A view is not what keeps a terminal alive.
+        ///
+        /// Selecting another session, switching to the Logs tab or hiding the
+        /// window all look the same from here: nobody is attached. The shell
+        /// must keep running, keep producing output, and be there — with
+        /// everything it printed — when a view comes back (spec §6: "terminal
+        /// session remaining alive while hidden or while another session is
+        /// selected").
+        #[test]
+        fn a_terminal_keeps_running_while_no_view_is_attached() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            let started = core.start("term").expect("start succeeds");
+            let pid = started.pid.expect("a running terminal has a pid");
+
+            send(&core, "term", "Write-Host (\"LCH-UNSEEN-\" + \"1\")");
+            expect_in_scrollback(&core, "term", "LCH-UNSEEN-1");
+
+            // Nothing reads the terminal from here on.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            send(&core, "term", "Write-Host (\"LCH-LATER-\" + \"2\")");
+            expect_in_scrollback(&core, "term", "LCH-LATER-2");
+
+            let runtime = core.snapshot("term").expect("the session is registered");
+            assert_eq!(
+                runtime.status,
+                SessionStatus::Running,
+                "an unwatched terminal must keep running"
+            );
+            assert_eq!(runtime.pid, Some(pid), "it is still the same shell");
+
+            // A view arriving afterwards is given what it missed.
+            let attached = core
+                .terminal_attachment("term")
+                .expect("the session attaches");
+            assert!(attached.pty_attached);
+            let replayed: String = attached.chunks.iter().map(chunk_text).collect();
+            assert!(
+                replayed.contains("LCH-UNSEEN-1") && replayed.contains("LCH-LATER-2"),
+                "the replay must cover output from while nobody was watching: {replayed:?}"
+            );
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// The acceptance criterion behind the byte transport: a shell's output
+        /// is UTF-8 plus ANSI, and it has to survive the trip through the
+        /// session without being decoded as text on the way.
+        ///
+        /// The command prints the characters from their code points rather than
+        /// sending them as input, so this measures the output path (what T07
+        /// owns) and not the console's input code page.
+        #[test]
+        fn non_ascii_output_survives_the_session() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+
+            send(
+                &core,
+                "term",
+                "Write-Host (\"LCH-\" + [char]0x4E2D + [char]0x6587 + \"-\" + [char]0x2713)",
+            );
+
+            expect_in_scrollback(&core, "term", "LCH-中文-✓");
+            core.stop("term").expect("cleanup");
+        }
+
+        /// Spec §14: "one high-output session must not freeze the whole UI",
+        /// and §9: output must be "batched enough that high-volume output does
+        /// not create an expensive UI event per line".
+        ///
+        /// The burst is 2 000 lines. What is asserted is not how fast it
+        /// arrived but its *shape*: every batch is inside the size ceiling,
+        /// batches are contiguous (no byte is skipped or repeated), and the
+        /// whole burst is far fewer events than it is lines.
+        #[test]
+        fn a_burst_of_output_is_published_in_bounded_contiguous_batches() {
+            let (core, sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            expect_in_scrollback(&core, "term", "PS");
+            let before = sink.events().len();
+
+            send(
+                &core,
+                "term",
+                "for ($i = 0; $i -lt 2000; $i++) { Write-Host \"LCH-LINE $i\" }; \
+                 Write-Host (\"LCH-BURST-\" + \"END\")",
+            );
+            expect_in_scrollback(&core, "term", "LCH-BURST-END");
+
+            let batches: Vec<TerminalOutput> = sink
+                .events()
+                .into_iter()
+                .skip(before)
+                .filter_map(|event| match event {
+                    SessionEvent::TerminalOutput(output) => Some(output),
+                    _ => None,
+                })
+                .collect();
+
+            assert!(!batches.is_empty(), "the burst produced no output events");
+            for pair in batches.windows(2) {
+                assert_eq!(
+                    pair[0].end, pair[1].start,
+                    "batches must be contiguous: {}..{} then {}..{}",
+                    pair[0].start, pair[0].end, pair[1].start, pair[1].end
+                );
+            }
+            for batch in &batches {
+                let covered = batch.end - batch.start;
+                assert_eq!(
+                    covered,
+                    batch_bytes(batch) as u64,
+                    "a batch's range must be exactly the bytes it carries"
+                );
+                assert!(
+                    covered <= crate::session::terminal::BATCH_MAX_BYTES as u64,
+                    "batch {}..{} is larger than the ceiling",
+                    batch.start,
+                    batch.end
+                );
+            }
+            assert!(
+                batches.len() < 200,
+                "a 2 000-line burst must not become one event per line; got {} events",
+                batches.len()
+            );
+
+            let text = scrollback(&core, "term");
+            assert!(
+                text.contains("LCH-LINE 0") && text.contains("LCH-LINE 1999"),
+                "the whole burst must reach the scrollback"
+            );
+            core.stop("term").expect("cleanup");
+        }
+
+        /// One retained chunk as text, for assertions about a replay.
+        fn chunk_text(chunk: &RetainedChunk) -> String {
+            use base64::Engine;
+            String::from_utf8_lossy(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(&chunk.data)
+                    .expect("chunks arrive as base64"),
+            )
+            .into_owned()
+        }
+
+        /// The bytes one published batch carries.
+        fn batch_bytes(batch: &TerminalOutput) -> usize {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(&batch.data)
+                .expect("batches arrive as base64")
+                .len()
         }
     }
 }
