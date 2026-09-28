@@ -531,8 +531,10 @@ mod tests {
     /// noise into the test log. `ping` is a real child of `cmd`, so the run has
     /// a tree rather than a single process.
     fn long_running() -> ProcessSpec {
-        ProcessSpec::new("cmd.exe", std::env::temp_dir())
-            .with_args(vec!["/c".to_owned(), "ping -n 60 127.0.0.1 > NUL".to_owned()])
+        ProcessSpec::new("cmd.exe", std::env::temp_dir()).with_args(vec![
+            "/c".to_owned(),
+            "ping -n 60 127.0.0.1 > NUL".to_owned(),
+        ])
     }
 
     /// Stop/restart timeout for tests: long enough for a graceful request to land,
@@ -559,8 +561,7 @@ mod tests {
         // shell's job object, which is the shape a launcher script has when it
         // detaches a service and ends.
         let args = vec!["/c".to_owned(), "start /b ping -n 60 127.0.0.1".to_owned()];
-        ProcessSpec::new("cmd.exe", std::env::temp_dir())
-            .with_args(args)
+        ProcessSpec::new("cmd.exe", std::env::temp_dir()).with_args(args)
     }
 
     /// A process with the same executable name that the supervisor never sees.
@@ -735,10 +736,10 @@ mod tests {
         let run = start();
         let mut unrelated = start_unrelated();
 
-        let managed_tree = tree_with_at_least(&run, 2);
+        let managed = tree_with_at_least(&run, 2);
         assert!(
-            managed_tree.len() >= 2,
-            "the run should own its shell and the shell's child, saw {managed_tree:?}"
+            managed.len() >= 2,
+            "the run should own its shell and the shell's child, saw {managed:?}"
         );
 
         run.force_stop().expect("the run is force-stopped");
@@ -747,7 +748,7 @@ mod tests {
             managed_tree(&run).is_empty(),
             "the managed tree must be gone after a force stop"
         );
-        for pid in managed_tree {
+        for pid in managed {
             assert!(
                 !super::win::is_process_alive(pid),
                 "pid {pid} of the managed tree survived the force stop"

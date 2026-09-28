@@ -30,9 +30,14 @@ dirs = "7"
 # and CTRL_BREAK delivery for the safe stop/kill-tree path. Windows-only, and
 # already present in Cargo.lock as a transitive dependency, so this adds no new
 # packages to the build.
+#
+# Win32_Security is not optional here: `CreateJobObjectW` takes a
+# SECURITY_ATTRIBUTES parameter, and windows-sys gates a function behind every
+# module its signature names — so JobObjects alone does not expose it.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_Threading",

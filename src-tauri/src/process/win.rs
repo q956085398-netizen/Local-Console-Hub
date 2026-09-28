@@ -11,7 +11,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
     AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, CTRL_BREAK_EVENT,
 };
@@ -22,7 +22,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, INFINITE, WAIT_OBJECT_0,
+    WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, INFINITE,
 };
 
 /// Capability gate for the process layer: this backend can own a process tree,
@@ -185,15 +185,23 @@ pub fn request_graceful_stop(pid: u32) -> bool {
 /// supervisor never owned.
 #[cfg(test)]
 pub fn is_process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::System::Threading::{OpenProcess, SYNCHRONIZE, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::STILL_ACTIVE;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
-    let process = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) } as usize;
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } as usize;
     if process == 0 {
+        // No process object answers for this pid, so nothing is running under it.
         return false;
     }
-    let alive = unsafe { WaitForSingleObject(process as _, 0) } == WAIT_TIMEOUT;
+    // An openable process object outlives the process, so the exit code is what
+    // separates a live process from one that has ended: a running process reports
+    // `STILL_ACTIVE`, an ended one reports the code it ended with.
+    let mut code: u32 = 0;
+    let read = unsafe { GetExitCodeProcess(process as _, &mut code) };
     unsafe { CloseHandle(process as _) };
-    alive
+    read != 0 && code == STILL_ACTIVE
 }
 
 /// Describe the last Win32 failure as a bare cause — the raw error code and the

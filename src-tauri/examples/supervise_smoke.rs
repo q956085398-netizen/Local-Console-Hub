@@ -44,9 +44,7 @@ fn main() {
     match process.stop(DEFAULT_STOP_TIMEOUT) {
         Ok(report) => println!(
             "stop: outcome={:?} exit={:?} graceful_delivered={}",
-            report.outcome,
-            report.exit,
-            report.graceful_delivered
+            report.outcome, report.exit, report.graceful_delivered
         ),
         Err(error) => {
             eprintln!("stop failed: {error}");
