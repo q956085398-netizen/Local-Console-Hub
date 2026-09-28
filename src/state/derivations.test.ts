@@ -28,7 +28,8 @@ import {
   titlebarSummaryText,
   typeLabel,
 } from "./derivations";
-import { FIXTURE_GROUPS, type FixtureSession } from "./fixtures";
+import { FIXTURE_GROUPS } from "./fixtures";
+import type { SessionView } from "./session-view";
 
 function config(overrides: Partial<SessionConfigDto> = {}): SessionConfigDto {
   return {
@@ -71,7 +72,7 @@ function toRuntimeLogging(logging: EffectiveLoggingDto): RuntimeEffectiveLogging
  * logging. Tests that need the two to diverge (a live run overriding the
  * config) pass an explicit `runtime` override.
  */
-function fixture(overrides: Partial<FixtureSession> = {}): FixtureSession {
+function fixture(overrides: Partial<SessionView> = {}): SessionView {
   const resolved = overrides.config ?? config();
   return {
     config: resolved,

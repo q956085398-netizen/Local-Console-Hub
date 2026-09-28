@@ -44,6 +44,23 @@
   word-break: break-all;
 }
 
+/* The live terminal. xterm measures its container to decide how many cells fit,
+ * so this element must have a real size and no scrolling of its own — xterm
+ * owns the scrollback, and a second scroller around it would fight it. */
+.terminal-host__body--xterm {
+  overflow: hidden;
+}
+
+.terminal-host__body--xterm .xterm {
+  height: 100%;
+}
+
+/* The renderer's own focus outline is not part of the V2 surface; the caret is
+ * what shows the terminal has focus (UI_STYLE_GUIDE §10). */
+.terminal-host__body--xterm .xterm .xterm-helper-textarea {
+  outline: none;
+}
+
 .terminal-host__line--in {
   color: #c5ccd6;
 }

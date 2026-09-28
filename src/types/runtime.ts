@@ -79,6 +79,40 @@ export interface AppSummaryDto {
   error: number;
 }
 
+/** Payload of the `session-state-changed` event (§9). */
+export interface SessionStateChangedDto {
+  sessionId: string;
+  /** The full post-transition snapshot, so a listener never applies a delta. */
+  runtime: SessionRuntimeDto;
+}
+
+/** Why a lifecycle command was refused or failed (`session::core::SessionErrorKind`). */
+export type SessionErrorValue =
+  "unknown_session" | "already_registered" | "invalid_transition" | "unsupported" | "failed";
+
+const SESSION_ERROR_KINDS: readonly SessionErrorValue[] = [
+  "unknown_session",
+  "already_registered",
+  "invalid_transition",
+  "unsupported",
+  "failed",
+];
+
+/**
+ * A refused or failed command, as every session command reports it.
+ *
+ * The message is actionable by contract (`docs/DEVELOPMENT.md` §9: it names
+ * the operation), so the UI shows it as it arrives rather than re-wording it.
+ */
+export interface SessionErrorDto {
+  kind: SessionErrorValue;
+  sessionId: string;
+  operation: string;
+  message: string;
+  /** The state the session was in when the move was refused. */
+  from?: SessionStatusValue;
+}
+
 /** One managed start, live (`endedAt` absent) or finished. */
 export interface RunRecordDto {
   runId: string;
@@ -186,6 +220,51 @@ export function isAppSummaryDto(value: unknown): value is AppSummaryDto {
     typeof candidate.error === "number" &&
     Number.isInteger(candidate.error)
   );
+}
+
+/** Runtime guard for a `session-state-changed` payload. */
+export function isSessionStateChangedDto(value: unknown): value is SessionStateChangedDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.sessionId === "string" && isSessionRuntimeDto(candidate.runtime);
+}
+
+/** Runtime guard for the structured failure a session command reports. */
+export function isSessionErrorDto(value: unknown): value is SessionErrorDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.kind === "string" &&
+    SESSION_ERROR_KINDS.includes(candidate.kind as SessionErrorValue) &&
+    typeof candidate.sessionId === "string" &&
+    typeof candidate.operation === "string" &&
+    typeof candidate.message === "string" &&
+    (candidate.from === undefined ||
+      (typeof candidate.from === "string" &&
+        SESSION_STATUSES.includes(candidate.from as SessionStatusValue)))
+  );
+}
+
+/**
+ * The message to show for a rejected command.
+ *
+ * A session command's rejection is the structured `SessionErrorDto`, whose
+ * message already names the operation and the reason; anything else (a
+ * transport failure, a broken payload) falls back to its own text so a real
+ * problem is never rendered as an empty notice.
+ */
+export function sessionErrorMessage(cause: unknown): string {
+  if (isSessionErrorDto(cause)) {
+    return cause.message;
+  }
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  return String(cause);
 }
 
 /** Runtime guard for one run record. */

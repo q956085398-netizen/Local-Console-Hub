@@ -6,11 +6,11 @@ import {
   runOutcome,
   runOutcomeBadge,
 } from "../../state/derivations";
-import type { FixtureSession } from "../../state/fixtures";
+import type { SessionView } from "../../state/session-view";
 import "./LogsPanel.css";
 
 export interface LogsPanelProps {
-  fixture: FixtureSession;
+  session: SessionView;
   /** Fixture mode: file actions are visible but wired to a notice (T10). */
   onAction: (label: string) => void;
 }
@@ -18,13 +18,13 @@ export interface LogsPanelProps {
 /**
  * Logs tab: effective policy first, then run history (UI_STYLE_GUIDE §8).
  *
- * T06 renders the fixture run records; T10 (#11) replaces them with
+ * T06 renders the session run records; T10 (#11) replaces them with
  * `get_run_history` / `get_log_info` and adds retention controls. The
  * no-fabrication rule is already live: an off/none session shows no invented
  * disk-log records.
  */
-export default function LogsPanel({ fixture, onAction }: LogsPanelProps) {
-  const { config, runtime, runs } = fixture;
+export default function LogsPanel({ session, onAction }: LogsPanelProps) {
+  const { config, runtime, runs } = session;
   const logging = runtime.logging ?? config.logging;
   const visibleRuns = runs.filter(
     (run) => run.logFile !== undefined || runOutcome(run) === "error" || logging.source !== "none",
