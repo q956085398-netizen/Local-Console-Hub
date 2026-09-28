@@ -3,33 +3,21 @@
 本项目是 Windows 优先的本地服务/终端统一控制台（Tauri）。产品语义以 docs/ 下的文档为准：
 PRODUCT_SPEC / MVP_IMPLEMENTATION_SPEC / EXECUTION_PLAN / UI_STYLE_GUIDE / LOGGING / DECISIONS / ROADMAP / DEVELOPMENT。
 
-## 视觉能力规则（最高优先级）
+## 视觉能力
 
-主力模型（GLM-5.3）**没有视觉能力**，无法直接查看任何图片。所有"看图"需求必须通过
-`ui-vision` MCP 服务器（由 GLM-5.3-Flash 视觉模型驱动）完成，禁止凭想象处理图像内容。
+主力模型自带多模态视觉，可以**直接查看图片**，不需要任何外接视觉服务。
 
-### R1 — UI 工单开工前
-任何涉及 UI 的任务（新建/修改界面、组件、样式、布局）：
+- **UI 开工前**：直接读取 `assets/ui/ui-v2-service.png` 与 `assets/ui/ui-v2-terminal.png`，
+  再读 `docs/UI_STYLE_GUIDE.md`，然后开始写 UI 代码。设计细节以图为准。
+- **UI 变更完成后**：对运行中的应用截图，自行与对应参考图逐区域比对
+  （布局 / 组件 / 颜色语义 / 间距 / 字号），按差异清单迭代，直到没有 MAJOR 级差异。
+  若当前环境确实无法截图，向用户明确说明原因，不得静默跳过验收。
+- **任意图像**：用户提到或提供任何图片（报错截图、图标、参考素材）时，先看图再回答，
+  禁止猜测图片内容。
 
-1. 若 `docs/DESIGN_SPEC_EXTRACTED.md` 不存在：依次调用 `analyze_design`
-   （`image_path=assets/ui/ui-v2-service.png` 与 `assets/ui/ui-v2-terminal.png`），
-   把两份结构化结果整理写入 `docs/DESIGN_SPEC_EXTRACTED.md` 并提交，
-   作为可复用的设计规格缓存（之后的项目会话直接读它，不重复转译）；
-2. 通读 `docs/DESIGN_SPEC_EXTRACTED.md` 与 `docs/UI_STYLE_GUIDE.md` 之后，才能开始写 UI 代码。
-
-### R2 — UI 变更完成后
-完成一个界面的实现或修改后：对运行中的应用截图，调用 `compare_ui`
-（`screenshot_path=截图路径`，`reference_path=对应参考图`），按差异清单迭代，
-直到结论不是 `VERDICT: MAJOR`。若当前环境确实无法截图，向用户明确说明原因，
-不得静默跳过验收。
-
-### R3 — 任意图像
-用户提到或提供任何图片（报错截图、图标、参考素材）时，先用 `describe_image`
-查看再回答，禁止猜测图片内容。
-
-### R4 — 故障处理
-`ui-vision` 调用失败（缺 Key / 模型名不对 / 网络问题）时，把具体错误报告给用户并等待处理；
-严禁静默降级为"不看图直接写 UI"。
+> 2026-09-28：原 `ui-vision` MCP 外接视觉方案（glm-5.3-flash）已停用——主力模型已具备原生视觉，
+> 那层转译是多余的。`tools/vision-mcp/` 保留仅为历史参考，已不在 `.mcp.json` 中注册。
+> 若将来主力模型换回无视觉能力的模型，在 `.mcp.json` 重新注册该 server 即可恢复。
 
 ## 开发环境注意事项
 
@@ -37,19 +25,11 @@ PRODUCT_SPEC / MVP_IMPLEMENTATION_SPEC / EXECUTION_PLAN / UI_STYLE_GUIDE / LOGGI
   它落在 Windows 的保留端口范围内，可能随机导致启动失败。
   修改端口时 `vite.config.ts` 与 `src-tauri/tauri.conf.json` 必须一起改。
 
-## ui-vision 服务器配置
-
-- 位置：`tools/vision-mcp/server.mjs`（零依赖，Node ≥ 18，已通过项目 `.mcp.json` 注册）
-- 必需环境变量：`ZHIPU_API_KEY`（或 `UI_VISION_API_KEY`）
-- 可选：`UI_VISION_MODEL`（默认 `glm-5.3-flash`）、`UI_VISION_BASE_URL`
-  （默认智谱开放平台 `https://open.bigmodel.cn/api/paas/v4`；可指向
-  `https://api.z.ai/api/paas/v4` 或本地 vLLM/Ollama 的 OpenAI 兼容端点）
-- 排障与冒烟测试见 `tools/vision-mcp/README.md`
-
 ## Agent skills
 
-本仓库的议题以 GitHub Issues 形式追踪（`q956085398-netizen/Local-Console-Hub`），使用 `gh` CLI。
+本仓库的议题以 GitHub Issues 形式追踪（`q956085398-netizen/Local-Console-Hub`）。
 
-- **Issue tracker**：见 `docs/agents/issue-tracker.md`。
+- **Issue tracker**：本地 CLI 环境用 `gh` CLI；在 Claude Code 的沙箱 / VM 会话里 `gh` 不存在且无网络出口，
+  此时改用 GitHub MCP 工具读写议题与 PR。见 `docs/agents/issue-tracker.md`。
 - **Triage labels**：使用默认分诊标签，原样沿用：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
 - **Domain docs**：单一上下文（single-context）：仓库根目录一个 `CONTEXT.md`，加上根目录 `docs/adr/`。见 `docs/agents/domain.md`。
