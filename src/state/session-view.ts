@@ -13,8 +13,18 @@
  *   config schema has none). Live sessions are all filed under
  *   [`LIVE_GROUP`], which says where they came from rather than inventing a
  *   classification the config does not have.
- * - `busy` / `ready` — spec §4's optional runtime flags; T08 (#9) produces
- *   them. They supplement lifecycle state and never replace it.
+ * - `busy` — spec §4's optional runtime flag, still unproduced. Nothing in the
+ *   MVP knows whether an application is *working*: a port says whether it is
+ *   reachable, not whether it is free, and the source that could tell — an
+ *   app-specific adapter — is explicitly outside T08's scope
+ *   (`docs/EXECUTION_PLAN.md`). Left undefined, which the header and the rail
+ *   already treat as "no claim".
+ *
+ * §4's *other* optional flag — `ready` — is **not** a field here. Since T08 (#9)
+ * it is derived from the snapshot on every render (`derivations.isReady`), so
+ * there is nothing to keep in step: a copy carried on the view model would go
+ * stale the moment a health reading arrived, which is exactly the bug it would
+ * take a live service coming up to reveal.
  * - `dependsOn` — likewise unlanded; the details panel renders what it finds.
  * - `lines` — the preview stream. It is what the terminal shows when there is
  *   no backend to attach to (the browser preview), and is never rendered for a
@@ -61,7 +71,6 @@ export interface SessionView {
   runs: SessionRun[];
   group: string;
   busy?: boolean;
-  ready?: boolean;
   dependsOn?: string[];
   /** Preview-only: the stream shown when no backend is attached. */
   lines?: TerminalPreviewLine[];
@@ -94,6 +103,8 @@ export function stoppedRuntime(config: SessionConfigDto): SessionRuntimeDto {
       external_path: config.logging.externalPath,
     },
     buffer: { bytes: 0, lines: 0, droppedBytes: 0 },
+    // Nothing has run, so nothing has been probed (spec §12).
+    health: null,
   };
 }
 

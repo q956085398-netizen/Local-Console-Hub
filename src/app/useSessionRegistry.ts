@@ -34,6 +34,16 @@ export interface SessionRegistry {
   stop(sessionId: string): void;
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
+  /**
+   * Hand this session's configured URL — or its working directory — to the OS
+   * (T08 #9).
+   *
+   * A session id, never a URL or a path: Session Core resolves both from the
+   * session's own configuration, so the window cannot ask the machine to open
+   * something the user did not configure (`docs/DECISIONS.md` D-021).
+   */
+  openUrl(sessionId: string): void;
+  openDirectory(sessionId: string): void;
 }
 
 /** Where the rendered sessions came from. */
@@ -126,10 +136,13 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
   }, [live]);
 
   const run = useCallback((command: string, sessionId: string) => {
-    // The result is deliberately ignored: the command answers with the
+    // The result is deliberately ignored: a lifecycle command answers with the
     // post-operation snapshot, and the event that follows publishes the same
     // state to everyone (the window, the tray, a future scheduler). Rendering
-    // from the event alone is what keeps them from disagreeing.
+    // from the event alone is what keeps them from disagreeing. The two
+    // "open" actions (T08 #9) answer with nothing at all — what they produce
+    // is outside the Hub — so they share this path and its error handling
+    // rather than growing a second one.
     invoke(command, { sessionId }).catch((cause) => setError(sessionErrorMessage(cause)));
   }, []);
 
@@ -143,6 +156,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
       forceStop: (sessionId) => run("force_stop_session", sessionId),
+      openUrl: (sessionId) => run("open_session_url", sessionId),
+      openDirectory: (sessionId) => run("open_session_cwd", sessionId),
     }),
     [sessions, source, live, error, run],
   );

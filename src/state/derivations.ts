@@ -62,6 +62,55 @@ export function typeLabel(type: SessionConfigDto["sessionType"]): string {
   return type === "service" ? "Service" : "Terminal";
 }
 
+/**
+ * Whether a session is up and usable, rather than merely held by the lifecycle
+ * (T08 #9, spec §4's optional `ready` flag).
+ *
+ * `Running` says the managed process or shell is there; this says the thing the
+ * user actually wants from it is there too — a service answering on its port,
+ * or a terminal whose shell is attached and can take typing. The two are kept
+ * apart on purpose: `docs/PRODUCT_SPEC.md` §3 requires the UI to distinguish
+ * "the process is alive" from "the service is available", and D-008 forbids
+ * collapsing one into the other.
+ *
+ * Both halves are read from what the backend reported, never inferred. A
+ * service nobody has probed yet shows `Running` — the state machine knows that
+ * much and nothing more — and a service with no port to check is never called
+ * ready at all, since there is nothing that could say it was.
+ */
+export function isReady(runtime: SessionRuntimeDto): boolean {
+  if (runtime.status !== "running") {
+    return false;
+  }
+  // A reading is the service's answer; without one (a terminal run, or a
+  // service with no port) attachment is the only readiness there is to report.
+  if (isPresent(runtime.health)) {
+    return runtime.health.portOpen;
+  }
+  return runtime.ptyAttached;
+}
+
+/**
+ * The Details tab's one-line health reading, or `undefined` when there is none.
+ *
+ * The two facts are worded separately, because the product separates them: a
+ * service that is up, one that is still booting, and one whose process has gone
+ * must not read the same. A session nothing has probed gets no line at all —
+ * the row disappears rather than claiming a port is closed (spec §12: "we did
+ * not check" is not a reading).
+ *
+ * This is the only place a reading is shown, and it names the *port* only by
+ * implication: the number is already in the header's metadata line, and
+ * `UI_STYLE_GUIDE.md` §13 has Details repeat nothing the header carries. The
+ * header's status badge states the conclusion the reading earns (`Ready`).
+ */
+export function healthReading(runtime: SessionRuntimeDto): string | undefined {
+  const health = runtime.health;
+  if (!isPresent(health)) return undefined;
+  const listening = health.portOpen ? "监听中" : "未监听";
+  return health.processAlive ? listening : `${listening} · 本会话进程已退出`;
+}
+
 /** Elapsed run duration in the reference's vocabulary. */
 export function formatDuration(startedAt: string, now: Date): string {
   const started = Date.parse(startedAt);
@@ -126,7 +175,10 @@ export interface ActionAvailability {
   restart: boolean;
   /** Open the configured URL (service with a URL). */
   openUrl?: string;
-  /** Open the working directory. */
+  /** Open the working directory — offered only when there is one to open.
+   * Both "open" actions are gated on the config carrying a target for them,
+   * so the button cannot be pressed for something the backend would refuse
+   * (T08 #9). */
   directory: boolean;
   /** Force-kill the managed tree — a separate, explicit action (D-007).
    * Available for the whole live window, including Stopping: skipping the
@@ -147,7 +199,7 @@ export function availableActions(
     stopDisabled: runtime.status === "stopping",
     restart: settled,
     openUrl: config.sessionType === "service" ? config.url : undefined,
-    directory: true,
+    directory: config.cwd !== undefined,
     forceStop: isLive(runtime.status),
   };
 }

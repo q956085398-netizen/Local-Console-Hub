@@ -38,9 +38,15 @@ the *same* `SessionView`, so the shell renders one model, not two.
 `SessionView`'s extras beyond the landed DTOs are documented per field on the
 type and are not a second runtime model:
 
-- `busy` / `ready` — spec §4's optional runtime flags. `src-tauri/src/session/
-  state.rs` notes neither exists yet; T08 (#9) produces them. They supplement
-  lifecycle state and never replace it.
+- `busy` — spec §4's optional runtime flag. `src-tauri/src/session/state.rs`
+  notes it does not exist yet, and nothing produces it: the MVP has no source
+  for "the application is working" (a port says whether a service is
+  *reachable*, not whether it is free), and the adapter that could tell is
+  outside T08's scope. It supplements lifecycle state and never replaces it.
+- `ready` is deliberately **not** an extra on the view model (T08 #9): it is
+  derived from the snapshot on every render (`derivations.isReady` — a service
+  whose port answers, or a terminal whose shell is attached), so a health
+  reading arriving mid-render cannot leave a stale copy behind.
 - `group` — a UI concern with **no landed field and no owning ticket** (the
   config schema has none). Live sessions therefore render under one group,
   `LIVE_GROUP`, named for where they came from. A config-schema issue must add
