@@ -19,6 +19,9 @@
  * - `lines` — the preview stream. It is what the terminal shows when there is
  *   no backend to attach to (the browser preview), and is never rendered for a
  *   live session: there, the PTY is the stream.
+ * - `runs[].logFilePresent` — the entry-level field the real payload carries
+ *   around a run record (`RunHistoryEntryDto`, D-022). The view model has no
+ *   entry wrapper, so the one run whose log was swept says so here.
  */
 
 import type { SessionConfigDto } from "../types/config";
@@ -37,12 +40,25 @@ export interface WorkloadGroup {
   hint: string;
 }
 
+/**
+ * A session's run record, plus the one thing a record cannot say about itself:
+ * whether the log it names is still on disk (`docs/DECISIONS.md` D-022).
+ *
+ * The real payload says this on the entry that wraps the record
+ * (`RunHistoryEntryDto`, `types/logs.ts`); the view model has no wrapper, so
+ * the extra sits here. Absent means the file is there — the normal case, and
+ * what every fixture run but comfyui's `c711` means.
+ */
+export interface SessionRun extends RunRecordDto {
+  logFilePresent?: boolean;
+}
+
 /** One session as the workspace renders it. */
 export interface SessionView {
   config: SessionConfigDto;
   runtime: SessionRuntimeDto;
   /** Newest last; mirrors the run history T10 will read from the backend. */
-  runs: RunRecordDto[];
+  runs: SessionRun[];
   group: string;
   busy?: boolean;
   ready?: boolean;

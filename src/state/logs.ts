@@ -15,7 +15,7 @@
  */
 
 import type { EffectiveLogModeValue, LogSourceValue } from "../types/config";
-import type { CleanupReportDto, LogStatusDto } from "../types/logs";
+import type { CleanupReportDto, LogStatusDto, RunHistoryEntryDto } from "../types/logs";
 import { isPresent, type RunRecordDto } from "../types/runtime";
 import type { SessionView } from "./session-view";
 import type { StatusTone } from "./derivations";
@@ -163,7 +163,11 @@ export function cleanupPrompt(report: CleanupReportDto): string {
   if (report.removed.length === 0) {
     return "没有超过保留规则的日志需要清理。";
   }
-  return `将删除 ${report.removed.length} 个文件 · 释放 ${formatBytes(report.freedBytes)} · 最近一次运行的日志始终保留`;
+  // "Only files" is the part a user agreeing to this needs: the run history is
+  // not what a sweep takes, and a row whose log was swept stays in the list
+  // saying so (`runLogGone`). A confirmation that left that unsaid would make
+  // "confirm" sound like it deletes runs.
+  return `将删除 ${report.removed.length} 个日志文件 · 释放 ${formatBytes(report.freedBytes)} · 最近一次运行的日志始终保留 · 运行历史记录不会被删除`;
 }
 
 /** What a sweep did, as the notice after it ran. */
@@ -186,8 +190,84 @@ export function runHasLog(run: RunRecordDto): boolean {
   return isPresent(run.logFile);
 }
 
+/**
+ * Whether the log a run's record names is still on disk.
+ *
+ * A run outlives its log: retention deletes log *files* and never the record of
+ * the run that wrote them (`docs/LOGGING.md` §9), so a row that offered "open
+ * log" on the record's own word would offer an action that fails. A run that
+ * never wrote a log answers `false` here too — that is [a different
+ * fact](runHasLog) about the same row, and the two are asked separately.
+ */
+export function runLogPresent(run: RunHistoryEntryDto): boolean {
+  return run.logFilePresent;
+}
+
+/**
+ * Whether the log a run's record names was there and is gone.
+ *
+ * The one row state that needs saying out loud: the file the record points at
+ * is no longer on disk, so nothing about this row can be opened. Left
+ * deliberately neutral — a swept log is retention working as designed, not a
+ * lifecycle failure, and colour is lifecycle truth (UI_STYLE_GUIDE §10).
+ */
+export function runLogGone(run: RunHistoryEntryDto): boolean {
+  return runHasLog(run) && !runLogPresent(run);
+}
+
+/**
+ * Which of one run row's file actions that run actually offers
+ * (`docs/LOGGING.md` §9/§10).
+ */
+export interface RunFileActions {
+  /** Hand the log to the OS's default handler. */
+  open: boolean;
+  /** Put the path on the clipboard. */
+  copy: boolean;
+  /** Reveal the folder that holds the log. */
+  folder: boolean;
+}
+
+/**
+ * The file actions one run's row offers.
+ *
+ * Read from the file answer rather than from what happens to render: a run that
+ * left no log offers nothing, and a run whose log is not on disk keeps only the
+ * folder — the directory survives a sweep, while "open log" and "copy path"
+ * would act on a file that is gone. The rule lives here, next to
+ * [`logActionAvailability`], so both the session's actions and a row's are
+ * asserted without a DOM.
+ */
+export function runFileActions(run: RunHistoryEntryDto): RunFileActions {
+  if (!runHasLog(run)) {
+    return { open: false, copy: false, folder: false };
+  }
+  const gone = runLogGone(run);
+  return { open: !gone, copy: !gone, folder: true };
+}
+
+/**
+ * The path slot of a run row: where the log went, or why there is nothing to
+ * open there (`docs/LOGGING.md` §9/§10).
+ *
+ * Three states, one string each — a row with a file, a run that wrote none
+ * (§1.2), and a run whose file is not on disk. The wording of the third states
+ * the fact and stops: this slot cannot tell a swept log from one an `external`
+ * application has not written yet, and naming a cause it did not observe would
+ * be the invention the rest of the tab is built to avoid.
+ */
+export function runFilePathNote(run: RunHistoryEntryDto): string {
+  if (!isPresent(run.logFile)) {
+    return "未落盘";
+  }
+  if (!runLogPresent(run)) {
+    return `日志文件不在磁盘上（运行记录保留） · ${run.logFile}`;
+  }
+  return run.logFile;
+}
+
 /** Run history, newest first, whatever order the source listed it in. */
-export function runsNewestFirst(runs: RunRecordDto[]): RunRecordDto[] {
+export function runsNewestFirst<T extends RunRecordDto>(runs: T[]): T[] {
   return [...runs].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
 }
 
@@ -226,6 +306,23 @@ export function previewLogStatus(session: SessionView): LogStatusDto {
     truncated: false,
     lastError: undefined,
   };
+}
+
+/**
+ * A fixture session's runs, shaped like `get_run_history`'s answer.
+ *
+ * The same mirror [`previewLogStatus`] is: a fixture record says where a log
+ * went, and the file answer comes from the fixture — a run that names a log has
+ * one unless the fixture says its file was swept (`SessionRun`). A run that
+ * names no log — the `off` terminal's records — answers "nothing to open",
+ * exactly as the backend does for one. A preview row is labelled as preview in
+ * the tab (`useSessionLogs`), never passed off as a live read.
+ */
+export function previewRuns(session: SessionView): RunHistoryEntryDto[] {
+  return session.runs.map((run) => ({
+    ...run,
+    logFilePresent: run.logFilePresent ?? runHasLog(run),
+  }));
 }
 
 /** The state a configured policy implies, for a session with no live run.

@@ -43,6 +43,11 @@ pub fn get_log_info(
 /// A session with no history answers with an empty history rather than an
 /// error: never having run is the normal state of a session that was just
 /// configured.
+///
+/// Each entry also says whether the log it names is still on disk. Retention
+/// sweeps log files and never the record of the run that wrote them
+/// (`docs/LOGGING.md` §9), so a row has to be able to say "this run's log was
+/// cleaned up" rather than offering an action that fails.
 #[tauri::command]
 pub fn get_run_history(core: State<'_, SessionCore>, session_id: String) -> RunHistory {
     core.run_history(&session_id)
@@ -145,7 +150,7 @@ fn hand_over_failed(session_id: &str, operation: &str, error: shell::ShellError)
 mod tests {
     use super::*;
     use crate::config::{EffectiveLogMode, LogSource};
-    use crate::logging::{BufferSummary, LogState, LogStatus};
+    use crate::logging::{BufferSummary, LogState, LogStatus, RunHistoryEntry};
     use crate::session::runtime::{RunId, RunRecord, Timestamp};
 
     // The payload fixtures mirrored by `src/types/logs.ts` — if a field name
@@ -203,19 +208,26 @@ mod tests {
 
     /// One run record as the history carries it, so the history's own payload
     /// is pinned and not only the status's.
+    ///
+    /// The entry is the record *flattened* plus one key, not a record nested
+    /// under a new one: the field names the frontend already reads have to keep
+    /// the shape they have everywhere else (D-016).
     #[test]
     fn the_run_history_payload_is_the_camel_case_contract() {
         let history = RunHistory {
-            runs: vec![RunRecord {
-                run_id: RunId::mint(),
-                session_id: "comfyui".to_owned(),
-                started_at: Timestamp::now(),
-                ended_at: None,
-                exit_code: None,
-                pid: Some(19002),
-                log_mode: EffectiveLogMode::Always,
-                log_source: LogSource::Captured,
-                log_file: None,
+            runs: vec![RunHistoryEntry {
+                run: RunRecord {
+                    run_id: RunId::mint(),
+                    session_id: "comfyui".to_owned(),
+                    started_at: Timestamp::now(),
+                    ended_at: None,
+                    exit_code: None,
+                    pid: Some(19002),
+                    log_mode: EffectiveLogMode::Always,
+                    log_source: LogSource::Captured,
+                    log_file: None,
+                },
+                log_file_present: false,
             }],
             unreadable: Vec::new(),
         };
@@ -223,9 +235,25 @@ mod tests {
         let value = serde_json::to_value(history).expect("the history serializes");
         let run = &value["runs"][0];
 
-        for key in ["runId", "sessionId", "startedAt", "logMode", "logSource"] {
+        for key in [
+            "runId",
+            "sessionId",
+            "startedAt",
+            "logMode",
+            "logSource",
+            "logFilePresent",
+        ] {
             assert!(run.get(key).is_some(), "missing {key} in {run}");
         }
+        assert_eq!(
+            run["logFilePresent"],
+            serde_json::json!(false),
+            "the file answer must not travel as a string: {run}"
+        );
+        assert!(
+            run.get("run").is_none(),
+            "the entry nested the record: {run}"
+        );
         assert!(value.get("unreadable").is_some(), "{value}");
     }
 

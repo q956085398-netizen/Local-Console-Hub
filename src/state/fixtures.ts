@@ -135,6 +135,11 @@ export const FIXTURE_SESSIONS: SessionView[] = [
         logSource: "captured",
         logFile:
           "%LOCALAPPDATA%\\LocalConsoleHub\\logs\\comfyui\\2026-09\\2026-09-26_02-21-00__run-c711.log",
+        // The row state retention creates and the tab has to render: the run
+        // is in the history, the log it names was swept (D-022). The fixture
+        // carries it because there is otherwise no way to look at this row
+        // without a live backend and a real sweep.
+        logFilePresent: false,
       },
       {
         runId: "c8aa",

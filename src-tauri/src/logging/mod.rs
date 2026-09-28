@@ -15,7 +15,8 @@
 //!   to for one run, and the [`plan::LogStatus`] the UI reads.
 //! - [`run_log`] — one run's file, and the decision to have one at all.
 //! - [`metadata`] — the run record written beside its log, which is how a
-//!   persisted log is found again.
+//!   persisted log is found again; a record survives the sweep that takes its
+//!   log, and reports that the file is gone.
 //! - [`retention`] — the rules that stop a session's logs growing forever.
 //! - [`error`] — what the layer reports when a file cannot be written.
 //!
@@ -77,7 +78,7 @@ pub use buffer::{
 };
 pub use error::LogError;
 pub use layout::{session_run_files, RunFile};
-pub use metadata::{read_run, run_history, write_run, RunHistory};
+pub use metadata::{read_run, run_history, write_run, RunHistory, RunHistoryEntry};
 pub use plan::{policy_state, LogPlan, LogState, LogStatus, Persistence};
 pub use retention::{
     cleanup_plan, cleanup_preview, CleanupReport, LogFile, RetentionPolicy, DEFAULT_RETENTION,

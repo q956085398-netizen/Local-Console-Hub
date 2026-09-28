@@ -15,9 +15,11 @@ and lifecycle changes originate in Session Core.
   extras. It is what the workspace is made of, whichever source filled it.
 - `fixtures.ts` — the T06 fixture workspace, rendered when no backend answers.
 - `logs.ts` — the Logs tab's rules (T10): the state badge, "is this being
-  logged?", which file an action points at, and the retention wording. Also
-  turns a session view into the payload `get_log_info` answers with, so the tab
-  renders live and preview data through one path.
+  logged?", which file an action points at, whether a run's log is still on
+  disk (retention deletes files, not run records — `DECISIONS.md` D-022), and
+  the retention wording. Also turns a session view into the payloads
+  `get_log_info` / `get_run_history` answer with, so the tab renders live and
+  preview data through one path.
 - `terminal-stream.ts` — where a terminal view is in the stream it renders,
   and whether a live batch joins it or is already shown. Pure; unit-tested.
 - `terminal-attach.ts` — the attachment protocol (subscribe, replay, input,
@@ -47,3 +49,6 @@ type and are not a second runtime model:
   (the live source provides nothing).
 - `lines` — the preview stream, read only when no backend is attached. With a
   backend, the PTY is the stream and this field is never rendered.
+- `runs[].logFilePresent` — the entry-level field the real payload carries
+  around a run record (`RunHistoryEntryDto`, D-022). The view model has no entry
+  wrapper, so the one run whose log was swept says so here.
