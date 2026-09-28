@@ -314,7 +314,7 @@ single operation; neither is a generic "do something to this session".
 to the OS, and `preview_log_cleanup` / `cleanup_logs` are the two halves of
 retention (LOGGING.md §9, §10). They take a session id and an optional run id,
 never a path: Session Core resolves which file a session owns, and the command
-cannot be used to open anything else (DECISIONS.md D-018).
+cannot be used to open anything else (DECISIONS.md D-021).
 
 Do not introduce one generic "execute arbitrary backend action" command.
 

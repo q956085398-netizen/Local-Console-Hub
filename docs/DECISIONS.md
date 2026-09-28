@@ -316,9 +316,15 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 
 ---
 
-## D-018：日志的打开与清理由 Session Core 解析路径，前端只提交会话与 run
+## D-021：日志的打开与清理由 Session Core 解析路径，前端只提交会话与 run
 
 **状态：Accepted（2026-09-29，T10 落地时签认）**
+
+> 编号说明：这条决策在 `feat/t10-logs-view` 上最初写成 D-018。同时进行的 T07
+> （`feat/t07-interactive-terminal`）已经占用了 D-018–D-020（交互终端由 Session Core
+> 托管 PTY、终端输出的字节区间事件、config + snapshot 两半），两条分支同出于
+> `17f1316`，因此后合并者必须让号。本条改为 D-021：T07 的编号保持连续，其它分支的
+> 新决策从 D-022 起。
 
 `open_log_file` / `open_log_folder` / `preview_log_cleanup` / `cleanup_logs`
 四个命令只接受 `session_id` 与可选 `run_id`，**不接受路径**。路径由
