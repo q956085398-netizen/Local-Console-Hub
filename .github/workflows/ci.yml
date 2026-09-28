@@ -49,8 +49,37 @@ jobs:
         run: cargo fmt --all --check
         working-directory: src-tauri
 
+      # Surface rustc/clippy diagnostics as check annotations so failures are
+      # readable from the API without digging into job logs.
+      - name: Register Rust problem matcher
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/rust-matcher.json" <<'EOF'
+          {
+            "problemMatcher": [
+              {
+                "owner": "rust-compile",
+                "pattern": [
+                  {
+                    "regexp": "^(warning|error)(?:\\[.*\\])?: (.*)$",
+                    "severity": 1,
+                    "message": 2
+                  },
+                  {
+                    "regexp": "^\\s+-->\\s+(\\S+):(\\d+):(\\d+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          echo "::add-matcher::$RUNNER_TEMP/rust-matcher.json"
+
       - name: Clippy
-        run: cargo clippy --all-targets -D warnings
+        run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
 
       - name: Rust unit tests
