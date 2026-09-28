@@ -47,9 +47,9 @@ fn fail(name: &str, why: &str) -> ! {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let program = args.next().unwrap_or_else(|| {
-        r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe".to_owned()
-    });
+    let program = args
+        .next()
+        .unwrap_or_else(|| r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe".to_owned());
     let rest: Vec<String> = args.collect();
     let shell_args = if rest.is_empty() {
         vec!["-NoLogo".to_owned(), "-NoProfile".to_owned()]
@@ -98,7 +98,12 @@ fn main() {
     );
     pty.interrupt()
         .unwrap_or_else(|error| fail("ctrl+c", &format!("delivering the interrupt: {error}")));
-    step(&pty, "ctrl+c resumes the shell", "Write-Host LCH-SMOKE-RESUMED", "LCH-SMOKE-RESUMED");
+    step(
+        &pty,
+        "ctrl+c resumes the shell",
+        "Write-Host LCH-SMOKE-RESUMED",
+        "LCH-SMOKE-RESUMED",
+    );
 
     pty.resize(120, 34)
         .unwrap_or_else(|error| fail("resize", &error.to_string()));

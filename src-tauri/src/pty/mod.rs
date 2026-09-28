@@ -60,7 +60,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::process::ExitStatus;
 
@@ -165,7 +165,11 @@ pub enum PtyError {
     /// has already ended and its input pipe is gone.
     Write { source: std::io::Error },
     /// The terminal could not be resized.
-    Resize { cols: u16, rows: u16, reason: String },
+    Resize {
+        cols: u16,
+        rows: u16,
+        reason: String,
+    },
     /// The shell could not be terminated, or outlived its termination.
     Kill { pid: u32, reason: String },
     /// This platform has no PTY backend (Windows-first MVP, D-001).
@@ -201,10 +205,16 @@ impl std::fmt::Display for PtyError {
                 write!(formatter, "sending input to the terminal failed: {source}")
             }
             PtyError::Resize { cols, rows, reason } => {
-                write!(formatter, "resizing the terminal to {cols}x{rows} failed: {reason}")
+                write!(
+                    formatter,
+                    "resizing the terminal to {cols}x{rows} failed: {reason}"
+                )
             }
             PtyError::Kill { pid, reason } => {
-                write!(formatter, "terminating terminal process {pid} failed: {reason}")
+                write!(
+                    formatter,
+                    "terminating terminal process {pid} failed: {reason}"
+                )
             }
             PtyError::UnsupportedPlatform { operation } => write!(
                 formatter,
@@ -434,14 +444,20 @@ fn check_size(operation: &'static str, cols: u16, rows: u16) -> Result<(), PtyEr
     if hostable {
         Ok(())
     } else {
-        Err(PtyError::InvalidSize { operation, cols, rows })
+        Err(PtyError::InvalidSize {
+            operation,
+            cols,
+            rows,
+        })
     }
 }
 
 /// Lock a mutex while tolerating poisoning: a panic on one path must not turn
 /// every later read into a second panic.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Read the pty's output into the bounded queue until the stream ends.
@@ -503,6 +519,7 @@ fn watch_exit(shared: &Arc<Shared>) {
 mod tests {
     use super::*;
     use std::thread;
+    use std::time::Instant;
 
     /// Windows PowerShell, present on every supported install. `-NoLogo
     /// -NoProfile` keeps startup fast and deterministic on CI runners.
@@ -712,7 +729,10 @@ mod tests {
                 "the burst never finished, saw {seen:?}"
             );
         }
-        assert!(seen.contains("LCH-LINE 0"), "the burst's head, saw {seen:?}");
+        assert!(
+            seen.contains("LCH-LINE 0"),
+            "the burst's head, saw {seen:?}"
+        );
         assert!(
             seen.contains("LCH-LINE 1999"),
             "the burst's tail, saw {seen:?}"
@@ -779,7 +799,10 @@ mod tests {
         let pty = start();
         expect_output(&pty, "PS", STARTUP.as_secs());
 
-        send(&pty, "$answer = Read-Host 'LCH-PROMPT-6P'; Write-Host LCH-GOT-$answer");
+        send(
+            &pty,
+            "$answer = Read-Host 'LCH-PROMPT-6P'; Write-Host LCH-GOT-$answer",
+        );
         expect_output(&pty, "LCH-PROMPT-6P", 20);
         send(&pty, "YES-6P");
         let seen = expect_output(&pty, "LCH-GOT-", 20);
@@ -861,7 +884,10 @@ mod tests {
         while !pty.output_ended() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(100));
         }
-        assert!(pty.output_ended(), "the output stream must end with the pty");
+        assert!(
+            pty.output_ended(),
+            "the output stream must end with the pty"
+        );
     }
 
     #[test]

@@ -71,8 +71,13 @@ impl PtyBackend {
         let (input_read, input_write) = pipe()?;
         let (output_read, output_write) = pipe()?;
 
-        let size = COORD { X: spec.cols as i16, Y: spec.rows as i16 };
-        let mut con: HPCON = std::ptr::null_mut();
+        let size = COORD {
+            X: spec.cols as i16,
+            Y: spec.rows as i16,
+        };
+        // windows-sys 0.59 spells `HPCON` as `isize`, not a pointer: zero is
+        // its null value.
+        let mut con: HPCON = 0;
         let created = unsafe {
             CreatePseudoConsole(size, input_read.0 as _, output_write.0 as _, 0, &mut con)
         };
@@ -184,7 +189,10 @@ impl PtyBackend {
     /// Resize the pseudoconsole. New dimensions reach the shell with the next
     /// console query — nothing is re-flowed by this layer.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        let size = COORD { X: cols as i16, Y: rows as i16 };
+        let size = COORD {
+            X: cols as i16,
+            Y: rows as i16,
+        };
         let resized = unsafe { ResizePseudoConsole(self.con.0 as _, size) };
         if resized != 0 {
             return Err(format!(
@@ -198,7 +206,7 @@ impl PtyBackend {
     /// reclaimed by closing the pseudoconsole (`ConHandle`'s drop) — which is
     /// also the only cleanup a dropped session performs.
     pub fn terminate(&self) -> Result<(), String> {
-        let terminated = unsafe { TerminateProcess(self.child.0.0 as _, 1) };
+        let terminated = unsafe { TerminateProcess(self.child.0 .0 as _, 1) };
         if terminated == 0 {
             return Err(last_error("TerminateProcess"));
         }
@@ -241,7 +249,7 @@ impl ChildHandle {
     /// Block until the shell's process object is signalled — its exit. Costs no
     /// CPU while the shell is alive (D-009 — no per-session polling).
     pub fn wait_signaled(&self) {
-        let waited = unsafe { WaitForSingleObject(self.0.0 as _, INFINITE) };
+        let waited = unsafe { WaitForSingleObject(self.0 .0 as _, INFINITE) };
         debug_assert_eq!(waited, WAIT_OBJECT_0, "WaitForSingleObject failed");
     }
 
@@ -249,7 +257,7 @@ impl ChildHandle {
     /// running.
     pub fn exit_code(&self) -> Option<u32> {
         let mut code: u32 = 0;
-        let read = unsafe { GetExitCodeProcess(self.0.0 as _, &mut code) };
+        let read = unsafe { GetExitCodeProcess(self.0 .0 as _, &mut code) };
         // An openable process object outlives the process, so `STILL_ACTIVE` is
         // how a live one answers — the same distinction the process layer
         // makes in its test helper.
@@ -289,7 +297,7 @@ impl KernelHandle {
     fn into_file(self) -> File {
         let raw = self.0;
         std::mem::forget(self);
-        File::from_raw_handle(raw as _)
+        unsafe { File::from_raw_handle(raw as _) }
     }
 }
 
