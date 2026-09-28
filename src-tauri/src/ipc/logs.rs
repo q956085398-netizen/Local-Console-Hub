@@ -82,9 +82,8 @@ pub fn open_log_file(
     session_id: String,
     run_id: Option<String>,
 ) -> Result<(), SessionError> {
-    let target = core.log_file_target(&session_id, run_id.as_deref())?;
-    shell::open_path(&target.path)
-        .map_err(|error| hand_over_failed(&session_id, "open_log_file", error))
+    let path = core.log_file_path(&session_id, run_id.as_deref())?;
+    shell::open_path(&path).map_err(|error| hand_over_failed(&session_id, "open_log_file", error))
 }
 
 /// Open the folder that holds this session's log file
@@ -100,9 +99,8 @@ pub fn open_log_folder(
     session_id: String,
     run_id: Option<String>,
 ) -> Result<(), SessionError> {
-    let target = core.log_folder_target(&session_id, run_id.as_deref())?;
-    shell::open_path(&target.path)
-        .map_err(|error| hand_over_failed(&session_id, "open_log_folder", error))
+    let path = core.log_folder_path(&session_id, run_id.as_deref())?;
+    shell::open_path(&path).map_err(|error| hand_over_failed(&session_id, "open_log_folder", error))
 }
 
 /// What `cleanup_logs` would remove, without removing anything

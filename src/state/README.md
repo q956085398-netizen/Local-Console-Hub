@@ -13,6 +13,10 @@ and lifecycle changes originate in Session Core.
 - `fixtures.ts` — the T06 fixture workspace. Every config/runtime/run value
   passes the landed DTO guards; T07–T10 replace it with live `list_sessions`
   payloads.
+- `logs.ts` — the Logs tab's rules (T10): the state badge, "is this being
+  logged?", which file an action points at, and the retention wording. Also
+  turns a fixture session into the payload `get_log_info` answers with, so the
+  tab renders live and preview data through one path.
 - `view.ts` — UI-only vocabulary (workspace tabs).
 
 ## Fixture boundary (T06 #7)

@@ -193,21 +193,6 @@ export function runOutcomeBadge(run: RunRecordDto): { label: string; tone: Statu
   };
 }
 
-/** Badge label + tone for the effective logging policy headline. */
-export function logPolicyBadge(
-  logging: RuntimeEffectiveLoggingDto | EffectiveLoggingDto,
-  status: SessionStatusValue,
-): { label: string; tone: StatusTone } {
-  const capturing =
-    status === "running" &&
-    logging.source === "captured" &&
-    (logging.mode === "always" || logging.mode === "manual");
-  if (capturing) {
-    return { label: "Capturing", tone: "run" };
-  }
-  return { label: logModeLabel(logging.mode), tone: logging.mode === "off" ? "idle" : "warn" };
-}
-
 /** The header callout: close impact while live, last error otherwise. */
 export interface HeaderCallout {
   kind: "impact" | "error";

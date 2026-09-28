@@ -71,6 +71,7 @@ src-tauri/src/
 ├─ pty/                    # PTY abstraction and Windows backend
 ├─ process/                # process supervision / stop / kill tree
 ├─ logging/                # buffer, captured logs, external logs
+├─ shell/                  # handing a resolved path to the OS (T10)
 ├─ health/                 # port/HTTP checks
 ├─ tray/                   # native tray lifecycle
 ├─ ipc/                    # Tauri commands/events/DTO mapping

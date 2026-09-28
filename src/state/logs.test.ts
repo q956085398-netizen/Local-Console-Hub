@@ -23,6 +23,7 @@ import {
   previewLogStatus,
   runsNewestFirst,
   runHasLog,
+  showsSourceBadge,
 } from "./logs";
 
 function status(overrides: Partial<LogStatusDto> = {}): LogStatusDto {
@@ -140,6 +141,19 @@ describe("which file an action points at", () => {
   });
 });
 
+describe("policy badges", () => {
+  /// One fact, one badge: the `external` state already says what the source
+  /// badge would repeat (UI_STYLE_GUIDE §13).
+  it("drops the source badge when the state already says external", () => {
+    expect(showsSourceBadge(status({ source: "external", state: "external" }))).toBe(false);
+  });
+
+  it("keeps it when the two badges say different things", () => {
+    expect(showsSourceBadge(status({ source: "captured", state: "capturing" }))).toBe(true);
+    expect(showsSourceBadge(status({ source: "none", state: "off" }))).toBe(true);
+  });
+});
+
 describe("which actions the policy offers", () => {
   it("offers nothing file-shaped to a session that writes nothing", () => {
     const off = status({ mode: "off", source: "none", state: "off", logFile: undefined });
@@ -148,7 +162,6 @@ describe("which actions the policy offers", () => {
       openCurrent: false,
       saveRunLog: false,
       recording: null,
-      cleanup: true,
     });
   });
 

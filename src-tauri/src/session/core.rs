@@ -168,22 +168,6 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
-/// The file a log action points at (`docs/LOGGING.md` §10).
-///
-/// Resolved by Session Core rather than handed in by the caller: the frontend
-/// can name a session and a run, and this is the layer that knows which file
-/// those two produced. The alternative — an IPC command that opens whatever
-/// path it is given — would make the window a general file launcher, which is
-/// not a capability a logs view needs (`shell`'s module note).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogTarget {
-    pub session_id: String,
-    /// The run this file belongs to; absent when the target is the session's
-    /// application-owned log, which is not per-run (`docs/DECISIONS.md` D-005).
-    pub run_id: Option<String>,
-    pub path: std::path::PathBuf,
-}
-
 /// One session's mutable state, behind its own lock.
 struct SessionState {
     config: SessionConfig,
@@ -955,6 +939,7 @@ impl SessionCore {
             session_id,
             &logging::DEFAULT_RETENTION,
             logging::clock::now(),
+            &self.application_logs(session_id),
         )
     }
 
@@ -985,48 +970,72 @@ impl SessionCore {
             session_id,
             &logging::DEFAULT_RETENTION,
             logging::clock::now(),
+            &self.application_logs(session_id),
         )
+    }
+
+    /// The application-owned log files of the sessions a sweep covers.
+    ///
+    /// `docs/LOGGING.md` §9 promises an application's log is never deleted, and
+    /// `docs/DEVELOPMENT.md` §11 forbids deleting one unasked. The sweep keeps
+    /// that promise by *identity* as well as by location: these paths are handed
+    /// to it as protected, so a config that points an application's log into the
+    /// Hub's own log tree — which nothing forbids — still cannot have it swept
+    /// away with the Hub's files.
+    fn application_logs(&self, session_id: Option<&str>) -> Vec<PathBuf> {
+        let sessions = lock(&self.sessions);
+        let mut paths = Vec::new();
+        for (id, state) in sessions.iter() {
+            if session_id.is_some_and(|wanted| wanted != id.as_str()) {
+                continue;
+            }
+            if let Some(external) = lock(state).config.logging.external_path.clone() {
+                paths.push(PathBuf::from(external));
+            }
+        }
+        paths
     }
 
     /// The file "open this session's log" should hand to the OS
     /// (`docs/LOGGING.md` §10).
-    pub fn log_file_target(
+    ///
+    /// Resolved here rather than handed in by the caller: the frontend can name
+    /// a session and a run, and this is the layer that knows which file those
+    /// two produced. The alternative — an IPC command that opens whatever path
+    /// it is given — would make the window a general file launcher, which is
+    /// not a capability a logs view needs (`crate::shell`'s module note).
+    pub fn log_file_path(
         &self,
         session_id: &str,
         run_id: Option<&str>,
-    ) -> Result<LogTarget, SessionError> {
-        self.log_target(session_id, run_id, "open_log_file")
+    ) -> Result<PathBuf, SessionError> {
+        const OPERATION: &str = "open_log_file";
+        self.log_target(session_id, run_id, OPERATION)
     }
 
     /// The folder "open the containing folder" should hand to the OS.
     ///
-    /// The same resolution as [`SessionCore::log_file_target`], followed by the
+    /// The same resolution as [`SessionCore::log_file_path`], followed by the
     /// folder that holds the file: a user asking where a log lives is asking
     /// about the folder, and it is still the right answer when the log itself
     /// has since been cleaned up.
-    pub fn log_folder_target(
+    pub fn log_folder_path(
         &self,
         session_id: &str,
         run_id: Option<&str>,
-    ) -> Result<LogTarget, SessionError> {
+    ) -> Result<PathBuf, SessionError> {
         const OPERATION: &str = "open_log_folder";
-        let target = self.log_target(session_id, run_id, OPERATION)?;
-        match target.path.parent() {
-            Some(folder) => Ok(LogTarget {
-                session_id: target.session_id,
-                run_id: target.run_id,
-                path: folder.to_path_buf(),
-            }),
-            None => Err(SessionError::failed(
-                session_id,
-                OPERATION,
-                format!(
-                    "`{}` has no containing folder to open",
-                    target.path.display()
-                ),
-                None,
-            )),
-        }
+        let file = self.log_target(session_id, run_id, OPERATION)?;
+        file.parent()
+            .map(|folder| folder.to_path_buf())
+            .ok_or_else(|| {
+                SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!("`{}` has no containing folder to open", file.display()),
+                    None,
+                )
+            })
     }
 
     /// Resolve one log action to a file, or explain why there is none.
@@ -1046,7 +1055,7 @@ impl SessionCore {
         session_id: &str,
         run_id: Option<&str>,
         operation: &str,
-    ) -> Result<LogTarget, SessionError> {
+    ) -> Result<PathBuf, SessionError> {
         let handle = self
             .handle(session_id)
             .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
@@ -1059,12 +1068,15 @@ impl SessionCore {
         };
 
         // 1. The application's own log. Linked, never written by the Hub.
-        if let Some(external) = status.external_log {
-            return Ok(LogTarget {
-                session_id: session_id.to_owned(),
-                run_id: None,
-                path: std::path::PathBuf::from(external),
-            });
+        //
+        // `external_log` is copied out of the config, and the config layer is
+        // what validates that a path only ever travels with `source: external`.
+        // Core does not borrow that promise: it asks the source itself, so the
+        // two cannot drift if a config reaches the registry another way.
+        if status.source == LogSource::External {
+            if let Some(external) = status.external_log {
+                return Ok(PathBuf::from(external));
+            }
         }
 
         // 2. A named run.
@@ -1073,7 +1085,7 @@ impl SessionCore {
             // file is the one the status is already naming.
             if current_run.as_deref() == Some(wanted) {
                 if let Some(path) = status.log_file {
-                    return Ok(hub_target(session_id, Some(wanted.to_owned()), path));
+                    return Ok(PathBuf::from(path));
                 }
             }
             let history = self.run_history(session_id);
@@ -1093,11 +1105,7 @@ impl SessionCore {
                 ));
             };
             return match &record.log_file {
-                Some(path) => Ok(hub_target(
-                    session_id,
-                    Some(wanted.to_owned()),
-                    path.clone(),
-                )),
+                Some(path) => Ok(PathBuf::from(path)),
                 None => Err(SessionError::failed(
                     session_id,
                     operation,
@@ -1112,7 +1120,7 @@ impl SessionCore {
 
         // 3. The session's current file.
         match status.log_file {
-            Some(path) => Ok(hub_target(session_id, current_run, path)),
+            Some(path) => Ok(PathBuf::from(path)),
             None => Err(SessionError::failed(
                 session_id,
                 operation,
@@ -1481,15 +1489,6 @@ fn session_dir(
         config::local_utc_offset_secs(),
     )?;
     Some(dir.display().to_string())
-}
-
-/// A log target for a file the Hub wrote.
-fn hub_target(session_id: &str, run_id: Option<String>, path: String) -> LogTarget {
-    LogTarget {
-        session_id: session_id.to_owned(),
-        run_id,
-        path: std::path::PathBuf::from(path),
-    }
 }
 
 /// Why this session has no log file, in the policy's own words.
@@ -3133,16 +3132,15 @@ mod tests {
             );
             wait_for_filing(&core, "svc");
 
-            let target = core.log_file_target("svc", None).expect("a target");
+            let file = core.log_file_path("svc", None).expect("a path");
             let run = core.run_history("svc").latest().cloned().expect("a run");
 
             assert_eq!(
-                target.path,
+                file,
                 PathBuf::from(run.log_file.clone().expect("the record names a file")),
-                "the target is not the file the history points at"
+                "the path is not the file the history points at"
             );
-            assert_eq!(target.run_id.as_deref(), Some(run.run_id.as_str()));
-            assert!(target.path.exists(), "the resolved file is not on disk");
+            assert!(file.exists(), "the resolved file is not on disk");
         }
 
         /// A run named explicitly resolves to *that* run's file, so opening a
@@ -3178,17 +3176,17 @@ mod tests {
             wait_until("the second run to be filed", || {
                 core.run_history("svc").runs.len() >= 2
             });
-            let newest = core.log_file_target("svc", None).expect("a target");
+            let newest = core.log_file_path("svc", None).expect("a path");
 
             let older = core
-                .log_file_target("svc", Some(first.run_id.as_str()))
+                .log_file_path("svc", Some(first.run_id.as_str()))
                 .expect("the first run is still in the history");
 
             assert_eq!(
-                older.path,
+                older,
                 PathBuf::from(first.log_file.clone().expect("a file"))
             );
-            assert_ne!(older.path, newest.path, "both runs resolved to one file");
+            assert_ne!(older, newest, "both runs resolved to one file");
         }
 
         /// A run that has left nothing on disk says so, and says what to do.
@@ -3204,7 +3202,7 @@ mod tests {
             core.start("svc").expect("start succeeds");
 
             let error = core
-                .log_file_target("svc", None)
+                .log_file_path("svc", None)
                 .expect_err("a healthy on_error run has no file yet");
 
             assert_eq!(error.kind, SessionErrorKind::Failed);
@@ -3217,11 +3215,11 @@ mod tests {
 
             // And the action it names works, exactly as the message promised.
             let status = core.save_run_log("svc").expect("the buffer can be saved");
-            let target = core
-                .log_file_target("svc", None)
+            let file = core
+                .log_file_path("svc", None)
                 .expect("now there is a file");
-            assert_eq!(target.path, PathBuf::from(status.log_file.expect("a file")));
-            assert!(target.path.exists());
+            assert_eq!(file, PathBuf::from(status.log_file.expect("a file")));
+            assert!(file.exists());
 
             core.force_stop("svc").expect("cleanup");
         }
@@ -3243,15 +3241,11 @@ mod tests {
             // has ever run the session.
             let (core, _sink) = core_logging_to(&dir, config);
 
-            let file = core.log_file_target("svc", None).expect("a target");
-            let folder = core.log_folder_target("svc", None).expect("a folder");
+            let file = core.log_file_path("svc", None).expect("a path");
+            let folder = core.log_folder_path("svc", None).expect("a folder");
 
-            assert_eq!(
-                file.path,
-                PathBuf::from("D:/Tools/SillyTavern/data/access.log")
-            );
-            assert_eq!(file.run_id, None, "an external log is not per-run");
-            assert_eq!(folder.path, PathBuf::from("D:/Tools/SillyTavern/data"));
+            assert_eq!(file, PathBuf::from("D:/Tools/SillyTavern/data/access.log"));
+            assert_eq!(folder, PathBuf::from("D:/Tools/SillyTavern/data"));
         }
 
         /// Naming something unknown is refused with the thing that was wrong,
@@ -3263,13 +3257,13 @@ mod tests {
             let (core, _sink) = core_logging_to(&dir, config);
 
             let missing_session = core
-                .log_file_target("nobody", None)
+                .log_file_path("nobody", None)
                 .expect_err("no such session");
             assert_eq!(missing_session.kind, SessionErrorKind::UnknownSession);
             assert_eq!(missing_session.session_id, "nobody");
 
             let missing_run = core
-                .log_file_target("svc", Some("deadbeef"))
+                .log_file_path("svc", Some("deadbeef"))
                 .expect_err("no such run");
             assert_eq!(missing_run.kind, SessionErrorKind::Failed);
             assert!(
@@ -3300,18 +3294,15 @@ mod tests {
             );
             wait_for_filing(&core, "svc");
 
-            let file = core.log_file_target("svc", None).expect("a target");
-            let folder = core.log_folder_target("svc", None).expect("a folder");
+            let file = core.log_file_path("svc", None).expect("a path");
+            let folder = core.log_folder_path("svc", None).expect("a folder");
 
-            assert_eq!(
-                folder.path,
-                file.path.parent().expect("a month folder").to_path_buf()
-            );
-            assert!(folder.path.is_dir());
+            assert_eq!(folder, file.parent().expect("a month folder").to_path_buf());
+            assert!(folder.is_dir());
             assert!(
-                folder.path.starts_with(dir.join("logs")),
+                folder.starts_with(dir.join("logs")),
                 "the folder is not the Hub's own log layout: {}",
-                folder.path.display()
+                folder.display()
             );
         }
 
@@ -3347,6 +3338,52 @@ mod tests {
             assert!(swept.failures.is_empty(), "{:?}", swept.failures);
             assert!(!stale.exists());
             assert!(fresh.exists(), "the newest run's log was swept");
+        }
+
+        /// §9's promise, kept even for a config that puts an application's log
+        /// inside the Hub's own log tree.
+        ///
+        /// Location normally keeps it — an external log lives wherever its
+        /// application put it — but nothing stops a `logging.path` from naming a
+        /// file under `<logs>/<session>/<month>/`, where the walk would find it.
+        /// The sweep is told which paths belong to an application, so the
+        /// promise does not depend on where the user pointed the config.
+        #[test]
+        fn a_sweep_never_takes_an_application_owned_log() {
+            let dir = TempDir::new();
+            let month = dir.join("logs/svc/2026-09");
+            fs::create_dir_all(&month).expect("the month folder is creatable");
+            let application_owned = month.join("2026-09-20_09-30-15__app-access.log");
+            let hub_stale = month.join("2026-09-24_09-30-15__run-old.log");
+            let hub_current = month.join("2026-09-29_09-30-15__run-new.log");
+            for path in [&application_owned, &hub_stale, &hub_current] {
+                fs::write(path, b"output").expect("writable");
+            }
+            age_by_days(&application_owned, 60);
+            age_by_days(&hub_stale, 45);
+
+            let mut config = service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::Off));
+            config.logging = EffectiveLogging {
+                mode: EffectiveLogMode::Always,
+                source: LogSource::External,
+                external_path: Some(application_owned.display().to_string()),
+            };
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let preview = core.cleanup_preview(Some("svc"));
+            let swept = core.cleanup_logs(Some("svc"));
+
+            assert_eq!(preview.removed, vec![hub_stale.clone()]);
+            assert_eq!(swept.removed, preview.removed);
+            assert!(!hub_stale.exists(), "the Hub's own stale log survived");
+            assert!(
+                application_owned.exists(),
+                "an application-owned log was deleted"
+            );
+            assert!(
+                hub_current.exists(),
+                "the newest run's log was deleted by the age rule"
+            );
         }
 
         /// A core with nowhere to write answers both retention questions with

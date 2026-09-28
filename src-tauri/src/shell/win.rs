@@ -50,14 +50,14 @@ pub fn open_path(path: &Path, operation: &str) -> Result<(), ShellError> {
     if code > 32 {
         Ok(())
     } else {
-        Err(ShellError::new(operation, path, describe(code)))
+        Err(ShellError::new(operation, path, describe_failure(code)))
     }
 }
 
-/// The `SE_ERR_*` codes a user can act on, and what to do about them
+/// What a user can do about one `SE_ERR_*` code, where there is anything to do
 /// (`docs/DEVELOPMENT.md` §9). Anything else keeps the number, because
 /// inventing advice for an unknown cause is worse than reporting it.
-fn describe(code: isize) -> String {
+fn describe_failure(code: isize) -> String {
     match code {
         0 => "Windows could not start the operation — it may be out of memory".to_owned(),
         2 => "the file is not there any more — it may have been removed since the list was read"
@@ -117,8 +117,20 @@ mod tests {
     /// Advice where there is advice to give, the code where there is not.
     #[test]
     fn known_failures_are_reported_with_something_to_do() {
-        assert!(describe(5).contains("permissions"), "{}", describe(5));
-        assert!(describe(31).contains("associated"), "{}", describe(31));
-        assert!(describe(1234).contains("1234"), "{}", describe(1234));
+        assert!(
+            describe_failure(5).contains("permissions"),
+            "{}",
+            describe_failure(5)
+        );
+        assert!(
+            describe_failure(31).contains("associated"),
+            "{}",
+            describe_failure(31)
+        );
+        assert!(
+            describe_failure(1234).contains("1234"),
+            "{}",
+            describe_failure(1234)
+        );
     }
 }

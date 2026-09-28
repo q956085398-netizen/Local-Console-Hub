@@ -73,7 +73,7 @@ pub struct LogFile {
 /// What a cleanup did, or would do.
 ///
 /// Serializable because it is the answer to a user action: the Logs tab shows
-/// what a sweep removed (or, through [`preview`], what it would remove), and
+/// what a sweep removed (or, through [`cleanup_preview`], what it would remove), and
 /// `failures` is how a log directory the Hub may not write to reaches the
 /// person who can fix it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -161,13 +161,21 @@ pub fn cleanup_plan(files: &[LogFile], policy: &RetentionPolicy, now: SystemTime
 /// and how many bytes a sweep would take *before* taking them is asking for
 /// consent it has not described. Returns the same shape [`enforce`] does, so
 /// the confirmation and the result are read by the same code.
+///
+/// `protected` names files the walk must never select. `docs/LOGGING.md` §9
+/// promises an application-owned log is never deleted, and normally location
+/// keeps that promise — an external log lives wherever its application put it,
+/// not under the Hub's own root. A config is free to point one *into* that
+/// tree, though, and the walk would then find it; this is the parameter that
+/// makes the promise hold wherever the file sits.
 pub fn cleanup_preview(
     logs_dir: &Path,
     session_id: Option<&str>,
     policy: &RetentionPolicy,
     now: SystemTime,
+    protected: &[PathBuf],
 ) -> CleanupReport {
-    let doomed = select(logs_dir, session_id, policy, now);
+    let doomed = select(logs_dir, session_id, policy, now, protected);
     CleanupReport {
         freed_bytes: doomed.iter().map(|(_, bytes)| bytes).sum(),
         removed: doomed.into_iter().map(|(path, _)| path).collect(),
@@ -182,9 +190,10 @@ pub fn enforce(
     session_id: Option<&str>,
     policy: &RetentionPolicy,
     now: SystemTime,
+    protected: &[PathBuf],
 ) -> CleanupReport {
     let mut report = CleanupReport::default();
-    for (path, bytes) in select(logs_dir, session_id, policy, now) {
+    for (path, bytes) in select(logs_dir, session_id, policy, now, protected) {
         match fs::remove_file(&path) {
             Ok(()) => {
                 report.freed_bytes += bytes;
@@ -200,15 +209,16 @@ pub fn enforce(
 
 /// The files a sweep selects, each with the size to report it by.
 ///
-/// One walk feeds both [`preview`] and [`enforce`], so what a user was told
+/// One walk feeds both [`cleanup_preview`] and [`enforce`], so what a user was told
 /// would go and what goes cannot be two different sets.
 fn select(
     logs_dir: &Path,
     session_id: Option<&str>,
     policy: &RetentionPolicy,
     now: SystemTime,
+    protected: &[PathBuf],
 ) -> Vec<(PathBuf, u64)> {
-    let files = scan(logs_dir, session_id);
+    let files = scan(logs_dir, session_id, protected);
     let sizes: std::collections::BTreeMap<&Path, u64> = files
         .iter()
         .map(|file| (file.path.as_path(), file.bytes))
@@ -229,10 +239,15 @@ fn select(
 /// beside them — and anything else under the root — cannot be swept up by
 /// accident. An entry whose size or timestamp cannot be read is skipped rather
 /// than guessed at: a file retention cannot measure is one it must not delete.
-fn scan(logs_dir: &Path, session_id: Option<&str>) -> Vec<LogFile> {
+/// A `protected` path is skipped for the same reason in reverse: it was
+/// measured, and it belongs to someone else.
+fn scan(logs_dir: &Path, session_id: Option<&str>, protected: &[PathBuf]) -> Vec<LogFile> {
     let mut files = Vec::new();
 
     for found in super::layout::session_run_files(logs_dir, "log", session_id) {
+        if protected.iter().any(|path| path == &found.path) {
+            continue;
+        }
         let Ok(metadata) = fs::metadata(&found.path) else {
             continue;
         };
@@ -378,7 +393,7 @@ mod tests {
             max_session_bytes: 5,
         };
 
-        let report = enforce(dir.path(), None, &policy, now());
+        let report = enforce(dir.path(), None, &policy, now(), &[]);
 
         assert_eq!(report.removed_count(), 1, "{:?}", report.removed);
         assert!(report.freed_bytes > 0);
@@ -409,7 +424,7 @@ mod tests {
             max_age_days: 30,
             max_session_bytes: 5,
         };
-        let report = enforce(&logs, None, &policy, now());
+        let report = enforce(&logs, None, &policy, now(), &[]);
 
         assert_eq!(report.removed_count(), 1, "{:?}", report.removed);
         assert!(report.removed[0].ends_with("run-old.log"));
@@ -437,7 +452,7 @@ mod tests {
             max_session_bytes: 5,
         };
 
-        let report = enforce(&logs, Some("quiet"), &policy, now());
+        let report = enforce(&logs, Some("quiet"), &policy, now(), &[]);
 
         assert_eq!(report.removed_count(), 1);
         assert!(!logs.join("quiet/2026-09/run-old.log").exists());
@@ -448,7 +463,7 @@ mod tests {
     fn a_missing_logs_root_is_an_empty_cleanup_not_a_failure() {
         let dir = TempDir::new();
 
-        let report = enforce(&dir.join("does-not-exist"), None, &policy(), now());
+        let report = enforce(&dir.join("does-not-exist"), None, &policy(), now(), &[]);
 
         assert_eq!(report, CleanupReport::default());
     }
@@ -472,7 +487,7 @@ mod tests {
             max_session_bytes: 5,
         };
 
-        let preview = cleanup_preview(dir.path(), None, &policy, now());
+        let preview = cleanup_preview(dir.path(), None, &policy, now(), &[]);
 
         assert_eq!(preview.removed, vec![doomed.clone()]);
         assert_eq!(preview.freed_bytes, 10);
@@ -502,11 +517,58 @@ mod tests {
             max_session_bytes: 5,
         };
 
-        let preview = cleanup_preview(dir.path(), None, &policy, now());
-        let swept = enforce(dir.path(), None, &policy, now());
+        let preview = cleanup_preview(dir.path(), None, &policy, now(), &[]);
+        let swept = enforce(dir.path(), None, &policy, now(), &[]);
 
         assert_eq!(preview.removed, swept.removed);
         assert_eq!(preview.freed_bytes, swept.freed_bytes);
+    }
+
+    /// §9's promise, kept by construction rather than by location: a file the
+    /// caller protects is not a candidate however old it is or wherever it sits.
+    ///
+    /// Three files, because a session's newest is kept whatever happens: the
+    /// protected file is the *oldest*, so the only thing that can save it is
+    /// being named as an application's own.
+    #[test]
+    fn a_protected_path_is_never_a_candidate() {
+        let dir = TempDir::new();
+        let month = dir.join("svc/2026-09");
+        fs::create_dir_all(&month).expect("a month folder");
+        let application_owned = month.join("app-access.log");
+        let hub_stale = month.join("run-old.log");
+        let hub_current = month.join("run-new.log");
+        for path in [&application_owned, &hub_stale, &hub_current] {
+            fs::write(path, b"0123456789").expect("writable");
+        }
+        age_by_days(&application_owned, 60);
+        age_by_days(&hub_stale, 45);
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+
+        let protected = std::slice::from_ref(&application_owned);
+        let preview = cleanup_preview(dir.path(), None, &policy, now(), protected);
+        let swept = enforce(dir.path(), None, &policy, now(), protected);
+
+        assert_eq!(preview.removed, vec![hub_stale.clone()]);
+        assert_eq!(swept.removed, preview.removed);
+        assert!(!hub_stale.exists(), "the Hub's own stale log was not taken");
+        assert!(application_owned.exists(), "a protected path was deleted");
+        assert!(hub_current.exists(), "the newest run's log was taken");
+    }
+
+    /// Move a file's modification time into the past, the way retention
+    /// measures age.
+    fn age_by_days(path: &Path, days: u64) {
+        let when = SystemTime::now() - Duration::from_secs(days * 86_400);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("the file is openable for write")
+            .set_modified(when)
+            .expect("the timestamp is settable");
     }
 
     /// A plan nobody has confirmed is not a sweep: a directory with nothing
@@ -518,7 +580,7 @@ mod tests {
         fs::create_dir_all(path.parent().expect("a month folder")).expect("creatable");
         fs::write(&path, b"0123456789").expect("writable");
 
-        let preview = cleanup_preview(dir.path(), Some("svc"), &policy(), now());
+        let preview = cleanup_preview(dir.path(), Some("svc"), &policy(), now(), &[]);
 
         assert_eq!(preview, CleanupReport::default());
         assert!(path.exists());

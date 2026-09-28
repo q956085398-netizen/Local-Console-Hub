@@ -10,6 +10,7 @@ import {
   logStateTone,
   runHasLog,
   runsNewestFirst,
+  showsSourceBadge,
 } from "../../state/logs";
 import type { FixtureSession } from "../../state/fixtures";
 import type { RunRecordDto } from "../../types/runtime";
@@ -51,9 +52,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
           <span className={`badge badge--${logStateTone(status.state)}`}>
             {logStateLabel(status.state)}
           </span>
-          {/* The `external` state and the `external` source are one fact; the
-              second badge would only repeat the first (UI_STYLE_GUIDE §13). */}
-          {logSourceLabel(status.source) !== logStateLabel(status.state) && (
+          {showsSourceBadge(status) && (
             <span className="badge badge--outline">{logSourceLabel(status.source)}</span>
           )}
           <span className="badge badge--outline">

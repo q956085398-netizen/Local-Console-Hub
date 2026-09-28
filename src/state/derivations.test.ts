@@ -14,7 +14,6 @@ import {
   isLive,
   liveCounts,
   logModeLabel,
-  logPolicyBadge,
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
@@ -217,7 +216,7 @@ describe("bufferDiscardNotice", () => {
   });
 });
 
-describe("runOutcomeBadge / logPolicyBadge", () => {
+describe("runOutcomeBadge", () => {
   const live: RunRecordDto = {
     runId: "c8aa",
     sessionId: "comfyui",
@@ -246,21 +245,6 @@ describe("runOutcomeBadge / logPolicyBadge", () => {
     expect(runOutcomeBadge({ ...live, endedAt: "2026-09-28T06:00:00Z", exitCode: 1 })).toEqual({
       label: "error",
       tone: "err",
-    });
-  });
-
-  it("says Capturing only while a captured run is actually writing", () => {
-    expect(logPolicyBadge({ mode: "always", source: "captured" }, "running")).toEqual({
-      label: "Capturing",
-      tone: "run",
-    });
-    expect(logPolicyBadge({ mode: "always", source: "captured" }, "stopped")).toEqual({
-      label: "Always",
-      tone: "warn",
-    });
-    expect(logPolicyBadge({ mode: "off", source: "none" }, "running")).toEqual({
-      label: "Off",
-      tone: "idle",
     });
   });
 });

@@ -74,8 +74,6 @@ export interface LogActionAvailability {
   saveRunLog: boolean;
   /** Switch a `manual` run's recording, or `null` when the mode is not manual. */
   recording: "start" | "stop" | null;
-  /** Offer a retention sweep. */
-  cleanup: boolean;
 }
 
 /** Derive the action set from the effective policy, not from what renders. */
@@ -93,8 +91,19 @@ export function logActionAvailability(status: LogStatusDto): LogActionAvailabili
     // silently disappears while the session is starting.
     saveRunLog: status.mode === "on_error" && status.source === "captured",
     recording,
-    cleanup: true,
   };
+}
+
+/**
+ * Whether the source badge adds anything next to the state badge.
+ *
+ * The `external` state and the `external` source are one fact, and two badges
+ * saying it in two vocabularies is the repetition UI_STYLE_GUIDE §13 forbids.
+ * Asked of the policy rather than of the rendered labels, so renaming a label
+ * cannot quietly change which badges appear.
+ */
+export function showsSourceBadge(status: LogStatusDto): boolean {
+  return !(status.state === "external" && status.source === "external");
 }
 
 /** Path rows for the policy card, in the order a user asks about them. */
