@@ -216,6 +216,37 @@ export function runLogGone(run: RunHistoryEntryDto): boolean {
 }
 
 /**
+ * Which of one run row's file actions that run actually offers
+ * (`docs/LOGGING.md` §9/§10).
+ */
+export interface RunFileActions {
+  /** Hand the log to the OS's default handler. */
+  open: boolean;
+  /** Put the path on the clipboard. */
+  copy: boolean;
+  /** Reveal the folder that holds the log. */
+  folder: boolean;
+}
+
+/**
+ * The file actions one run's row offers.
+ *
+ * Read from the file answer rather than from what happens to render: a run that
+ * left no log offers nothing, and a run whose log is not on disk keeps only the
+ * folder — the directory survives a sweep, while "open log" and "copy path"
+ * would act on a file that is gone. The rule lives here, next to
+ * [`logActionAvailability`], so both the session's actions and a row's are
+ * asserted without a DOM.
+ */
+export function runFileActions(run: RunHistoryEntryDto): RunFileActions {
+  if (!runHasLog(run)) {
+    return { open: false, copy: false, folder: false };
+  }
+  const gone = runLogGone(run);
+  return { open: !gone, copy: !gone, folder: true };
+}
+
+/**
  * The path slot of a run row: where the log went, or why there is nothing to
  * open there (`docs/LOGGING.md` §9/§10).
  *

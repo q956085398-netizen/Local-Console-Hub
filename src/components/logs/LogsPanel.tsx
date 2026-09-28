@@ -8,9 +8,8 @@ import {
   logPathEntries,
   logStateLabel,
   logStateTone,
-  runHasLog,
+  runFileActions,
   runFilePathNote,
-  runLogGone,
   runsNewestFirst,
   showsSourceBadge,
 } from "../../state/logs";
@@ -260,7 +259,7 @@ interface RunRowProps {
 function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
   const outcome = runOutcomeBadge(run);
   const file = run.logFile;
-  const gone = runLogGone(run);
+  const available = runFileActions(run);
   return (
     <li className="logs-panel__run">
       <div className="logs-panel__run-top">
@@ -270,34 +269,38 @@ function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
         </div>
         <div className="logs-panel__run-tail">
           <span className="logs-panel__run-time">{formatClock(run.startedAt)}</span>
-          {runHasLog(run) && (
+          {available.folder && (
             <div className="logs-panel__run-actions">
-              {!gone && (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--icon-sm"
-                    title="打开日志"
-                    aria-label={`打开 run-${run.runId} 的日志`}
-                    onClick={() => onOpen(run.runId)}
-                  >
-                    <ScrollText size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--icon-sm"
-                    title="复制路径"
-                    aria-label={`复制 run-${run.runId} 的日志路径`}
-                    onClick={() => isPresent(file) && onCopy(file)}
-                  >
-                    <Copy size={14} />
-                  </button>
-                </>
+              {available.open && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--icon-sm"
+                  title="打开日志"
+                  aria-label={`打开 run-${run.runId} 的日志`}
+                  onClick={() => onOpen(run.runId)}
+                >
+                  <ScrollText size={14} />
+                </button>
+              )}
+              {available.copy && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--icon-sm"
+                  title="复制路径"
+                  aria-label={`复制 run-${run.runId} 的日志路径`}
+                  onClick={() => isPresent(file) && onCopy(file)}
+                >
+                  <Copy size={14} />
+                </button>
               )}
               <button
                 type="button"
                 className="btn btn--ghost btn--icon-sm"
-                title={gone ? "打开所在目录 · 日志文件不在磁盘上，目录仍然保留" : "打开所在目录"}
+                title={
+                  available.open
+                    ? "打开所在目录"
+                    : "打开所在目录 · 日志文件不在磁盘上，目录仍然保留"
+                }
                 aria-label={`打开 run-${run.runId} 的目录`}
                 onClick={() => onFolder(run.runId)}
               >

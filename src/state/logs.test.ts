@@ -23,6 +23,7 @@ import {
   previewLogStatus,
   previewRuns,
   runsNewestFirst,
+  runFileActions,
   runFilePathNote,
   runHasLog,
   runLogGone,
@@ -253,6 +254,24 @@ describe("run history", () => {
     expect(runHasLog(nothingWritten)).toBe(false);
     expect(runLogPresent(nothingWritten)).toBe(false);
     expect(runLogGone(nothingWritten)).toBe(false);
+  });
+
+  /// The row's buttons, decided here rather than in the component: what a run
+  /// can do is a fact about its file, and the panel is a renderer of that.
+  /// §10 lists the actions; §9 is why the third row loses two of them — the
+  /// folder survives a sweep, the file does not.
+  it("offers a row only the file actions its run can carry out", () => {
+    expect(runFileActions(run())).toEqual({ open: true, copy: true, folder: true });
+    expect(runFileActions(run({ logFilePresent: false }))).toEqual({
+      open: false,
+      copy: false,
+      folder: true,
+    });
+    expect(runFileActions(run({ logFile: null, logFilePresent: false }))).toEqual({
+      open: false,
+      copy: false,
+      folder: false,
+    });
   });
 });
 
