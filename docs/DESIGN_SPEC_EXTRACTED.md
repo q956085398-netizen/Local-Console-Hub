@@ -1,121 +1,156 @@
 # V2 UI 设计规格转译缓存（DESIGN_SPEC_EXTRACTED）
 
-> **用途**：`assets/ui/ui-v2-service.png` 与 `assets/ui/ui-v2-terminal.png` 的结构化文字
-> 转译，供后续会话直接读取，避免重复调用视觉模型（CLAUDE.md R1 缓存）。
-> **权威性**：以两张参考图与 `docs/UI_STYLE_GUIDE.md` 为准；本文档是它们的忠实转译，
-> 冲突时以上游为准并回改本文档。
-> **生成方式**：视觉模型逐图转译（两图各一次）。首次生成时 ui-vision 服务器返回
-> HTTP 429（智谱余额不足，error code 1113），改由会话内另一视觉模型（4.5v）经 MCP
-> 完成同等转译；充值 ui-vision 后可用 `tools/vision-mcp` 的 `analyze_design` 重新生成
-> 校对。两图转译在同一窗口布局上高度一致，本文档已合并去重；个别两图估计值不同的
-> token 以「(两图取…)」注明。
+> **用途**：`assets/ui/ui-v2-service.png`、`assets/ui/ui-v2-terminal.png` 的结构化文字
+> 规格，供没有视觉能力的主力模型照着实现（CLAUDE.md R1）。后续会话直接读本文档，
+> 不重复转译。
+> **权威性**：以两张参考图与 `docs/UI_STYLE_GUIDE.md` 为准；本文档的 token 与结构
+> 取自参考图的**上游源码**（见下），因此是精确值而非目测估值。
+> **上游来源**：`E:\Grok-UI-Design\LocalConsoleHub` —— V2 预览图的真实来源工程
+> （Tailwind v4 + shadcn 风格原型）。两张参考图即该工程 `screenshots/qa-home.png`、
+> `qa-terminal.png` 的同源产物；下方 token 取自其构建后的样式表
+> (`.vercel/output/static/assets/styles-*.css` 的 `:root`/`@theme` 段) 与组件源码
+> (`src/components/hub/*`、`src/lib/hub/*`)。**该工程是设计来源，不是应用架构** ——
+> 其 auth / database / deployment / preview-runtime 子系统一律不引入
+> （UI_STYLE_GUIDE §12、T06 out-of-scope）。
+> **生成记录**：首版转译由视觉模型完成；`ui-vision` 服务器当时返回 HTTP 429
+> （智谱余额不足，code 1113），故用会话内另一视觉模型完成。该版含估值误差（错误地
+> 给出蓝色主按钮、并虚构了 macOS 三点窗口按钮）。得到上游源码后已按源码**重写**本文档
+> —— 颜色/字体/结构一律以源码为准。充值 ui-vision 后可用其 `analyze_design`
+> （`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）复核。
 
-## 1. 共享规格（两图一致的窗口骨架）
+## 1. 设计 token（源码精确值）
 
-### 1.1 布局树
-
-~~~text
-窗口（深色，约 1280×~720，2 栏）
-├── 标题栏 TitleBar（全宽，高 ~44–48px，底部 1px 边框）
-│   ├── 左：应用图标（20px 圆角方，#4C8DFF 终端提示符造型）+ "Local Console Hub"（13px/700）+ "UI 预览" 徽标
-│   ├── 左末：会话数摘要（11px，次要色）
-│   └── 右：运行摘要（等宽 11px）+ Ctrl K + 设置/日志 + 退出（红字）+ 窗口控制 — □ ✕
-├── 主体（水平两栏）
-│   ├── 侧栏 Sidebar（宽 ~280px，右边界 1px）
-│   │   ├── 搜索框（"搜索名称、端口、用途…"）
-│   │   ├── 分组 "SERVICES" / "TERMINALS"（大写小字标题 + 会话行）
-│   │   └── 添加会话入口（虚线边框整宽按钮）
-│   └── 工作区 Workspace（纵向）
-│       ├── 会话头部 SessionHeader（~112px：名称行 / 用途 / 停止影响 callout / 元数据行 + 右侧按钮组）
-│       ├── Tabs（Terminal / Logs / Details，底部 2px 蓝色激活下划线）
-│       └── 内容区（终端/输出为主，占满剩余全部高度）
-└── 底部状态栏 StatusBar（全宽，高 ~24–28px，顶部 1px 边框）
-~~~
-
-### 1.2 颜色 token（估计 hex，深色主题）
+### 1.1 表面与线条
 
 | Token | 值 | 用途 |
 | --- | --- | --- |
-| `--bg` | `#0B0E14` | 窗口/工作区背景 |
-| `--bg-sidebar` | `#0E1117` | 侧栏背景 |
-| `--bg-raised` | `#12161F` | 徽标/悬停行/输入框类表面 |
-| `--bg-inset` | `#05070C` | 终端面板与 stdout 块（近黑） |
-| `--bg-selected` | `#18243B` | 选中会话行（两图取 #18243B） |
-| `--border` | `#1F2633` | 分区分隔线（标题栏底、侧栏右、Tabs 底、面板边） |
-| `--border-strong` | `#2A3040` | 徽标/次级按钮/虚线按钮边框 |
-| `--border-input` | `#232B3A` | 搜索框边框 |
-| `--text-primary` | `#E5EAF3` | 主文字 |
-| `--text-secondary` | `#8B93A7` | 次要文字、徽标文字 |
-| `--text-muted` | `#6B7280` | 更弱文字（用途行、非激活 Tab） |
-| `--text-faint` | `#4B5563` | 时间戳前缀等最弱文字 |
-| `--accent` | `#3B82F6` | 选中态左侧竖条、Tabs 激活下划线、状态点蓝 |
-| `--accent-strong` | `#2563EB` | 主按钮背景（hover `#1D4ED8`） |
-| `--accent-icon` | `#4C8DFF` | 标题栏图标 |
-| `--ok` | `#22C55E` | Running 状态点 |
-| `--ok-text` | `#86EFAC` | RUNNING 徽标文字（bg `rgba(34,197,94,.15)`，border `rgba(34,197,94,.3)`） |
-| `--warn` | `#F59E0B` | busy/Starting 状态点（两图取 `#F59E0B`；另一估计 `#FBBF24`） |
-| `--warn-callout-border` | `#3A2E10` | 停止影响 callout 边框 |
-| `--warn-callout-bg` | `#191307` | callout 背景 |
-| `--warn-callout-text` | `#D97706` | callout 文字 |
-| `--danger-border` | `#DC2626` | Stop 按钮边框 |
-| `--danger-text` | `#F87171` | Stop 按钮/错误文字（另一估计 `#EF4444`） |
-| `--stopped` | `#6B7280` | Stopped 灰点与徽标（bg `rgba(139,147,167,.12)`，border `rgba(139,147,167,.3)`） |
+| `--color-background` | `#0b0c0f` | 窗口背景 |
+| `--color-card` | `#121318` | 侧栏、详情卡片 |
+| `--color-popover` | `#181a21` | 菜单、浮层卡片 |
+| `--color-secondary` | `#1c1e26` | 选中行、次级按钮 |
+| `--color-accent` | `#22242d` | 次级按钮 hover |
+| `--color-terminal` | `#090a0d` | 终端面板 |
+| `--color-border` | `rgba(236,236,232,.1)` | 分区分隔线 |
+| `--color-input` | `rgba(236,236,232,.12)` | 输入框边框 |
+| `--shadow-border` | `0 0 0 1px rgba(255,255,255,.08)` | 卡片 1px 描边阴影 |
 
-### 1.3 字体与排版
+### 1.2 文字与交互
 
-- UI 字体：系统栈（Segoe UI / Microsoft YaHei）。
-- 等宽（Consolas / Cascadia Mono 栈）：端口、类型徽标、头部元数据行、状态栏、终端/stdout 内容、快捷键提示。
-- 字号层级（估计）：会话名 15px/600；侧栏行名 12px；Tabs 12px/500；正文/按钮 11px；徽标/搜索/状态栏 10–10.5px；分组标题 10px 大写、字间距 ~0.08em。
+| Token | 值 | 用途 |
+| --- | --- | --- |
+| `--color-foreground` | `#ecece8` | 主文字 |
+| `--color-muted-foreground` | `#8f929c` | 次要文字 |
+| `--color-primary` / `-foreground` | `#c5ccd6` / `#0b0c0f` | 主按钮（**中性灰，不是蓝色**） |
+| `--color-destructive` | `#b85c5c` | 强制结束等破坏性动作 |
+| 终端正文 | `#d7d8d4` | 输出行 |
+| 终端输入行 | `#c5ccd6` | 回显的用户输入 |
+| 终端提示符 | `#8fa4c7` | `PS D:\Work>` |
 
-### 1.4 形状与间距
+> **重点**：V2 是中性色交互面。**蓝色不用于按钮**；颜色一律留给生命周期语义
+> （UI_STYLE_GUIDE §10）。
 
-- 圆角：徽标 4px；输入框/按钮/会话行/callout 6px；终端面板与 stdout 块 8px。
-- 边框一律 1px（除 Tabs 激活下划线 2px）。
-- 会话行高 ~40px，内边距 ~8px；选中行左侧 3px `--accent` 竖条 + `--bg-selected` 背景。
-- 头部区域内边距约 20px×24px；元数据行与 callout 之间留 ~10px。
-- 终端面板内边距 ~14px；状态点 8px 圆。
+### 1.3 生命周期状态色
 
-### 1.5 状态语义
+| Token | 值 | 语义 |
+| --- | --- | --- |
+| `--color-status-run` | `#6fba8a` | Running / Ready |
+| `--color-status-busy` / `-warn` | `#c9b07a` | Busy / Starting / Stopping |
+| `--color-status-err` | `#d27878` | Error |
+| `--color-status-idle` | `#6d717b` | Stopped / Exited |
+| `--color-impact` | `rgba(201,176,122,.14)` | 关闭影响 callout 底色 |
 
-- 状态点：绿 = Running；琥珀 = busy/Starting；灰 = Stopped；红 = Error（UI_STYLE_GUIDE §10）。
-- 类型徽标：`SERVICE` / `TERMINAL`（等宽大写、中性配色）；生命周期徽标：`RUNNING`（绿）/ `STARTING`（琥珀）/ `STOPPED`（灰）。
-- 悬停（推测）：行背景 → `--bg-raised`；按钮亮度略升。
+### 1.4 字体与排版
 
-## 2. Service 视图（ui-v2-service.png 差异部分）
+- `--font-sans`: `"IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif`
+- `--font-mono`: `"IBM Plex Mono", "Cascadia Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace`
+- 实现用 `@fontsource/ibm-plex-*` **本地打包**（OFL），不依赖字体 CDN。
+- 字号阶梯（Tailwind 名 → px）：`text-lg` 18（会话名）/ `text-sm` 14（正文、按钮、Tab）/
+  `text-xs` 12（侧栏计数、表格）/ `text-[11px]`（等宽元数据、分组标题、状态栏）/
+  `text-[10px]`（行尾时长、徽标）。字重 500（medium）为主。
+- 等宽用于：端口、类型徽标、头部元数据、状态栏、终端、运行历史。
 
-- 侧栏分组：SERVICES（SillyTavern · 8000 绿点 / ComfyUI · 8188 琥珀点），TERMINALS（PowerShell / CMD 灰点）；每行第二行为 10px 用途文字。
-- 头部（选中 SillyTavern）：
-  - 名称行：`SillyTavern` + `SERVICE` + `RUNNING`；
-  - 用途：`聊天前端`；
-  - 停止影响 callout：⚠ `停止影响：SillyTavern 正在 8000 端口服务 — 网页会失联`；
-  - 元数据行（等宽 10.5px）：`PID 12384 · 端口 8000 · 运行 2h 14m · 日志 captured/auto`；
-  - 按钮组：`Open http://localhost:8000`（主按钮蓝）、`Restart`（次级）、`Stop`（红描边）、`⋯`（More）。
-- Tabs 下内容区：整块 stdout 面板（`--bg-inset`、8px 圆角、1px 边框、内滚动），每行前缀灰色时间戳（`--text-faint`）+ 正文（约 `#9CA3AF`）。
-- 底部状态栏：左 `● 端口 8000 正常`（绿点）`· 日志 captured → %LOCALAPPDATA%\LocalConsoleHub\logs\...`（等宽、截断）；右 `就绪`。
+### 1.5 形状与间距
 
-## 3. Terminal 视图（ui-v2-terminal.png 差异部分）
+- 圆角：卡片/终端面板/菜单 `12px`（`rounded-md`/`rounded-xl`）；按钮、行 `8px`；
+  徽标 `999px`（全圆）。
+- 侧栏宽 `17.5rem`（280px）；选中行无左竖条，仅背景 `--color-secondary`。
+- 状态点 `8px` 圆；busy/starting/stopping 时带脉冲动画（2s）。
+- 标题栏高 `44px`；Tabs 高 `40px`，激活态下划线 `1px` `--color-primary`（**不是 2px 蓝线**）；
+  状态栏高 `32px`。
 
-- 侧栏选中 `PowerShell`（TERMINALS 组，绿点）。
-- 头部（选中 PowerShell）：
-  - 名称行：`PowerShell` + `TERMINAL` + `RUNNING`；
-  - 用途：`日常终端`；
-  - 停止影响 callout：⚠ `停止影响：关闭将结束 PowerShell 会话 — 未保存的 shell 状态将丢失`；
-  - 元数据行：`PID 15234 · 运行 12m 05s · 日志 off/none（交互会话默认不持久化）`；
-  - 按钮组：`Restart`（次级）、`Stop`（红描边）、`⋯`（More）——**无 Open 按钮**（terminal 无 URL，context-appropriate）。
-- 内容区：全高终端面板（`--bg-inset`、8px 圆角、1px 边框）；面板头部左上有三个 12px 圆点（`#FF5F57` / `#FEBC2E` / `#28C840`）+ 右侧 `已连接 · PTY`（10px 次要色）；内容为等宽终端文本（prompt `PS C:\Users\q9560>` 亮色，输出约 `#9CA3AF`）。
-- 底部状态栏：左 `缓冲 512 行 · 丢弃 0 行 · stdin 未记录`（等宽 10px）；右 `就绪`。
+## 2. 结构
 
-## 4. 实现取舍（T06 #7 范围裁定）
+~~~text
+窗口（#0b0c0f）
+├── 标题栏（44px，底部 1px 边框）
+│   ├── 左：HubMark 图标(20px) + "Local Console Hub"(14/500)
+│   └── 右：等宽 "N 运行 · M busy"
+├── 主体（水平两栏）
+│   ├── 侧栏（280px，#121318，右 1px 边框）
+│   │   ├── "受管会话"(14/500) + "N 运行 · M 忙碌 · T 会话"(12，次要色) + 新建按钮(32px 方)
+│   │   ├── 搜索框（36px，放大镜图标，占位符 "搜索名称、端口、用途"）
+│   │   ├── 分组（标题 11/大写/字距 .12em + 右侧 hint）
+│   │   │   ├── AI Apps — 长期本地模型与 WebUI
+│   │   │   ├── Debug / Test — 临时接口与调试壳
+│   │   │   └── Temporary — 用完即走的终端
+│   │   └── 底部："新建 PowerShell / 服务"
+│   └── 工作区
+│       ├── 头部（会话名 18/500 + 类型徽标 + 状态徽标 / 用途 / callout / 元数据行 / 按钮组）
+│       ├── Tabs：终端 · 日志 · 详情
+│       └── 内容区（padding 8px）；终端面板占满
+└── 状态栏（32px，等宽 11）
+    左 "Hub 常驻 · N/T 运行 · 输入默认不记录"；右 "关闭窗口 ≠ 停止服务"
+~~~
 
-参考图含以下元素，按工单 out-of-scope 与 UI_STYLE_GUIDE 裁定如下：
+## 3. 组件清单（源码文案）
 
-1. **顶部 设置 / 日志 / 退出 / Ctrl K**：T06 不实现 —— 工单明确禁止重复的全局 Logs 导航；
-   全局设置与退出入口归后续工单（退出语义依赖 T09 托盘生命周期）。标题栏只保留
-   应用身份 + 运行摘要。
-2. **窗口控制 — □ ✕**：T06 保留操作系统原生标题栏（tauri 默认 decorations），不自绘
-   窗口控制。X → 隐藏到托盘（D-006）是 T09 的交付物，届时再评估是否切 custom chrome。
-3. **终端面板左上三个圆点**：纯装饰元素（无功能语义），为贴近 normative 参考图保留
-   为 CSS 装饰；不承载任何交互。
-4. **"UI 预览" 徽标**：参考图的预览标记，产品界面不携带。
-5. 两图摘要文字不一致（"2 running · 1 busy" vs "4 运行 · 1 busy"）：以 AppSummary
-   真实计数为准（`{running} 运行 · {busy} busy`），不复制任何一图的字面值。
+- **会话行**：状态点 + 名称(14/500) + 右侧「运行时长」或「状态词」+ 元数据行
+  `<:端口> · svc|tty · [busy] · [error] · [Always|On error|Manual]`；
+  terminal 行为 `interactive · tty`。busy/error 词着色；**无装饰性应用图标**。
+- **头部徽标**：类型徽标 `Service` / `Terminal`（描边）；状态徽标 = 状态点 + 词
+  （`Ready` / `Busy` / `Running` / `Starting` / `Stopping` / `Stopped` / `Exited` / `Error`）。
+  `busy` 优先于 `ready`。
+- **头部按钮**：`启动`(主，中性灰) **或** `停止`(次级，二选一)；`重启`；`打开网页`
+  （仅 service 且有 URL）；`目录`；`⋯` 更多菜单（打开网页/打开目录/聚焦终端/
+  查看日志策略/复制路径/——/强制结束进程树）。
+- **关闭影响 callout**：`关闭影响`(11/大写/字距 .12em/琥珀) + 配置里的 `close_impact` 原文；
+  左 2px 琥珀竖线 + `--color-impact` 底。停止态改为 `上次错误`(红) 显示 `lastError`。
+- **元数据行**：`PID <n>` · `port :<n>` · `up <时长>` · `cwd <路径>` · `log <值>`；
+  等宽 11，label 用次要色 70% 透明，value 用主文字 80%。`up` 仅 running 时出现。
+  `log` 值：`buffer only`（source none）/ `external` / 模式词。
+- **终端面板**：`#090a0d` + 1px 描边阴影；顶部条左 `ConPTY · interactive`（terminal）
+  或 `PTY attached · stdin 可用`（service），右 `connected` / 状态词；正文等宽 12.5/行高 1.55；
+  行类型着色：sys 次要色、in `#c5ccd6`、err 红、out `#d7d8d4`；
+  running 时末尾一行提示符（terminal `PS <cwd>>`，service `<id> $`）+ 闪烁光标；
+  **未运行时**覆盖一层 dim + 居中卡片「会话未运行 / 交互终端必须先启动进程。这不是只读
+  日志面板。」+ `启动 <name>` 按钮。
+  **注意**：源码中**没有** macOS 三点窗口按钮（早先视觉转译虚构了这一元素，已删除）。
+- **日志面板**：策略卡片（徽标 `Capturing`|模式词 + 来源词 + `stdin 不记录`；
+  一句话结论；当前日志文件路径；`打开日志`/`打开目录`/`复制路径`）+ 运行历史列表
+  （`run-<id>` + 状态徽标 running|ok|error + 起始时间 + 路径/PID/exit）。off 会话显示
+  「交互终端默认不产生磁盘日志，因此没有伪造的空记录。」
+- **详情面板**：三段卡片 —— 「它是谁」（名称/用途）、「能不能关」（close_impact +
+  「停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。」）、
+  「依赖」（依赖会话名 + 状态徽标）；末尾 label/value 行：类型、状态、PID、Run、端口、
+  URL、工作目录、启动命令、日志模式、运行时长。
+
+## 4. 状态语义
+
+- 状态点：绿 Running / 琥珀 Busy·Starting·Stopping / 红 Error / 灰 Stopped·Exited。
+- 类型徽标中性描边；生命周期徽标用状态色 15% 底 + 状态色文字。
+- 悬停：行 → `rgba(28,30,38,.7)`；次级按钮 → `--color-accent`；幽灵按钮 → `--color-secondary`。
+- 选中：行背景 `--color-secondary`（无左竖条）。
+
+## 5. 与参考图的**有意偏差**（T06 #7 范围裁定）
+
+1. **不实现**参考图右上角的 `Ctrl K`、设置/日志/退出、以及窗口控制 `— □ ✕`：T06 工单
+   明确禁止重复的全局 Logs 导航；全局设置/退出属后续工单（退出语义依赖 T09 托盘）。
+   窗口保留系统原生装饰。
+2. **"UI 预览" 徽标**：参考图的预览标记，产品界面不携带；实现仅在检测不到 Rust 后端时
+   于状态栏右侧显示一个等宽 `UI 预览` 提示（开发态）。
+3. **行内日志标签 `Auto` → `External`**：`auto` 在到达前端前已被解析
+   （`src/types/config.ts`、T05 契约），前端拿不到 `Auto`。对「应用自带日志」的会话，
+   行内改显示 `External`，与头部 `log external` 一致。这是唯一一处与参考图文案的
+   实际差异，属契约约束而非实现取舍。
+4. 参考图两处的计时字面值（`3h 23m` vs `3h 12m`、`23m 47s` vs `12m 5s`）在实现中由
+   fixture 相对时间生成，时间点不同属正常。

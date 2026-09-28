@@ -1,0 +1,132 @@
+.logs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.logs-panel__policy {
+  flex: none;
+  border-radius: 12px;
+  background: rgba(28, 30, 38, 0.6);
+  box-shadow: var(--shadow-border);
+  padding: 12px;
+}
+
+.logs-panel__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-panel__headline {
+  margin: 8px 0 0;
+  font-size: 14px;
+}
+
+.logs-panel__path {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.625;
+  color: var(--muted-fg);
+  overflow-wrap: anywhere;
+}
+
+.logs-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.logs-panel__history {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: var(--shadow-border);
+}
+
+.logs-panel__history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  flex: none;
+}
+
+.logs-panel__history-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-fg);
+}
+
+.logs-panel__cleanup {
+  color: var(--muted-fg);
+}
+
+.logs-panel__runs {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.logs-panel__run {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.logs-panel__run-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.logs-panel__run-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-panel__run-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.logs-panel__run-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-fg);
+}
+
+.logs-panel__run-detail {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-fg);
+  overflow-wrap: anywhere;
+}
+
+.logs-panel__runs-empty {
+  padding: 32px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-fg);
+}

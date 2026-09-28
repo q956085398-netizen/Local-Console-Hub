@@ -1,26 +1,54 @@
 /*
  * Local Console Hub base styles.
  *
- * This is only the bootstrap theme (T00). The approved V2 workspace layout
- * (sidebar, session header, terminal host, status bar) arrives with T06 (#7)
- * and must follow docs/UI_STYLE_GUIDE.md — do not grow a UI here.
+ * Design tokens transcribed from the approved V2 prototype source
+ * (E:/Grok-UI-Design/LocalConsoleHub — the workspace the V2 reference
+ * screenshots were captured from), so the values are exact rather than
+ * estimated: see docs/DESIGN_SPEC_EXTRACTED.md for the mapping and the
+ * component-level layout notes.
  */
 
 :root {
   color-scheme: dark;
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-  --surface-0: #0f1115;
-  --surface-1: #15181e;
-  --border-subtle: #262b35;
-  --text-primary: #e6e8ee;
-  --text-secondary: #9aa1ad;
-  --accent: #4c8dff;
-  --danger: #e5484d;
+  font-family: "IBM Plex Sans", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", ui-monospace, Consolas, monospace;
+
+  /* surfaces */
+  --bg: #0b0c0f; /* window */
+  --card: #121318; /* sidebar, detail cards */
+  --popover: #181a21;
+  --secondary: #1c1e26; /* selected rows, secondary buttons */
+  --accent-surface: #22242d; /* secondary-button hover */
+  --terminal: #090a0d;
+
+  /* text */
+  --fg: #ecece8;
+  --fg-dim: #c5ccd6;
+  --muted-fg: #8f929c;
+  --idle-fg: #6d717b;
+
+  /* interaction: the V2 surface is neutral — status color is reserved for
+   * lifecycle truth (UI_STYLE_GUIDE §10). */
+  --primary: #c5ccd6;
+  --primary-fg: #0b0c0f;
+  --destructive: #b85c5c;
+  --destructive-bright: #d27878;
+
+  /* lines */
+  --border: rgba(236, 236, 232, 0.1);
+  --border-soft: rgba(255, 255, 255, 0.05);
+  --input-bg: rgba(236, 236, 232, 0.12);
+
+  /* lifecycle */
+  --status-run: #6fba8a;
+  --status-busy: #c9b07a;
+  --status-err: #d27878;
+  --status-idle: #6d717b;
+  --impact-bg: rgba(201, 176, 122, 0.14);
+  --impact-border: rgba(201, 176, 122, 0.2);
+
+  /* elevation */
+  --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 html,
@@ -31,8 +59,91 @@ body,
 
 body {
   margin: 0;
-  background: var(--surface-0);
-  color: var(--text-primary);
+  background: var(--bg);
+  color: var(--fg);
   font-size: 14px;
   line-height: 1.5;
+  overflow: hidden;
+}
+
+/* Quiet, dark scrollbars for the terminal/output surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a2d36 transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a2d36;
+  border-radius: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: rgba(197, 204, 214, 0.25);
+}
+
+:focus-visible {
+  outline: 1px solid var(--fg-dim);
+  outline-offset: 1px;
+}
+
+/* Shared status-pip primitive (sidebar rows, header badge, dependencies). */
+.pip {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.pip--run {
+  background: var(--status-run);
+}
+.pip--busy {
+  background: var(--status-busy);
+}
+.pip--err {
+  background: var(--status-err);
+}
+.pip--warn {
+  background: var(--status-busy);
+}
+.pip--idle {
+  background: var(--status-idle);
+}
+.pip--pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: inherit;
+  animation: pip-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+
+@keyframes caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
