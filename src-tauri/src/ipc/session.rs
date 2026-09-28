@@ -18,6 +18,9 @@ use tauri::State;
 use crate::config::SessionConfigDto;
 use crate::session::core::{SessionCore, SessionError};
 use crate::session::runtime::SessionRuntime;
+use crate::shell;
+
+use super::hand_over_failed;
 
 /// Every session's snapshot, in id order.
 #[tauri::command]
@@ -88,4 +91,37 @@ pub fn restart_session(
     session_id: String,
 ) -> Result<SessionRuntime, SessionError> {
     core.restart(&session_id)
+}
+
+/// Open a session's configured URL with the OS's default handler (spec §9).
+///
+/// Takes a session id, never a URL: the session's own configuration is the only
+/// place the address comes from, so this command cannot be used to send the
+/// machine anywhere the user did not configure. A session without a `url` is
+/// refused with what to add, rather than opening nothing (`crate::shell`'s note,
+/// `docs/DECISIONS.md` D-021).
+#[tauri::command]
+pub fn open_session_url(
+    core: State<'_, SessionCore>,
+    session_id: String,
+) -> Result<(), SessionError> {
+    let url = core.session_url(&session_id)?;
+    shell::open_url(&url).map_err(|error| hand_over_failed(&session_id, "open_session_url", error))
+}
+
+/// Open a session's configured working directory in the OS's file browser
+/// (spec §9).
+///
+/// The same shape as [`open_session_url`], and for the same reason: the folder
+/// is resolved from the session, so this is not a general "open a folder"
+/// command. A session with no `cwd`, or one whose folder has since been deleted,
+/// is reported with an actionable message.
+#[tauri::command]
+pub fn open_session_cwd(
+    core: State<'_, SessionCore>,
+    session_id: String,
+) -> Result<(), SessionError> {
+    let path = core.session_cwd(&session_id)?;
+    shell::open_path(&path)
+        .map_err(|error| hand_over_failed(&session_id, "open_session_cwd", error))
 }
