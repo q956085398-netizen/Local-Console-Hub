@@ -316,6 +316,79 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 
 ---
 
+## D-018：交互终端由 Session Core 托管 PTY；「关闭会话」没有优雅阶梯
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+一个 `type: terminal` 会话的运行体是 **PTY**（T02 层，`crate::pty`），不是受监督进程；
+`start_spec` 按会话类型分派（service → T03 进程，terminal → PTY），两条运行路径共用
+同一套生命周期状态机（同一个 `Run` 枚举只有四个方法）。
+
+关闭终端 = 关闭控制台：`Pty::kill()` 终止 shell 并**确认其已退出**后才返回，因此
+`StopReport.graceful_delivered` 恒为 `false`——不存在可投递的优雅信号（ConPTY 上没有
+`CTRL_BREAK` 的对应物），报告 `true` 会是在声称一个从未发生的礼让。这与 D-007 对进程
+树的阶梯并不冲突：D-007 管的是受监督服务，终端会话的「优雅手势」是**输入**——用户按下的
+Ctrl+C 走 `terminal_write` 的 `0x03` 字节，它中断正在运行的命令，**不关闭会话**（spec §7）。
+
+shell 未能在终止后退出时，停止操作按失败上报、会话落到 `Error`，而不是假装停干净了。
+
+用户可见行为：终端会话的「停止」立即结束 shell；Ctrl+C 只打断当前命令；两者在 UI 上
+是两个不同动作（`停止` 按钮 vs 键盘中断）。
+
+---
+
+## D-019：终端输出以带字节区间的事件批次到达 UI；attach 强制切一刀
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+终端输出通过 `terminal-output` 事件送到前端，每个批次携带：
+
+- `generation`——它属于哪一次运行（重启会 +1）；
+- `start` / `end`——它覆盖该运行字节流的哪一段（半开区间）；
+- `data`——该段字节，**base64**（标准字母表、带填充）。
+
+批次在会话内部由 relay 合并：够 `BATCH_MAX_BYTES`（64 KiB）或最早一个待发字节等满
+`BATCH_WINDOW`（16 ms）就切一刀；终端读取线程每 16 ms 唤醒一次作为静默期的兜底，
+服务进程走 watcher 的 100 ms tick。这是 spec §9/§14「不要每行一个事件、一个高输出会话
+不得拖垮整个 UI」的落点：2000 行输出在测试中被压成远少于 200 个事件。
+
+**偏移量的契约**：`attach_terminal` 返回保留的 scrollback、该 scrollback 覆盖到的字节偏移
+（`emitted`）与 `generation`；视图重放 chunks，然后**整批追加** `end` 超过该偏移的批次、
+整批丢弃 `end` 不超过它的批次——不切批次。这个「不切」之所以成立，是因为 attach 在**同一
+次持锁**里把待发输出切出来发布：`emitted` 因此只会落在批次边界上。`emitted` 在字节**进入
+scrollback 时**推进（不是发布时），所以任一次 attach 读到的偏移与它读到的 scrollback 永远
+自洽。
+
+字节用 base64 而不是文本：控制台的一次读取可能落在多字节字符中间，按 chunk 解码会把接缝
+渲染成替换字符（`terminal-output` 与 `attach` 的 chunk 都因此携带字节）。前端把字节交给
+xterm.js，由它以流式 UTF-8 解码，跨 write 的多字节字符不受影响。
+
+用户可见行为：切换会话、切到「日志/详情」页签、隐藏窗口后回来，终端既不重复也不丢失已经
+显示过的输出；被丢弃（超出上限）的历史由 `buffer.droppedBytes` 明示。
+
+---
+
+## D-020：会话在 UI 里是 config + snapshot 两半；`list_session_configs` 补上 config
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+窗口渲染一个会话需要两半：它**是什么**（名称、类型、用途、关闭影响、端口、cwd、shell ——
+即校验后的 config）和它**在做什么**（状态、PID、运行时长、缓冲 —— 即 `SessionRuntime`
+snapshot）。T04 起 IPC 只有后者；T07 增加 `list_session_configs`，从**同一注册表**回答前者，
+因此窗口列出的一行一定是 Session Core 能 start/stop/attach 的会话。
+
+后端可用时窗口就以这两半渲染真实会话，后端不可用（浏览器预览、首次列表返回之前）才退回
+T06 的 fixture 工作区——两种来源是同一个 `SessionView` 形状，不是两套模型。
+
+实时会话没有分组（配置 schema 没有 `group` 字段，也没有归属工单），因此统一挂在
+`Configured`（hint `config.yaml`）一个分组下：如实说明来源，而不是发明一套配置并不具备的
+分类。fixture 工作区仍使用参考图里的三个分组，用于与参考图比对。
+
+用户可见行为：应用启动即显示 `config.yaml` 中的真实会话；终端的启动/停止/重启作用于真实
+会话；预览模式下的动作只提示不执行。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：

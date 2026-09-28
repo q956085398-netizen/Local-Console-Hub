@@ -286,11 +286,13 @@ MVP command equivalents:
 
 ~~~text
 list_sessions
+list_session_configs
 get_session
 start_session
 stop_session
 force_stop_session
 restart_session
+attach_terminal
 terminal_write
 terminal_resize
 open_session_url
@@ -304,6 +306,18 @@ set_log_recording
 `save_run_log` commits an `on_error` run's log on demand and `set_log_recording`
 switches a `manual` run's recording on or off (LOGGING.md §3). Both name a
 single operation; neither is a generic "do something to this session".
+
+`list_session_configs` answers the half of a session that is not its snapshot —
+what it *is* (name, type, purpose, close impact, port, cwd, shell) — from the
+same registry the snapshots come from, so a row the window can render is one
+Session Core can act on.
+
+`attach_terminal` is what a terminal view calls when it appears: it answers with
+the retained scrollback, the byte offset that scrollback reaches, and the run
+they belong to. `terminal_write` carries input bytes (base64) and
+`terminal_resize` the view's geometry — which is remembered for a session that
+has not started yet, so a shell begins at the size its view already has.
+Terminal output arrives as events, not as a return value (§6).
 
 Do not introduce one generic "execute arbitrary backend action" command.
 
