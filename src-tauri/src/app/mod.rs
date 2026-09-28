@@ -86,12 +86,32 @@ mod tests {
     struct TempConfig(PathBuf);
 
     impl TempConfig {
+        /// A temp config at a path nothing else can be using.
+        ///
+        /// The clock alone is not enough: `SystemTime`'s resolution is the
+        /// platform's, and on a CI runner it can be coarse enough for two of
+        /// these tests (which run in parallel) to derive the *same* nanosecond
+        /// and write over each other's file. That is not hypothetical — it is
+        /// what a red `windows-build` run looked like: the registration test
+        /// asserted one session was registered and then found none under its own
+        /// id, which is exactly what the sibling `a_bad_entry_*` fixture
+        /// produces, so it had loaded that test's file. A counter and the
+        /// process id make the name unique by construction rather than by
+        /// timing (the same reasoning as `RunId::mint`).
         fn new(contents: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+
+            static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("the clock is after the epoch")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("lch-t04-{unique}.yaml"));
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lch-t04-{}-{unique}-{sequence}.yaml",
+                std::process::id()
+            ));
             fs::write(&path, contents).expect("the temp config is writable");
             TempConfig(path)
         }
@@ -99,6 +119,32 @@ mod tests {
         fn path(&self) -> &Path {
             &self.0
         }
+    }
+
+    /// Two configs made back to back never share a path.
+    ///
+    /// Costs nothing and pins the property the CI failure turned on: that the
+    /// name is unique by construction, not by timing. (It cannot *reproduce*
+    /// that failure — this machine's clock is finer than the runner's, so the
+    /// collision needs a coarse `SystemTime`, not a tight loop.)
+    #[test]
+    fn temporary_configs_never_share_a_path() {
+        let configs: Vec<TempConfig> = (0..64)
+            .map(|_| {
+                TempConfig::new(
+                    "sessions: []
+",
+                )
+            })
+            .collect();
+        let paths: std::collections::HashSet<&Path> =
+            configs.iter().map(|config| config.path()).collect();
+
+        assert_eq!(
+            paths.len(),
+            configs.len(),
+            "two temp configs shared a path, so one test can read another's file"
+        );
     }
 
     impl Drop for TempConfig {
