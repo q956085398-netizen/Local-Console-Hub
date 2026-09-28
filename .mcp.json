@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "ui-vision": {
-      "command": "node",
-      "args": ["tools/vision-mcp/server.mjs"]
-    }
-  }
-}

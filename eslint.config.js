@@ -16,9 +16,9 @@ export default tseslint.config(
     },
   },
   {
-    // Standalone Node scripts (icon generator, ui-vision MCP server) need
-    // Node/browser-standard globals that no-undef otherwise flags.
-    files: ["scripts/**/*.mjs", "tools/**/*.mjs"],
+    // Standalone Node scripts (icon generator) need Node/browser-standard
+    // globals that no-undef otherwise flags.
+    files: ["scripts/**/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",
