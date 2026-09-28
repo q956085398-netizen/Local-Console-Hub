@@ -11,9 +11,11 @@ use serde::Serialize;
 
 /// MVP lifecycle states (spec §4).
 ///
-/// `busy`/`ready` are *not* modelled here: the spec is explicit that the
-/// optional runtime flags supplement lifecycle state and must not replace it,
-/// so they belong to the runtime snapshot rather than to the state machine.
+/// §4 also lists optional `busy`/`ready` runtime flags. Neither exists yet —
+/// nothing produces them until there is a health signal to derive them from
+/// (§12, T08's) — so they are absent from both this enum and the runtime
+/// snapshot. What matters for the state machine is the rule they must obey
+/// when they arrive: they supplement lifecycle state and never replace it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {

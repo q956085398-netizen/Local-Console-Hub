@@ -70,7 +70,9 @@ pub enum SessionErrorKind {
     InvalidTransition,
     /// The operation is not wired for this session type yet.
     Unsupported,
-    /// The operation reached the supervisor and failed there.
+    /// The operation was allowed by the state machine but could not be carried
+    /// out: an unusable command or working directory, a start the supervisor
+    /// refused, a stop that could not confirm the tree was gone.
     Failed,
 }
 
@@ -86,6 +88,68 @@ pub struct SessionError {
     pub message: String,
     /// The state the session was in when the move was refused.
     pub from: Option<SessionStatus>,
+}
+
+impl SessionError {
+    /// No session is registered under `session_id`.
+    pub fn unknown_session(session_id: &str, operation: &str) -> Self {
+        SessionError {
+            kind: SessionErrorKind::UnknownSession,
+            session_id: session_id.to_owned(),
+            operation: operation.to_owned(),
+            message: format!("no session is registered as `{session_id}`"),
+            from: None,
+        }
+    }
+
+    /// The state machine does not allow the move `from -> to`.
+    pub fn invalid_transition(
+        session_id: &str,
+        operation: &str,
+        from: SessionStatus,
+        to: SessionStatus,
+    ) -> Self {
+        SessionError {
+            kind: SessionErrorKind::InvalidTransition,
+            session_id: session_id.to_owned(),
+            operation: operation.to_owned(),
+            message: format!(
+                "cannot {operation} a session that is {} — that would be a {} -> {} \
+                 transition, which the lifecycle does not allow",
+                from.as_str(),
+                from.as_str(),
+                to.as_str()
+            ),
+            from: Some(from),
+        }
+    }
+
+    /// The operation is not wired for this session type yet.
+    pub fn unsupported(session_id: &str, operation: &str, message: impl Into<String>) -> Self {
+        SessionError {
+            kind: SessionErrorKind::Unsupported,
+            session_id: session_id.to_owned(),
+            operation: operation.to_owned(),
+            message: message.into(),
+            from: None,
+        }
+    }
+
+    /// The operation was allowed but could not be carried out.
+    pub fn failed(
+        session_id: &str,
+        operation: &str,
+        message: impl Into<String>,
+        from: Option<SessionStatus>,
+    ) -> Self {
+        SessionError {
+            kind: SessionErrorKind::Failed,
+            session_id: session_id.to_owned(),
+            operation: operation.to_owned(),
+            message: message.into(),
+            from,
+        }
+    }
 }
 
 impl std::fmt::Display for SessionError {
@@ -225,7 +289,7 @@ impl SessionCore {
     /// observe the state change and the count in the opposite order. Callers
     /// must have released the session lock: this reads every session, and the
     /// lock order everywhere else is registry-then-session.
-    fn publish_current(&self, session_id: &str) {
+    fn publish_state_and_summary(&self, session_id: &str) {
         let Some(runtime) = self.snapshot(session_id) else {
             return;
         };
@@ -256,6 +320,19 @@ impl SessionCore {
         }
     }
 
+    /// Announce that a run has ended.
+    ///
+    /// Every path that ends a run goes through here — a start that failed, a
+    /// stop the user asked for, and the watcher seeing a run end on its own.
+    /// Splitting these apart is what let a stop close its run record in silence
+    /// once already: the watcher declines to report an ending a stop owns, so a
+    /// stop that forgot to publish left the closing of the record unreported
+    /// everywhere.
+    fn publish_ending(&self, session_id: &str) {
+        self.publish_state_and_summary(session_id);
+        self.publish_run(session_id);
+    }
+
     /// Start a service session, and publish the states it passes through.
     ///
     /// On success the session is `Running` with a fresh run id and the run's
@@ -266,7 +343,7 @@ impl SessionCore {
     pub fn start(&self, session_id: &str) -> Result<SessionRuntime, SessionError> {
         let handle = self
             .handle(session_id)
-            .ok_or_else(|| unknown_session(session_id, "start"))?;
+            .ok_or_else(|| SessionError::unknown_session(session_id, "start"))?;
 
         // Claim the transition under the lock, then let go of it: a spawn is
         // the slow part, and holding the session lock across it would stall
@@ -281,7 +358,7 @@ impl SessionCore {
 
             let from = state.runtime.status;
             if !from.can_transition_to(SessionStatus::Starting) {
-                return Err(invalid_transition(
+                return Err(SessionError::invalid_transition(
                     session_id,
                     "start",
                     from,
@@ -298,7 +375,7 @@ impl SessionCore {
         };
         // The listener sees the start in flight, which is what a UI needs to
         // keep the action buttons from lying about what is happening.
-        self.publish_current(session_id);
+        self.publish_state_and_summary(session_id);
 
         let spawned = ManagedProcess::spawn(spec);
 
@@ -347,22 +424,20 @@ impl SessionCore {
                         operation: "start".to_owned(),
                         message: message.clone(),
                     });
-                    Err(SessionError {
-                        kind: SessionErrorKind::Failed,
-                        session_id: session_id.to_owned(),
-                        operation: "start".to_owned(),
+                    Err(SessionError::failed(
+                        session_id,
+                        "start",
                         message,
-                        from: Some(SessionStatus::Starting),
-                    })
+                        Some(SessionStatus::Starting),
+                    ))
                 }
             }
         };
 
         // Published after the session lock is released, so a sink can never
         // deadlock against the operation that produced the event.
-        self.publish_current(session_id);
         if outcome.is_ok() {
-            self.publish_run(session_id);
+            self.publish_ending(session_id);
 
             // Started only after `Running` is on the wire. A run can end very
             // quickly, and a watcher that got there first would publish
@@ -375,6 +450,8 @@ impl SessionCore {
                 let session_id = session_id.to_owned();
                 move || watch_run(core, handle, session_id, generation)
             });
+        } else {
+            self.publish_state_and_summary(session_id);
         }
         outcome
     }
@@ -419,7 +496,7 @@ impl SessionCore {
     pub fn restart(&self, session_id: &str) -> Result<SessionRuntime, SessionError> {
         let current = self
             .snapshot(session_id)
-            .ok_or_else(|| unknown_session(session_id, "restart"))?;
+            .ok_or_else(|| SessionError::unknown_session(session_id, "restart"))?;
 
         if current.status == SessionStatus::Running {
             // The barrier. When this returns, nothing of the old run is left.
@@ -439,19 +516,23 @@ impl SessionCore {
 
         let handle = self
             .handle(session_id)
-            .ok_or_else(|| unknown_session(session_id, operation))?;
+            .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
 
         // Claim `Stopping` under the lock, then release it: the wait itself is
         // the slow part, and `session` is the only session it may hold up.
-        // DEVELOPMENT §6 asks for the UI to be told `Stopping` *before* the
-        // wait, which is what publishing here — rather than once at the end —
-        // is for.
+        //
+        // `Stopping` is published here, before the request and the wait, rather
+        // than once at the end. DEVELOPMENT §6 lists the UI update as a later
+        // step, and this deliberately departs from that order — the departure
+        // is recorded in D-015. What §6 requires of the ordering is unchanged:
+        // request gracefully, wait, escalate against the managed tree, and only
+        // report a terminal state once the tree is confirmed gone.
         let run = {
             let mut state = lock(&handle);
 
             let from = state.runtime.status;
             if !from.can_transition_to(SessionStatus::Stopping) {
-                return Err(invalid_transition(
+                return Err(SessionError::invalid_transition(
                     session_id,
                     operation,
                     from,
@@ -462,23 +543,29 @@ impl SessionCore {
             state.runtime.status = SessionStatus::Stopping;
             state.run.clone()
         };
-        self.publish_current(session_id);
+        self.publish_state_and_summary(session_id);
 
         // A `Running` session with no run should be impossible; if the state
         // machine ever allowed it, saying so beats pretending a stop happened.
         let Some(run) = run else {
+            let message = format!("session `{session_id}` owns no run to stop");
             let mut state = lock(&handle);
             state.runtime.status = SessionStatus::Error;
-            let error = SessionError {
-                kind: SessionErrorKind::Failed,
-                session_id: session_id.to_owned(),
+            // The snapshot reports the error, so it has to carry the reason
+            // for it: §4 keeps a last structured error precisely so a failure
+            // is explainable without a log.
+            state.runtime.last_error = Some(SessionErrorInfo {
                 operation: operation.to_owned(),
-                message: format!("session `{session_id}` owns no run to stop"),
-                from: Some(SessionStatus::Stopping),
-            };
+                message: message.clone(),
+            });
             drop(state);
-            self.publish_current(session_id);
-            return Err(error);
+            self.publish_state_and_summary(session_id);
+            return Err(SessionError::failed(
+                session_id,
+                operation,
+                message,
+                Some(SessionStatus::Stopping),
+            ));
         };
 
         let report = match timeout {
@@ -495,10 +582,7 @@ impl SessionCore {
                     } else {
                         SessionStatus::Exited
                     };
-                    state.runtime.status = ended;
-                    state.runtime.exit_code = report.exit.code;
-                    state.runtime.pid = None;
-                    finish_record(&mut state, report.exit.code);
+                    state.close_run(ended, report.exit.code);
                     Ok(state.runtime.clone())
                 }
                 Err(error) => {
@@ -508,27 +592,44 @@ impl SessionCore {
                         operation: operation.to_owned(),
                         message: message.clone(),
                     });
-                    Err(SessionError {
-                        kind: SessionErrorKind::Failed,
-                        session_id: session_id.to_owned(),
-                        operation: operation.to_owned(),
+                    Err(SessionError::failed(
+                        session_id,
+                        operation,
                         message,
-                        from: Some(SessionStatus::Stopping),
-                    })
+                        Some(SessionStatus::Stopping),
+                    ))
                 }
             }
         };
 
-        self.publish_current(session_id);
+        // The run ended, so its record closed with it and has to be announced
+        // alongside the state. A stop that failed left the record open and has
+        // nothing new to say about it.
+        match &outcome {
+            Ok(_) => self.publish_ending(session_id),
+            Err(_) => self.publish_state_and_summary(session_id),
+        }
         outcome
     }
 }
 
-/// Close an open run record with the result that ended it.
-fn finish_record(state: &mut SessionState, code: Option<u32>) {
-    if let Some(record) = state.record.as_mut() {
-        record.ended_at = Some(Timestamp::now());
-        record.exit_code = code;
+impl SessionState {
+    /// Record that the current run has ended, in the snapshot and in the run
+    /// record together.
+    ///
+    /// One method rather than two updates at each call site: the snapshot is
+    /// what the UI renders and the record is what run history keeps, and they
+    /// describe the same event. Letting a caller update one and forget the
+    /// other is how they drift.
+    fn close_run(&mut self, status: SessionStatus, code: Option<u32>) {
+        self.runtime.status = status;
+        self.runtime.exit_code = code;
+        self.runtime.pid = None;
+
+        if let Some(record) = self.record.as_mut() {
+            record.ended_at = Some(Timestamp::now());
+            record.exit_code = code;
+        }
     }
 }
 
@@ -584,45 +685,30 @@ fn watch_run(
             return;
         }
         let code = run.exit_status().and_then(|exit| exit.code);
-        state.runtime.status = SessionStatus::Exited;
-        state.runtime.exit_code = code;
-        state.runtime.pid = None;
-        finish_record(&mut state, code);
+
+        // Spec §5 allows both `Running -> Exited` and `Running -> Error`, so
+        // the two are not interchangeable. A run that ends by itself with a
+        // failing status has failed — saying `Exited` would show a crashed
+        // service as a cleanly stopped one, leave the error count at zero, and
+        // leave §11's "Restart Failed" with nothing to notice. A run with no
+        // code to inspect is not called a failure.
+        let ended = match code {
+            Some(0) | None => SessionStatus::Exited,
+            Some(_) => SessionStatus::Error,
+        };
+        if ended == SessionStatus::Error {
+            state.runtime.last_error = Some(SessionErrorInfo {
+                operation: "run".to_owned(),
+                message: format!(
+                    "the run ended on its own with exit code {}",
+                    code.unwrap_or_default()
+                ),
+            });
+        }
+        state.close_run(ended, code);
     }
 
-    core.publish_current(&session_id);
-    core.publish_run(&session_id);
-}
-
-fn unknown_session(session_id: &str, operation: &str) -> SessionError {
-    SessionError {
-        kind: SessionErrorKind::UnknownSession,
-        session_id: session_id.to_owned(),
-        operation: operation.to_owned(),
-        message: format!("no session is registered as `{session_id}`"),
-        from: None,
-    }
-}
-
-fn invalid_transition(
-    session_id: &str,
-    operation: &str,
-    from: SessionStatus,
-    to: SessionStatus,
-) -> SessionError {
-    SessionError {
-        kind: SessionErrorKind::InvalidTransition,
-        session_id: session_id.to_owned(),
-        operation: operation.to_owned(),
-        message: format!(
-            "cannot {operation} a session that is {} — that would be a {} -> {} \
-             transition, which the lifecycle does not allow",
-            from.as_str(),
-            from.as_str(),
-            to.as_str()
-        ),
-        from: Some(from),
-    }
+    core.publish_ending(&session_id);
 }
 
 /// Build the spec for a startable session, or explain why it has none.
@@ -632,17 +718,12 @@ fn invalid_transition(
 /// for one now would be a second, competing terminal implementation
 /// (EXECUTION_PLAN §2.3).
 fn process_spec(config: &SessionConfig, id: &str) -> Result<ProcessSpec, SessionError> {
-    let refused = |kind: SessionErrorKind, message: String| SessionError {
-        kind,
-        session_id: id.to_owned(),
-        operation: "start".to_owned(),
-        message,
-        from: None,
-    };
+    const OPERATION: &str = "start";
 
     if config.session_type != SessionType::Service {
-        return Err(refused(
-            SessionErrorKind::Unsupported,
+        return Err(SessionError::unsupported(
+            id,
+            OPERATION,
             format!(
                 "session `{id}` is an interactive terminal; its run is a PTY, which T07 \
                  attaches — Session Core does not start one"
@@ -651,28 +732,34 @@ fn process_spec(config: &SessionConfig, id: &str) -> Result<ProcessSpec, Session
     }
 
     let Some(command) = config.command.as_deref() else {
-        return Err(refused(
-            SessionErrorKind::Failed,
+        return Err(SessionError::failed(
+            id,
+            OPERATION,
             format!("session `{id}` has no `command` to start"),
+            None,
         ));
     };
     let Some(cwd) = config.cwd.clone() else {
         // `cwd` is optional in the schema, but starting a service in whatever
         // directory the app happens to inherit is not predictable (DEVELOPMENT
         // §16). Refuse and say what to add rather than guess.
-        return Err(refused(
-            SessionErrorKind::Failed,
+        return Err(SessionError::failed(
+            id,
+            OPERATION,
             format!(
                 "session `{id}` has no `cwd`; add one so the service starts in a known \
                  directory"
             ),
+            None,
         ));
     };
 
     let (program, args) = split_command(command).map_err(|reason| {
-        refused(
-            SessionErrorKind::Failed,
+        SessionError::failed(
+            id,
+            OPERATION,
             format!("session `{id}` has an unusable command: {reason}"),
+            None,
         )
     })?;
 
@@ -1097,6 +1184,33 @@ mod tests {
         assert!(record.ended_at.is_some(), "the run record is closed");
     }
 
+    /// Spec §5 lists `Running -> Error` as well as `Running -> Exited`, so the
+    /// two must not be the same outcome. A service that falls over on its own
+    /// has failed; reporting it as a clean `Exited` would leave
+    /// `AppSummary.error` at zero and give the tray's "Restart Failed" nothing
+    /// to key on (spec §11).
+    #[test]
+    fn a_run_that_fails_on_its_own_ends_in_error_not_exited() {
+        let (core, _sink) = core_with_command("svc", "cmd.exe /c exit 3");
+        core.start("svc").expect("start succeeds");
+
+        let runtime = wait_for_status(
+            &core,
+            "svc",
+            SessionStatus::Error,
+            std::time::Duration::from_secs(30),
+        );
+
+        assert_eq!(runtime.exit_code, Some(3), "the failing code is kept");
+        assert_eq!(runtime.pid, None);
+        assert!(
+            runtime.last_error.is_some(),
+            "a failure has to carry a reason the UI can show"
+        );
+        assert_eq!(core.summary().error, 1);
+        assert_eq!(core.summary().running, 0);
+    }
+
     /// A run that was stopped on purpose has already been accounted for. The
     /// watcher waking up afterwards must not publish a second ending, which
     /// would show a session stopping twice in the UI.
@@ -1119,6 +1233,32 @@ mod tests {
             core.snapshot("svc").expect("registered").status,
             SessionStatus::Exited
         );
+    }
+
+    /// Spec §5 rule 5 keeps the exit context in the run record, and §9 has a
+    /// `run-record-updated` event to carry it. A stop the user asked for is
+    /// still a run ending, so it has to be announced: the watcher refuses to
+    /// report an ending a stop already owns, which would otherwise leave the
+    /// closing of the record unpublished for every stop and force-stop.
+    #[test]
+    fn stopping_publishes_the_closed_run_record() {
+        let (core, sink) = core_with_command("svc", LONG_RUNNING);
+        core.start("svc").expect("start succeeds");
+
+        core.force_stop("svc").expect("force stop succeeds");
+
+        let closed = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::RunRecordUpdated(inner) => Some(inner.run),
+                _ => None,
+            })
+            .next_back()
+            .expect("the ending was announced");
+
+        assert!(closed.ended_at.is_some(), "the run record is closed");
+        assert!(closed.exit_code.is_some(), "the exit code is recorded");
     }
 
     #[test]

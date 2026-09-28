@@ -237,6 +237,28 @@ windows-sys 实现 ConPTY（`CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUD
 
 ---
 
+## D-015：停止开始时就进入 Stopping，而不是等待之后
+
+**状态：Accepted**
+
+DEVELOPMENT §6 的顺序建议把「更新 UI 为 Stopping」放在请求优雅退出与等待超时之后。
+T04 的 Session Core 改为在**发起停止时立刻**进入并广播 `Stopping`。
+
+原因：
+
+- 一次停止可能用满整个宽限时间（默认 5 s）。在这段时间里仍把会话显示为 `Running`，
+  等于告诉用户一件不真实的事，也让第二次点击看起来像重复操作；
+- `Stopping` 是「正在收尾」，不是「已经结束」，提前显示不会让用户误以为进程已经没了。
+
+§6 真正要保证的部分没有改变，仍然按序执行：请求优雅退出 → 等待 → 升级为针对受管进程树的
+强制结束，并且**只有在确认进程树消失之后**才进入 `Stopped` / `Exited`（由 T03 的 stop
+barrier 保证）。
+
+用户可见行为：按下 Stop 时状态点立即变为 Stopping，直到进程树确认消失才落到
+Stopped / Exited。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：

@@ -16,12 +16,17 @@ use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
 
 use super::state::SessionStatus;
 
-/// A wall-clock instant, serialized the way `docs/LOGGING.md` §6 writes run
-/// metadata (RFC 3339 with an explicit offset).
+/// A wall-clock instant, serialized as RFC 3339 UTC for the IPC surface.
 ///
 /// A newtype rather than a bare `SystemTime` because the serialized form is a
-/// contract the UI and run-metadata files read, and `SystemTime` has no
-/// `Serialize` that would produce it.
+/// contract the frontend reads, and `SystemTime` has no `Serialize` that would
+/// produce it.
+///
+/// Note for T05 before it persists anything: this is the *IPC* shape, and it
+/// does not match `docs/LOGGING.md` §6's run-metadata example, which is
+/// (illustrative) snake_case keys with a local `+08:00` offset. Run metadata on
+/// disk needs its own decision about shape and offset rather than this derive
+/// reused by accident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp(SystemTime);
 
@@ -103,6 +108,12 @@ pub struct SessionErrorInfo {
 /// A snapshot, not a handle: it owns no locks and can be cloned out of Session
 /// Core, which is what lets the same value reach the window, the tray and a
 /// test without any of them reaching back into lifecycle machinery.
+///
+/// §4's "at minimum" list is covered except for the **terminal buffer
+/// reference**: there is no buffer to reference until T05 builds one, and a
+/// placeholder field here would be a second, empty answer to a question only
+/// T05 can answer. `logging` already reports the effective policy, which is
+/// the part of "is this being logged?" that does not need the buffer.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRuntime {
