@@ -85,7 +85,10 @@ export function isReady(runtime: SessionRuntimeDto): boolean {
   // A reading is the service's answer; without one (a terminal run, or a
   // service with no port) attachment is the only readiness there is to report.
   if (isPresent(runtime.health)) {
-    return runtime.health.portOpen;
+    // Both facts, because either one alone is a claim the reading does not
+    // support: a port answering while *this* run's process is gone is something
+    // else listening on it, which is not this session being ready.
+    return runtime.health.processAlive && runtime.health.portOpen;
   }
   return runtime.ptyAttached;
 }
@@ -100,9 +103,11 @@ export function isReady(runtime: SessionRuntimeDto): boolean {
  * not check" is not a reading).
  *
  * This is the only place a reading is shown, and it names the *port* only by
- * implication: the number is already in the header's metadata line, and
- * `UI_STYLE_GUIDE.md` §13 has Details repeat nothing the header carries. The
- * header's status badge states the conclusion the reading earns (`Ready`).
+ * implication: the number is already in the header's metadata line, and §6 says
+ * Details carries the low-frequency fields only, "values already live in the
+ * header metadata line — PID, port, uptime, cwd, effective log policy — are not
+ * repeated here". The header's status badge states the conclusion the reading
+ * earns (`Ready`).
  */
 export function healthReading(runtime: SessionRuntimeDto): string | undefined {
   const health = runtime.health;

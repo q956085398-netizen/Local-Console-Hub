@@ -288,6 +288,16 @@ describe("isReady", () => {
     expect(isReady(runtime({ health: { processAlive: false, portOpen: false } }))).toBe(false);
   });
 
+  it("does not call a service ready on a port its own process is not holding", () => {
+    // Something is listening on the configured port, but not this run's
+    // process — so this session is not the thing answering, and `Ready` would
+    // be claiming a service that is not there. The Details row says both facts,
+    // and the badge stays on the lifecycle state.
+    const reading = { processAlive: false, portOpen: true };
+    expect(isReady(runtime({ health: reading }))).toBe(false);
+    expect(healthReading(runtime({ health: reading }))).toBe("监听中 · 本会话进程已退出");
+  });
+
   it("never calls a session ready before anything has been probed", () => {
     // `null` is "we did not check", not "the port is closed" — so the badge
     // falls back to what the state machine knows.
