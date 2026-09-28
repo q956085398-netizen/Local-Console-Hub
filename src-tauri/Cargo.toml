@@ -26,19 +26,24 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Platform app-data roots (%APPDATA% / %LOCALAPPDATA%).
 dirs = "7"
 
-# T03 process supervisor (SUPERVISION): job-object ownership, tree enumeration
-# and CTRL_BREAK delivery for the safe stop/kill-tree path. Windows-only, and
-# already present in Cargo.lock as a transitive dependency, so this adds no new
-# packages to the build.
+# windows-sys backs both Windows layers: T03 process supervision
+# (SUPERVISION: job-object ownership, tree enumeration and CTRL_BREAK delivery
+# for the safe stop/kill-tree path) and the T02 PTY backend (CONPTY:
+# pseudoconsole creation/resize/close plus the pipe and process-creation calls
+# a ConPTY session needs, D-014). Windows-only, and already present in
+# Cargo.lock as a transitive dependency, so this adds no new packages.
 #
 # Win32_Security is not optional here: `CreateJobObjectW` takes a
 # SECURITY_ATTRIBUTES parameter, and windows-sys gates a function behind every
 # module its signature names — so JobObjects alone does not expose it.
+# Win32_System_Pipes carries `CreatePipe`, the two anonymous pipes around every
+# pseudoconsole.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_JobObjects",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }

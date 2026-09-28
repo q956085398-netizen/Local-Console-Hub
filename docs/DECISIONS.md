@@ -219,6 +219,24 @@ T00 落地时仓库中不存在已批准的应用图标（`assets/` 仅含 V2 UI
 
 ---
 
+## D-014：PTY 后端直接实现 ConPTY，不引入 portable-pty
+
+**状态：Accepted（2026-09-28，T02 落地时签认）**
+
+MVP §2 允许 Windows PTY 实现以 portable-pty 起步。T02 评估后选择直接用
+windows-sys 实现 ConPTY（`CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+属性附加子进程），理由：
+
+- portable-pty 在本项目的精确部署形态（Tauri 2 release 构建、Windows GUI 子系统）下有未决缺陷：wez/wezterm#6946 报告该形态下会弹出多余的 cmd 窗口，至今未修复；
+- 其依赖树较重（anyhow、filedescriptor、serial2、nix、winreg、shared_library 等），且探测不到 ConPTY 时直接 `expect` panic；
+- 仓库已依赖 windows-sys（T03），直接实现不新增任何 crate；创建标志、句柄生命周期与错误路径完全受控。
+
+按 T02 的 blocker rule：只替换 PTY 后端，前端/会话契约不变；对外契约是本层自己的
+`Pty` 抽象。若后续直接维护 ConPTY 的成本超过收益，可在同一契约下换回 portable-pty
+（重开本决策并记录原因）。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：
