@@ -5,3 +5,20 @@
 //! transitions rejected, run_id per start, restart waiting for confirmed
 //! stop, unexpected exits updating state while the UI is hidden. Tray and
 //! window both call the same Session Core APIs.
+//!
+//! ## Where to start reading
+//!
+//! - [`state`] — the allowed transitions, transcribed from spec §5.
+//! - [`core`] — [`core::SessionCore`], the registry and the orchestration.
+//! - [`event`] — the typed events and their IPC names.
+//! - [`runtime`] — the snapshots and run records those carry.
+//! - [`tauri_sink`] — the one adapter that knows about Tauri.
+//!
+//! Dependents (T05–T10) must call [`core::SessionCore`] rather than tracking
+//! process state themselves (EXECUTION_PLAN §3).
+
+pub mod core;
+pub mod event;
+pub mod runtime;
+pub mod state;
+pub mod tauri_sink;

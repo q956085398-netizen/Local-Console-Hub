@@ -22,7 +22,7 @@ mod ipc;
 mod logging;
 pub mod process;
 pub mod pty;
-mod session;
+pub mod session;
 mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
