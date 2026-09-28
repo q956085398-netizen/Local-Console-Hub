@@ -63,6 +63,8 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
   const containerRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  /** Re-measure the surface and report its size. Set by the mount effect. */
+  const refitRef = useRef<(() => void) | null>(null);
 
   const running = session.runtime.status === "running";
   const stream = useTerminalStream(live ? session.config.id : null, session.runtime.runId, live, {
@@ -79,6 +81,13 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
       for (const chunk of attachment.chunks) {
         term.write(decodeBase64(chunk.data));
       }
+      // And it reports its size, because this is the first time this session
+      // has heard it. The emulator is mounted once and re-attached per
+      // session, so a session selected later would otherwise never be told
+      // how large its view is — it would start at the PTY default while the
+      // view is a different size, and nothing would correct it until the user
+      // resized the window.
+      refitRef.current?.();
     },
     onData: (bytes) => termRef.current?.write(bytes),
   });
@@ -133,9 +142,11 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
     };
     const observer = new ResizeObserver(sync);
     observer.observe(container);
+    refitRef.current = sync;
     sync();
 
     return () => {
+      refitRef.current = null;
       observer.disconnect();
       input.dispose();
       term.dispose();

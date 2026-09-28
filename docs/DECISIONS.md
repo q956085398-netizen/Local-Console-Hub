@@ -322,7 +322,8 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 
 一个 `type: terminal` 会话的运行体是 **PTY**（T02 层，`crate::pty`），不是受监督进程；
 `start_spec` 按会话类型分派（service → T03 进程，terminal → PTY），两条运行路径共用
-同一套生命周期状态机（同一个 `Run` 枚举只有四个方法）。
+同一套生命周期状态机（同一个 `Run` 枚举对外只回答生命周期要问的那几件事：等待退出、
+读退出码、停止、强制停止）。
 
 关闭终端 = 关闭控制台：`Pty::kill()` 终止 shell 并**确认其已退出**后才返回，因此
 `StopReport.graceful_delivered` 恒为 `false`——不存在可投递的优雅信号（ConPTY 上没有
@@ -362,6 +363,10 @@ scrollback 时**推进（不是发布时），所以任一次 attach 读到的�
 字节用 base64 而不是文本：控制台的一次读取可能落在多字节字符中间，按 chunk 解码会把接缝
 渲染成替换字符（`terminal-output` 与 `attach` 的 chunk 都因此携带字节）。前端把字节交给
 xterm.js，由它以流式 UTF-8 解码，跨 write 的多字节字符不受影响。
+
+偏移量只数**当前这次运行**的字节：scrollback 是会话的（`docs/LOGGING.md` §8，重启不会
+清空），所以重启后 attach 重放的内容会比 `emitted` 更长——这是有意的，重放覆盖了上一轮
+的输出，而新运行的批次从 0 开始追加，仍然不丢不重。
 
 用户可见行为：切换会话、切到「日志/详情」页签、隐藏窗口后回来，终端既不重复也不丢失已经
 显示过的输出；被丢弃（超出上限）的历史由 `buffer.droppedBytes` 明示。

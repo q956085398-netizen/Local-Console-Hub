@@ -17,7 +17,7 @@ import type {
   SessionRuntimeDto,
   SessionStatusValue,
 } from "../types/runtime";
-import type { WorkloadGroup, SessionView } from "./session-view";
+import type { SessionView, WorkloadGroup } from "./session-view";
 
 /** Pip/badge tone semantics (UI_STYLE_GUIDE §10). */
 export type StatusTone = "run" | "busy" | "warn" | "err" | "idle";
