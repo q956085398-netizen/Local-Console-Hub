@@ -167,6 +167,26 @@ export function ptyChromeLabel(config: SessionConfigDto, runtime: SessionRuntime
 }
 
 /**
+ * Whether a session's terminal view may send keystrokes (T07 #8).
+ *
+ * The rule the backend applies at `terminal_write`, expressed over the DTOs
+ * rather than guessed by the view: only an interactive terminal that is
+ * actually running has an attached stdin. A supervised service "has no
+ * attached stdin to type into" — `SessionCore::terminal_write` refuses it, with
+ * a test that says so — and a terminal that is not running has no terminal.
+ *
+ * A view that offered input without this would turn every keystroke into a
+ * refusal notice, which is a worse answer than a pane that plainly does not
+ * take typing.
+ */
+export function acceptsTerminalInput(
+  config: SessionConfigDto,
+  runtime: SessionRuntimeDto,
+): boolean {
+  return config.sessionType === "terminal" && runtime.ptyAttached;
+}
+
+/**
  * Scrollback-loss notice, or null when nothing was discarded
  * (`docs/LOGGING.md` §8: discarded output is counted and surfaced so the UI
  * can say "older output was dropped" instead of showing a gapped history).
