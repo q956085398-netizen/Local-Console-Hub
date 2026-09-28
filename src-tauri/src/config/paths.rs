@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! %APPDATA%\LocalConsoleHub\config.yaml
-//! %LOCALAPPDATA%\LocalConsoleHub\logs\<session_id>\<YYYY-MM>\<run files>
-//! %LOCALAPPDATA%\LocalConsoleHub\metadata\...
+//! %LOCALAPPDATA%\LocalConsoleHub\logs\<session_id>\<YYYY-MM>\<run>.log
+//! %LOCALAPPDATA%\LocalConsoleHub\metadata\<session_id>\<YYYY-MM>\<run>.json
 //! %LOCALAPPDATA%\LocalConsoleHub\cache\...
 //! ```
 //!
@@ -105,12 +105,27 @@ pub fn session_log_dir(
 /// `None` when `run_id` is not filesystem-safe or the timestamp is out of
 /// range.
 pub fn run_log_filename(unix_secs: i64, utc_offset_secs: i32, run_id: &str) -> Option<String> {
-    if !is_filesystem_safe_component(run_id) {
+    run_file_name(unix_secs, utc_offset_secs, run_id, "log")
+}
+
+/// One run's file name under any of the per-run roots, e.g.
+/// `2026-09-24_09-30-15__run-8f31.json` for a run's metadata.
+///
+/// The run id is the shared stem across a run's files on purpose: a log file
+/// and the metadata describing it sort together in a directory listing and
+/// name the same run without either being opened (`docs/DECISIONS.md` D-011).
+pub fn run_file_name(
+    unix_secs: i64,
+    utc_offset_secs: i32,
+    run_id: &str,
+    extension: &str,
+) -> Option<String> {
+    if !is_filesystem_safe_component(run_id) || !is_filesystem_safe_component(extension) {
         return None;
     }
     let offset = FixedOffset::east_opt(utc_offset_secs)?;
     let stamp = to_local(unix_secs, &offset)?.format("%Y-%m-%d_%H-%M-%S");
-    Some(format!("{stamp}__run-{run_id}.log"))
+    Some(format!("{stamp}__run-{run_id}.{extension}"))
 }
 
 /// Full path of one run's log file: `logs/<session>/<YYYY-MM>/<file>`.
@@ -121,9 +136,95 @@ pub fn run_log_path(
     utc_offset_secs: i32,
     run_id: &str,
 ) -> Option<PathBuf> {
-    let dir = session_log_dir(logs_root, session_id, unix_secs, utc_offset_secs)?;
-    let file = run_log_filename(unix_secs, utc_offset_secs, run_id)?;
+    run_file_path(
+        logs_root,
+        session_id,
+        unix_secs,
+        utc_offset_secs,
+        run_id,
+        "log",
+    )
+}
+
+/// Full path of one run's metadata file:
+/// `metadata/<session>/<YYYY-MM>/<file>` (`docs/LOGGING.md` §6).
+///
+/// It sits beside the log file it describes, under the same session and month,
+/// so "find the run, then find its log" needs no database (D-011).
+pub fn run_metadata_path(
+    metadata_root: &Path,
+    session_id: &str,
+    unix_secs: i64,
+    utc_offset_secs: i32,
+    run_id: &str,
+) -> Option<PathBuf> {
+    run_file_path(
+        metadata_root,
+        session_id,
+        unix_secs,
+        utc_offset_secs,
+        run_id,
+        "json",
+    )
+}
+
+/// `<root>/<session_id>/<YYYY-MM>/<run file>` — the layout every per-run file
+/// shares, whatever the root it lives under.
+fn run_file_path(
+    root: &Path,
+    session_id: &str,
+    unix_secs: i64,
+    utc_offset_secs: i32,
+    run_id: &str,
+    extension: &str,
+) -> Option<PathBuf> {
+    let dir = session_log_dir(root, session_id, unix_secs, utc_offset_secs)?;
+    let file = run_file_name(unix_secs, utc_offset_secs, run_id, extension)?;
     Some(dir.join(file))
+}
+
+/// The local UTC offset in seconds right now, including any daylight saving
+/// bias the OS is currently applying.
+///
+/// The path helpers take the offset explicitly so their own tests are clock-
+/// independent; this is the one place that asks the OS, and the one place that
+/// can fail to. Windows answers from the current time-zone state, so a log
+/// written in summer lands in the month the user's clock was actually showing
+/// (`docs/DECISIONS.md` D-011).
+///
+/// Off Windows, and on the odd Windows failure, the answer is UTC: a log filed
+/// an hour either side of midnight is a far smaller problem than a path that
+/// cannot be built at all.
+pub fn local_utc_offset_secs() -> i32 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+
+        /// `GetTimeZoneInformation`'s "the daylight rule is in force" answer.
+        /// `windows-sys` generates only `TIME_ZONE_ID_INVALID`, so the other
+        /// return values are named here as the Windows headers define them.
+        const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+
+        let mut info: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+        let state = unsafe { GetTimeZoneInformation(&mut info) };
+        if state == TIME_ZONE_ID_INVALID {
+            return 0;
+        }
+        // `Bias` is minutes *west* of UTC (UTC+8 is -480), so the sign flips
+        // into the offset the path helpers take; the daylight bias applies
+        // only while the OS reports the daylight rule as active.
+        let mut minutes = info.Bias + info.StandardBias;
+        if state == TIME_ZONE_ID_DAYLIGHT {
+            minutes += info.DaylightBias;
+        }
+        -(minutes as i32) * 60
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
 }
 
 fn to_local(unix_secs: i64, offset: &FixedOffset) -> Option<DateTime<FixedOffset>> {
@@ -184,5 +285,44 @@ mod tests {
             path_str(&path),
             "logs/st/1970-01/1970-01-01_00-00-00__run-ab12.log"
         );
+    }
+
+    /// A run's metadata file is the same path shape under `metadata/`, with
+    /// the same run-tagged stem — that is what lets a person match a log to
+    /// the run that produced it by reading the two directories (D-011).
+    #[test]
+    fn run_metadata_path_mirrors_the_log_path_shape() {
+        let path = run_metadata_path(
+            Path::new("meta"),
+            "comfyui",
+            1_790_213_415,
+            8 * 3600,
+            "8f31",
+        )
+        .expect("valid inputs");
+        assert_eq!(
+            path_str(&path),
+            "meta/comfyui/2026-09/2026-09-24_09-30-15__run-8f31.json"
+        );
+    }
+
+    #[test]
+    fn run_metadata_path_rejects_unsafe_components() {
+        assert!(run_metadata_path(Path::new("meta"), "../up", 0, 0, "ab12").is_none());
+        assert!(run_metadata_path(Path::new("meta"), "st", 0, 0, "../escape").is_none());
+    }
+
+    /// The offset the OS reports must be one the path helpers accept, and on a
+    /// machine set to UTC it must be exactly zero — otherwise the month a log
+    /// lands in would shift for reasons unrelated to the clock.
+    #[test]
+    fn the_reported_local_offset_builds_a_log_path() {
+        let offset = local_utc_offset_secs();
+        assert!(
+            (-18 * 3600..=18 * 3600).contains(&offset),
+            "implausible local offset {offset}"
+        );
+        let path = run_log_path(Path::new("logs"), "st", 1_790_213_415, offset, "ab12");
+        assert!(path.is_some(), "offset {offset} produced no log path");
     }
 }

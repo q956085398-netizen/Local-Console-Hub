@@ -47,12 +47,16 @@
 //! nowhere to go in a process with no console, which is why graceful delivery is
 //! reported (`StopReport::graceful_delivered`) rather than assumed.
 //!
-//! Output plumbing is deliberately absent here: what happens to a run's stdout
-//! is the logging layer's business (T05) and interactive terminals are hosted by
-//! the PTY layer (T02). This layer owns lifecycle only.
+//! Output plumbing stops at the pipe: a run can be asked to have its stdout and
+//! stderr captured ([`OutputMode::Capture`]), and the supervisor then hands the
+//! two streams to its caller through [`ManagedProcess::take_output`]. Nothing
+//! here reads, buffers or decides what to do with a byte of it — that is the
+//! logging layer's business (T05), and interactive terminals are hosted by the
+//! PTY layer (T02). This layer owns lifecycle only.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -98,6 +102,8 @@ pub struct ProcessSpec {
     pub args: Vec<String>,
     /// Working directory for the run.
     pub cwd: PathBuf,
+    /// What to do with the run's stdout and stderr.
+    pub output: OutputMode,
 }
 
 impl ProcessSpec {
@@ -107,6 +113,7 @@ impl ProcessSpec {
             program: program.into(),
             args: Vec::new(),
             cwd: cwd.into(),
+            output: OutputMode::default(),
         }
     }
 
@@ -114,6 +121,54 @@ impl ProcessSpec {
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.args = args;
         self
+    }
+
+    /// Builder-style: choose what happens to the run's output.
+    pub fn with_output(mut self, output: OutputMode) -> Self {
+        self.output = output;
+        self
+    }
+}
+
+/// What happens to a run's stdout and stderr.
+///
+/// Only two answers, because they are the two the supervisor can honour
+/// without knowing anything about logging: leave the streams as they are, or
+/// hand them over. Which of them a session gets is decided by its logging
+/// policy (`docs/LOGGING.md` §2) — never here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutputMode {
+    /// The run inherits the Hub's handles, as it did before T05. Nothing can
+    /// block, and nothing is captured.
+    #[default]
+    Inherit,
+    /// Both streams are piped back to [`ManagedProcess::take_output`].
+    ///
+    /// A pipe that nobody drains fills up and stops the process writing to it,
+    /// so a captured run **must** have its output taken. The supervisor cannot
+    /// enforce that, and does not pretend to: it makes the requirement loud in
+    /// this doc, and dropping an untaken pipe unblocks a stuck run rather than
+    /// hanging it (see [`ManagedProcess::take_output`]).
+    Capture,
+}
+
+/// A run's piped output streams, handed over once.
+///
+/// Plain readers rather than a channel or a callback: the layer that captures
+/// output decides how to read it, how much to read at a time, and where it
+/// goes, and the supervisor keeps owning nothing but the lifecycle.
+pub struct ProcessOutput {
+    pub stdout: Option<Box<dyn Read + Send>>,
+    pub stderr: Option<Box<dyn Read + Send>>,
+}
+
+impl std::fmt::Debug for ProcessOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessOutput")
+            .field("stdout", &self.stdout.is_some())
+            .field("stderr", &self.stderr.is_some())
+            .finish()
     }
 }
 
@@ -220,6 +275,9 @@ struct Shared {
     /// Filled in by the exit watcher exactly once.
     exit: Mutex<Option<ExitStatus>>,
     exited: Condvar,
+    /// The run's piped streams, until [`ManagedProcess::take_output`] claims
+    /// them. `None` for a run that was not started with capture.
+    output: Mutex<Option<ProcessOutput>>,
 }
 
 impl Shared {
@@ -258,6 +316,9 @@ impl ManagedProcess {
 
         let mut command = Command::new(&spec.program);
         command.args(&spec.args).current_dir(&spec.cwd);
+        if spec.output == OutputMode::Capture {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
         backend::prepare(&mut command);
         let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
             program: spec.program.clone(),
@@ -279,6 +340,21 @@ impl ManagedProcess {
             }
         };
 
+        // Taken out of the child now rather than behind a lock later: the
+        // handles belong to the run, not to the child object, and a run whose
+        // pipes nobody drains is the one case this layer cannot make safe on
+        // its own.
+        let output = (spec.output == OutputMode::Capture).then(|| ProcessOutput {
+            stdout: child
+                .stdout
+                .take()
+                .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>),
+            stderr: child
+                .stderr
+                .take()
+                .map(|stderr| Box::new(stderr) as Box<dyn Read + Send>),
+        });
+
         let pid = child.id();
         let shared = Arc::new(Shared {
             child: Mutex::new(child),
@@ -286,6 +362,7 @@ impl ManagedProcess {
             pid,
             exit: Mutex::new(None),
             exited: Condvar::new(),
+            output: Mutex::new(output),
         });
         if let Err(source) = watch_exit(&shared) {
             let _ = backend::terminate_tree(&shared.tree);
@@ -300,6 +377,22 @@ impl ManagedProcess {
     /// The run's own process id.
     pub fn pid(&self) -> u32 {
         self.shared.pid
+    }
+
+    /// Take the run's piped streams, if it was started with
+    /// [`OutputMode::Capture`].
+    ///
+    /// Hands them over exactly once: the read ends of a pipe have one owner,
+    /// and two readers racing for the same bytes would split a run's output
+    /// between them. A second call answers `None`.
+    ///
+    /// Whoever takes them owns the obligation to read them: a pipe fills, and
+    /// a full pipe stops the process writing to it. Dropping the streams
+    /// without reading closes this end, which a blocked run sees as a broken
+    /// pipe and normally answers by exiting — the outcome this layer prefers
+    /// over a run that can never finish.
+    pub fn take_output(&self) -> Option<ProcessOutput> {
+        lock(&self.shared.output).take()
     }
 
     /// Whether the run's own process is still alive.

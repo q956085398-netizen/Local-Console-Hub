@@ -1,0 +1,408 @@
+//! Rotation and retention (`docs/LOGGING.md` §9).
+//!
+//! Logs must not grow without limit, and cleanup must not be a single
+//! indiscriminate sweep: §9 requires it per session, "so one high-output
+//! service cannot push out every other session's logs". That is why the policy
+//! is a **per-session** budget rather than a total one — a noisy session hits
+//! its own ceiling and stops deleting anything of its own, and no other
+//! session's history is touched.
+//!
+//! ## Planning is separate from deleting
+//!
+//! [`cleanup_plan`] is a pure function over a list of files; [`enforce`] is the
+//! part that walks the disk and unlinks. Keeping them apart is what makes the
+//! rule testable without a filesystem, and it is what lets a future UI show
+//! "this will delete 12 files / 40 MB" before anything is removed
+//! (`docs/LOGGING.md` §10 lists "clean old logs" as a UI action, and a
+//! destructive action needs to be able to say what it will do first).
+//!
+//! ## What cleanup will not touch
+//!
+//! Only files under the Hub's own logs root, and only `*.log` under a
+//! `<session>/<month>/` directory. An application-owned log linked with
+//! `source: external` lives wherever the application put it, is not under this
+//! root, and is never a candidate — spec §15 forbids deleting another
+//! application's logs, and D-005 is the reason they were linked rather than
+//! copied in the first place.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use super::error::{io_error, LogError};
+
+/// How long a session's logs are kept, and how much disk they may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    /// Files last modified more than this many days ago are removed.
+    /// `0` disables the age rule — it cannot mean "delete everything", which
+    /// is never what a user asking for retention means.
+    pub max_age_days: u32,
+    /// Per session, the most bytes its log files may occupy.
+    pub max_session_bytes: u64,
+}
+
+/// A month of logs from a few long-running services is a handful of megabytes;
+/// this is the "you forgot about us" ceiling, not a normal operating limit.
+pub const DEFAULT_RETENTION: RetentionPolicy = RetentionPolicy {
+    max_age_days: 30,
+    max_session_bytes: 256 * 1024 * 1024,
+};
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        DEFAULT_RETENTION
+    }
+}
+
+/// One candidate file, as the planner sees it.
+///
+/// Carries its session explicitly rather than leaving the planner to parse it
+/// out of the path: the grouping rule ("per session") is the policy, and it
+/// should not depend on where a caller happened to put the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogFile {
+    pub session_id: String,
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub modified: SystemTime,
+}
+
+/// What a cleanup did, or would do.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CleanupReport {
+    /// Files that were (or would be) removed, in the order they were chosen.
+    pub removed: Vec<PathBuf>,
+    /// Total size of those files.
+    pub freed_bytes: u64,
+    /// Files the OS refused to remove. Reported rather than swallowed: a log
+    /// directory the user cannot clean is a problem worth knowing about.
+    pub failures: Vec<LogError>,
+}
+
+impl CleanupReport {
+    pub fn removed_count(&self) -> usize {
+        self.removed.len()
+    }
+}
+
+/// Which files a cleanup would remove, newest-first per session.
+///
+/// The rules, in the order they are applied:
+///
+/// 1. A file older than the age limit goes.
+/// 2. Within a session, files are kept newest first until the byte budget is
+///    exhausted; everything older than that goes.
+/// 3. The newest file of a session is always kept, however large the session
+///    has become — deleting the run a user just made to satisfy a byte count
+///    would be the opposite of useful.
+pub fn cleanup_plan(files: &[LogFile], policy: &RetentionPolicy, now: SystemTime) -> Vec<PathBuf> {
+    let max_age = (policy.max_age_days > 0)
+        .then(|| Duration::from_secs(u64::from(policy.max_age_days) * 86_400));
+
+    let mut by_session: std::collections::BTreeMap<&str, Vec<&LogFile>> = Default::default();
+    for file in files {
+        by_session
+            .entry(file.session_id.as_str())
+            .or_default()
+            .push(file);
+    }
+
+    let mut doomed = Vec::new();
+    for (_, mut session_files) in by_session {
+        session_files.sort_by_key(|file| std::cmp::Reverse(file.modified));
+
+        let mut kept_bytes = 0u64;
+        let mut overdue = false;
+        for (index, file) in session_files.iter().enumerate() {
+            // Rule 3 first: the newest entry is kept before either budget is
+            // consulted, and it does not consume the byte budget it would have
+            // been the only member of.
+            if index == 0 {
+                continue;
+            }
+            if let Some(max_age) = max_age {
+                let age = now.duration_since(file.modified).unwrap_or(Duration::ZERO);
+                if age > max_age {
+                    overdue = true;
+                    doomed.push(file.path.clone());
+                    continue;
+                }
+            }
+            if overdue {
+                // An older file cannot be younger than one already past the
+                // age limit, so once the limit is crossed the rest are gone
+                // without another check.
+                doomed.push(file.path.clone());
+                continue;
+            }
+            if kept_bytes + file.bytes > policy.max_session_bytes {
+                doomed.push(file.path.clone());
+                continue;
+            }
+            kept_bytes += file.bytes;
+        }
+    }
+    doomed
+}
+
+/// Remove the files [`cleanup_plan`] selects for one session, or for every
+/// session when `session_id` is `None`.
+pub fn enforce(
+    logs_dir: &Path,
+    session_id: Option<&str>,
+    policy: &RetentionPolicy,
+    now: SystemTime,
+) -> CleanupReport {
+    let files = scan(logs_dir, session_id);
+    let doomed = cleanup_plan(&files, policy, now);
+    let sizes: std::collections::BTreeMap<&Path, u64> = files
+        .iter()
+        .map(|file| (file.path.as_path(), file.bytes))
+        .collect();
+
+    let mut report = CleanupReport::default();
+    for path in doomed {
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                report.freed_bytes += sizes.get(path.as_path()).copied().unwrap_or(0);
+                report.removed.push(path);
+            }
+            Err(error) => report
+                .failures
+                .push(io_error("removing a log file", &path, error)),
+        }
+    }
+    report
+}
+
+/// Every Hub-written log file under `logs_dir`, optionally for one session.
+///
+/// `.log` is the only extension looked at, so the metadata files that live
+/// beside them — and anything else under the root — cannot be swept up by
+/// accident. An entry whose size or timestamp cannot be read is skipped rather
+/// than guessed at: a file retention cannot measure is one it must not delete.
+fn scan(logs_dir: &Path, session_id: Option<&str>) -> Vec<LogFile> {
+    let mut files = Vec::new();
+
+    for found in super::layout::session_run_files(logs_dir, "log", session_id) {
+        let Ok(metadata) = fs::metadata(&found.path) else {
+            continue;
+        };
+        files.push(LogFile {
+            session_id: found.session_id,
+            path: found.path,
+            bytes: metadata.len(),
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        });
+    }
+    files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logging::test_support::TempDir;
+
+    fn policy() -> RetentionPolicy {
+        RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 1_000,
+        }
+    }
+
+    fn now() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+    }
+
+    fn days_ago(days: u64) -> SystemTime {
+        now() - Duration::from_secs(days * 86_400)
+    }
+
+    fn file(session: &str, name: &str, bytes: u64, age_days: u64) -> LogFile {
+        LogFile {
+            session_id: session.to_owned(),
+            path: PathBuf::from(name),
+            bytes,
+            modified: days_ago(age_days),
+        }
+    }
+
+    #[test]
+    fn a_recent_session_within_its_budget_is_left_alone() {
+        let files = vec![
+            file("svc", "new.log", 100, 0),
+            file("svc", "old.log", 100, 1),
+        ];
+
+        assert!(cleanup_plan(&files, &policy(), now()).is_empty());
+    }
+
+    /// §9: retention is per session. A session over its budget must not be able
+    /// to push another session's logs out.
+    #[test]
+    fn one_session_exceeding_its_budget_does_not_delete_another_session() {
+        let files = vec![
+            file("noisy", "noisy-new.log", 900, 0),
+            file("noisy", "noisy-old.log", 900, 1),
+            file("quiet", "quiet.log", 900, 2),
+        ];
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 800,
+        };
+
+        let doomed = cleanup_plan(&files, &policy, now());
+
+        assert_eq!(doomed, vec![PathBuf::from("noisy-old.log")]);
+    }
+
+    #[test]
+    fn files_older_than_the_age_limit_are_removed() {
+        let files = vec![
+            file("svc", "new.log", 10, 0),
+            file("svc", "ancient.log", 10, 45),
+        ];
+
+        let doomed = cleanup_plan(&files, &policy(), now());
+
+        assert_eq!(doomed, vec![PathBuf::from("ancient.log")]);
+    }
+
+    /// The newest run is never a candidate: "clean up old logs" must not delete
+    /// the log the user is currently looking at.
+    #[test]
+    fn the_newest_file_of_a_session_is_always_kept() {
+        let files = vec![file("svc", "only.log", 10_000_000, 999)];
+
+        assert!(cleanup_plan(&files, &policy(), now()).is_empty());
+    }
+
+    /// The two rules compose: an ancient file goes for its age, and one that
+    /// is young enough but pushes the session past its budget goes as well.
+    #[test]
+    fn an_ancient_file_is_removed_and_the_budget_still_applies() {
+        let files = vec![
+            file("svc", "new.log", 800, 0),
+            file("svc", "big.log", 1_100, 10),
+            file("svc", "ancient.log", 800, 60),
+        ];
+
+        let doomed = cleanup_plan(&files, &policy(), now());
+
+        assert_eq!(
+            doomed,
+            vec![PathBuf::from("big.log"), PathBuf::from("ancient.log")]
+        );
+    }
+
+    #[test]
+    fn a_zero_day_limit_disables_the_age_rule_rather_than_deleting_everything() {
+        let files = vec![
+            file("svc", "new.log", 10, 0),
+            file("svc", "old.log", 10, 400),
+        ];
+        let policy = RetentionPolicy {
+            max_age_days: 0,
+            max_session_bytes: 1_000,
+        };
+
+        assert!(cleanup_plan(&files, &policy, now()).is_empty());
+    }
+
+    /// Deletion really happens, and only to the files the plan named.
+    ///
+    /// The two files are written a moment apart on purpose: which one is the
+    /// session's newest is what decides who survives a byte budget, and a test
+    /// that left that to the filesystem's timestamp resolution would pass or
+    /// fail at random.
+    #[test]
+    fn enforcing_removes_the_planned_files_and_reports_what_it_freed() {
+        let dir = TempDir::new();
+        let kept = dir.join("svc/2026-09/2026-09-24_09-30-15__run-aaaa.log");
+        let doomed = dir.join("svc/2026-09/2026-09-24_08-30-15__run-bbbb.log");
+        fs::create_dir_all(kept.parent().expect("a month folder")).expect("creatable");
+        fs::write(&doomed, b"0123456789").expect("writable");
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(&kept, b"0123456789").expect("writable");
+        // The doomed file is over the byte budget, not over the age limit.
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+
+        let report = enforce(dir.path(), None, &policy, now());
+
+        assert_eq!(report.removed_count(), 1, "{:?}", report.removed);
+        assert!(report.freed_bytes > 0);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert!(kept.exists(), "the newest run's log was deleted");
+        assert!(!doomed.exists());
+    }
+
+    /// Only Hub-written `.log` files are candidates, and only under the logs
+    /// root: an application-owned log linked with `source: external` lives
+    /// elsewhere and must survive a cleanup (spec §15).
+    #[test]
+    fn scanning_ignores_anything_that_is_not_a_month_of_logs() {
+        let dir = TempDir::new();
+        let logs = dir.join("logs");
+        let month = logs.join("svc/2026-09");
+        fs::create_dir_all(&month).expect("creatable");
+        fs::write(month.join("run-old.log"), b"0123456789").expect("writable");
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(month.join("run-new.log"), b"0123456789").expect("writable");
+        fs::write(month.join("run.json"), b"x").expect("writable");
+        fs::write(logs.join("svc/notes.txt"), b"x").expect("writable");
+        let outside = dir.join("app/access.log");
+        fs::create_dir_all(outside.parent().expect("a parent")).expect("creatable");
+        fs::write(&outside, b"application-owned").expect("writable");
+
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+        let report = enforce(&logs, None, &policy, now());
+
+        assert_eq!(report.removed_count(), 1, "{:?}", report.removed);
+        assert!(report.removed[0].ends_with("run-old.log"));
+        assert!(outside.exists(), "an external log was touched");
+        assert!(
+            month.join("run.json").exists(),
+            "a non-log file was touched"
+        );
+        assert!(logs.join("svc/notes.txt").exists());
+    }
+
+    #[test]
+    fn cleaning_one_session_leaves_the_others_alone() {
+        let dir = TempDir::new();
+        let logs = dir.join("logs");
+        for session in ["noisy", "quiet"] {
+            let path = logs.join(format!("{session}/2026-09/run-old.log"));
+            fs::create_dir_all(path.parent().expect("a month folder")).expect("creatable");
+            fs::write(&path, b"0123456789").expect("writable");
+            std::thread::sleep(Duration::from_millis(20));
+            fs::write(path.with_file_name("run-new.log"), b"0123456789").expect("writable");
+        }
+        let policy = RetentionPolicy {
+            max_age_days: 30,
+            max_session_bytes: 5,
+        };
+
+        let report = enforce(&logs, Some("quiet"), &policy, now());
+
+        assert_eq!(report.removed_count(), 1);
+        assert!(!logs.join("quiet/2026-09/run-old.log").exists());
+        assert!(logs.join("noisy/2026-09/run-old.log").exists());
+    }
+
+    #[test]
+    fn a_missing_logs_root_is_an_empty_cleanup_not_a_failure() {
+        let dir = TempDir::new();
+
+        let report = enforce(&dir.join("does-not-exist"), None, &policy(), now());
+
+        assert_eq!(report, CleanupReport::default());
+    }
+}

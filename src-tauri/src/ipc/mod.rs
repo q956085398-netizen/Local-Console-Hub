@@ -6,13 +6,14 @@
 //! event includes the session id.
 //!
 //! Current surface: the `ping` bootstrap command proving the typed invoke path
-//! end to end (T00), plus the session lifecycle commands (T04) re-exported
-//! below. Commands for the terminal (T07), service actions (T08) and logging
-//! (T05/T10) land in their own tickets.
+//! end to end (T00), the session lifecycle commands (T04) and the logging
+//! read/action commands (T05). Commands for the terminal (T07), service
+//! actions (T08) and the logs view (T10) land in their own tickets.
 
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module
 // path (`ipc::session::start_session`) rather than re-exported here.
+pub mod logs;
 pub mod session;
 
 use serde::Serialize;

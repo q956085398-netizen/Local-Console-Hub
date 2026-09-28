@@ -38,6 +38,12 @@ dirs = "7"
 # module its signature names — so JobObjects alone does not expose it.
 # Win32_System_Pipes carries `CreatePipe`, the two anonymous pipes around every
 # pseudoconsole.
+#
+# Win32_System_Time carries `GetTimeZoneInformation`, the T01 path-layout
+# helper's source for the local UTC offset that decides which month directory a
+# run's log belongs to (`docs/DECISIONS.md` D-011). It replaces pulling
+# chrono's `clock` feature in for one integer: chrono's `Local` needs the
+# iana-time-zone crate on Windows, where the OS call is already a dependency.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -46,4 +52,5 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_System_Time",
 ] }

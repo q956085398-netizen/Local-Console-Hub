@@ -57,7 +57,11 @@ pub enum LogSource {
 
 /// A log mode after `auto` resolution: the only values the rest of the
 /// app (and the UI "is persistence active?" display) needs to understand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// Deserialization exists for the run metadata T05 writes: the same values
+/// appear in the config, on the IPC surface and in the run record on disk, so
+/// they round-trip rather than being re-mapped into a third vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveLogMode {
     Off,
@@ -152,12 +156,13 @@ pub struct RawConfigFile {
 
 /// Logging configuration after validation and `auto` resolution — the
 /// "effective logging state" the UI must be able to show (LOGGING.md §1.4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveLogging {
     pub mode: EffectiveLogMode,
     pub source: LogSource,
     /// Path of the application-owned log; present only for
     /// `source: external`.
+    #[serde(default)]
     pub external_path: Option<String>,
 }
 

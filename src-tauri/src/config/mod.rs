@@ -16,7 +16,10 @@ pub use model::{
     EffectiveLogMode, EffectiveLogging, LogMode, LogSource, LoggingConfig, RawConfigFile,
     RawSessionConfig, SessionConfig, SessionType,
 };
-pub use paths::{run_log_filename, run_log_path, session_log_dir, AppPaths};
+pub use paths::{
+    local_utc_offset_secs, run_file_name, run_log_filename, run_log_path, run_metadata_path,
+    session_log_dir, AppPaths,
+};
 pub use validate::{validate_entry, SessionConfigError};
 
 use std::collections::HashSet;

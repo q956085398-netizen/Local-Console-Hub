@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 
 use crate::config::{load_from_file, AppPaths};
+use crate::logging::LogRoots;
 use crate::session::core::SessionCore;
 use crate::session::tauri_sink::TauriSink;
 
@@ -27,10 +28,23 @@ use crate::session::tauri_sink::TauriSink;
 /// registration is not a lifecycle operation, and a session only gets a
 /// process when something asks it to start (spec §3, "UI does not own process
 /// truth" — nor does startup).
+///
+/// The app-data layout is attached here too, because this is the one place
+/// that knows both where the user's files live and which registry will write
+/// them (`docs/LOGGING.md` §5). Without it the registry still works and still
+/// buffers, but every policy that needs a file resolves to `off` with a
+/// reported reason (T05) — a running app has no business being in that state.
 pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> SessionCore {
-    let core = SessionCore::new(Arc::new(TauriSink::new(app)));
-    let config_file = AppPaths::from_env().map(|paths| paths.config_file);
-    register_configured(&core, config_file.as_deref());
+    let paths = AppPaths::from_env();
+    let core = match &paths {
+        Some(paths) => SessionCore::new(Arc::new(TauriSink::new(app)))
+            .with_log_roots(LogRoots::from_app_paths(paths)),
+        None => SessionCore::new(Arc::new(TauriSink::new(app))),
+    };
+    register_configured(
+        &core,
+        paths.as_ref().map(|paths| paths.config_file.as_path()),
+    );
     core
 }
 

@@ -10,9 +10,10 @@
 use std::fmt;
 use std::time::SystemTime;
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
+use crate::logging::BufferSummary;
 
 use super::state::SessionStatus;
 
@@ -22,11 +23,13 @@ use super::state::SessionStatus;
 /// contract the frontend reads, and `SystemTime` has no `Serialize` that would
 /// produce it.
 ///
-/// Note for T05 before it persists anything: this is the *IPC* shape, and it
-/// does not match `docs/LOGGING.md` §6's run-metadata example, which is
-/// (illustrative) snake_case keys with a local `+08:00` offset. Run metadata on
-/// disk needs its own decision about shape and offset rather than this derive
-/// reused by accident.
+/// T05 reuses this shape for the run metadata written to disk. That is a
+/// decision, not an accident: the frontend's run-history list and the file on
+/// disk are then one shape interpreted once, so they cannot drift into two
+/// answers about the same run. It departs from `docs/LOGGING.md` §6's sketch,
+/// which is illustrative snake_case with a local offset; UTC is what makes two
+/// machines' records comparable, and `docs/DECISIONS.md` D-016 records the
+/// choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp(SystemTime);
 
@@ -68,12 +71,47 @@ impl Serialize for Timestamp {
     }
 }
 
+/// Reading back a stored timestamp, for the run metadata T05 writes.
+///
+/// Only the form above is accepted. A record whose timestamp is anything else
+/// is refused rather than guessed at: a run history with a wrong start time is
+/// worse than one entry reported as unreadable.
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use chrono::DateTime;
+        use serde::de::Error;
+
+        let text = Option::<String>::deserialize(deserializer)?.ok_or_else(|| {
+            D::Error::custom("a stored timestamp must be an RFC 3339 instant, not null")
+        })?;
+        let instant = DateTime::parse_from_rfc3339(&text)
+            .map_err(|error| D::Error::custom(format!("`{text}` is not RFC 3339: {error}")))?;
+        let seconds = instant.timestamp();
+        if seconds < 0 {
+            // `Timestamp` cannot serialize a pre-epoch instant, so one cannot
+            // have been written by this app.
+            return Err(D::Error::custom(format!(
+                "`{text}` is before the Unix epoch"
+            )));
+        }
+        Ok(Timestamp(
+            SystemTime::UNIX_EPOCH
+                + std::time::Duration::new(seconds as u64, instant.timestamp_subsec_nanos()),
+        ))
+    }
+}
+
 /// What one finished (or ongoing) managed start produced
 /// (`docs/LOGGING.md` §6).
 ///
 /// `ended_at` and `exit_code` stay `None` while the run is live, which is what
 /// lets the same type serve the run-history list and the in-flight run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// Deserialization exists for the run metadata T05 writes under
+/// `metadata/<session>/<month>/`: the same document is both what the frontend
+/// receives and what the Hub reads back, so a run history cannot be two
+/// different shapes depending on who asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
     pub run_id: RunId,
@@ -109,11 +147,13 @@ pub struct SessionErrorInfo {
 /// Core, which is what lets the same value reach the window, the tray and a
 /// test without any of them reaching back into lifecycle machinery.
 ///
-/// §4's "at minimum" list is covered except for the **terminal buffer
-/// reference**: there is no buffer to reference until T05 builds one, and a
-/// placeholder field here would be a second, empty answer to a question only
-/// T05 can answer. `logging` already reports the effective policy, which is
-/// the part of "is this being logged?" that does not need the buffer.
+/// §4's "at minimum" list is covered, including the **terminal buffer**: T05
+/// added [`BufferSummary`], which is the part of the buffer a snapshot can
+/// carry without becoming a handle — how much scrollback exists and whether
+/// any of it was discarded. The output itself is read on demand
+/// (`crate::session::core::SessionCore::terminal_buffer`), because a snapshot
+/// is copied into every event and a session with a full scrollback must not
+/// make every state change expensive (spec §14).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRuntime {
@@ -130,6 +170,10 @@ pub struct SessionRuntime {
     /// flag; T07 is what attaches one.
     pub pty_attached: bool,
     pub logging: EffectiveLogging,
+    /// The in-memory scrollback this session is holding (`docs/LOGGING.md`
+    /// §8). Present whatever the logging policy is: `mode: off` decides what
+    /// reaches the disk, never whether the session has a buffer.
+    pub buffer: BufferSummary,
     pub last_error: Option<SessionErrorInfo>,
 }
 
@@ -149,6 +193,7 @@ impl SessionRuntime {
             exit_code: None,
             pty_attached: false,
             logging,
+            buffer: BufferSummary::default(),
             last_error: None,
         }
     }
@@ -199,11 +244,28 @@ impl RunId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The id a stored record carried — the counterpart of [`RunId::as_str`].
+    ///
+    /// Deliberately unchecked: an id read back from disk is a fact about a run
+    /// that already happened, and the place that turns an id into a file name
+    /// ([`crate::config::run_log_filename`]) applies the safety rule again
+    /// anyway. Refusing here would only mean a record that cannot be read at
+    /// all rather than one whose log path is rejected.
+    pub fn from_stored(value: impl Into<String>) -> Self {
+        RunId(value.into())
+    }
 }
 
 impl Serialize for RunId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RunId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(RunId(String::deserialize(deserializer)?))
     }
 }
 

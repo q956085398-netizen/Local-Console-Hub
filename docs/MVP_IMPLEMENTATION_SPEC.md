@@ -166,6 +166,12 @@ At minimum:
 - terminal buffer reference
 - last structured error
 
+The buffer reference is a **summary** (bytes held, lines held, bytes discarded),
+not the scrollback itself. The scrollback is read on demand, so a session with a
+full buffer does not make every state change expensive (§14). A UI that needs the
+content asks for it; a UI that needs "is there anything to show, and was any of
+it lost?" reads it from the snapshot it already has.
+
 ### RunRecord
 
 Each managed start creates one run record containing:
@@ -291,7 +297,13 @@ open_session_url
 open_session_cwd
 get_run_history
 get_log_info
+save_run_log
+set_log_recording
 ~~~
+
+`save_run_log` commits an `on_error` run's log on demand and `set_log_recording`
+switches a `manual` run's recording on or off (LOGGING.md §3). Both name a
+single operation; neither is a generic "do something to this session".
 
 Do not introduce one generic "execute arbitrary backend action" command.
 

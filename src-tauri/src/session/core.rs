@@ -29,8 +29,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 
-use crate::config::{SessionConfig, SessionType};
-use crate::process::{ManagedProcess, ProcessSpec};
+use crate::config::{self, LogSource, SessionConfig, SessionType};
+use crate::logging::{
+    self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
+    RunLogHandle, RunOutcome, Stream, TerminalBuffer, DEFAULT_LOG_LIMITS,
+};
+use crate::process::{ManagedProcess, OutputMode, ProcessSpec};
 
 use super::event::{
     AppSummary, AppSummaryChanged, RunRecordUpdated, SessionEvent, SessionStateChanged,
@@ -178,6 +182,22 @@ struct SessionState {
     /// rather than in the snapshot because the snapshot is the UI's view and
     /// the record is the run-history entry.
     record: Option<RunRecord>,
+    /// The bounded scrollback (`docs/LOGGING.md` §8).
+    ///
+    /// Per session, not per run: restarting a service must not erase what the
+    /// user was reading, and §8 keeps the buffer for every session whatever
+    /// the logging policy is. Shared rather than owned so a reader outside this
+    /// lock can hold the scrollback while a batch arrives.
+    buffer: Arc<Mutex<TerminalBuffer>>,
+    /// The current run's log, present while a run is in flight.
+    log: Option<Arc<RunLogHandle>>,
+    /// The threads reading the run's pipes, if it was started with capture.
+    pump_drain: Option<PumpDrain>,
+    /// Why logging is not working as configured, kept after the run's log is
+    /// closed: a run whose file never appeared has to stay explainable
+    /// (`docs/LOGGING.md` §1.4 — the user must never be left thinking output is
+    /// being recorded when it is not).
+    log_problem: Option<LogError>,
 }
 
 /// The registry plus everything needed to publish.
@@ -188,6 +208,15 @@ struct SessionState {
 pub struct SessionCore {
     sessions: Arc<Mutex<BTreeMap<String, Arc<Mutex<SessionState>>>>>,
     sink: Arc<dyn EventSink>,
+    /// Where Hub-written logs and run metadata go, or `None` for a core with
+    /// nowhere to write — a test, or a headless build with no app-data
+    /// directory. A rootless core resolves every policy that needs a file to
+    /// `off` and says so rather than writing into the current directory.
+    roots: Option<LogRoots>,
+    /// How much scrollback a session keeps (`docs/LOGGING.md` §8).
+    scrollback: BufferLimits,
+    /// How large one run's log file may grow before it is closed off.
+    limits: logging::LogLimits,
 }
 
 /// Lock a mutex, surviving a previous holder's panic.
@@ -202,17 +231,48 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl SessionCore {
-    /// A core that publishes to `sink`.
+    /// A core that publishes to `sink`, with nowhere to write logs.
+    ///
+    /// A core with no roots cannot persist anything, and a session configured
+    /// to persist resolves to `off` with a reported reason rather than writing
+    /// a log somewhere unintended. Production builds add the app-data roots
+    /// with [`SessionCore::with_log_roots`]; the buffered scrollback every
+    /// session has is unaffected either way (D-004).
     pub fn new(sink: Arc<dyn EventSink>) -> Self {
         SessionCore {
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
             sink,
+            roots: None,
+            scrollback: crate::logging::DEFAULT_BUFFER_LIMITS,
+            limits: DEFAULT_LOG_LIMITS,
         }
     }
 
     /// A core with no listener.
     pub fn without_listener() -> Self {
         SessionCore::new(Arc::new(NoopSink))
+    }
+
+    /// Give this core the app-data roots its runs write logs and metadata to.
+    ///
+    /// Builder-style, and applied before anything is registered: the roots are
+    /// read when a run starts, so changing them later would give two runs of
+    /// one session different layouts.
+    pub fn with_log_roots(mut self, roots: LogRoots) -> Self {
+        self.roots = Some(roots);
+        self
+    }
+
+    /// Builder-style: replace the buffer and file-size limits.
+    ///
+    /// Only tests do this. `docs/LOGGING.md` §9 leaves the numbers to
+    /// implementation, and a value a user could change would be a value they
+    /// could accidentally set to "keep everything".
+    #[cfg(test)]
+    fn with_limits(mut self, scrollback: BufferLimits, limits: logging::LogLimits) -> Self {
+        self.scrollback = scrollback;
+        self.limits = limits;
+        self
     }
 
     /// Add a validated session to the registry.
@@ -234,16 +294,26 @@ impl SessionCore {
         }
 
         let runtime = SessionRuntime::stopped(config.id.clone(), config.logging.clone());
+        let id = config.id.clone();
         sessions.insert(
-            config.id.clone(),
+            id.clone(),
             Arc::new(Mutex::new(SessionState {
                 config,
                 runtime: runtime.clone(),
                 run: None,
                 generation: 0,
                 record: None,
+                buffer: Arc::new(Mutex::new(TerminalBuffer::new(self.scrollback))),
+                log: None,
+                pump_drain: None,
+                log_problem: None,
             })),
         );
+        // Registration creates no directory and no file: a session that has
+        // never run has nothing on disk, which is how "opening a shell does not
+        // leave litter behind" stays true (D-004, `docs/LOGGING.md` §1.2). The
+        // folder a session's logs *will* live in is computed, not created, and
+        // reported through its log status (D-011).
         Ok(runtime)
     }
 
@@ -353,7 +423,7 @@ impl SessionCore {
         // session: `Starting -> Starting` and `Starting -> Stopping` are both
         // outside the table, so a concurrent start or stop is refused rather
         // than interleaved with the spawn.
-        let spec = {
+        let (spec, planned) = {
             let mut state = lock(&handle);
 
             let from = state.runtime.status;
@@ -365,13 +435,20 @@ impl SessionCore {
                     SessionStatus::Starting,
                 ));
             }
+
+            // The run's identity and its logging are settled before anything
+            // is started: the run id and start time are what name its log file
+            // (D-011), and a session whose policy cannot be honoured should
+            // find that out before it has a process, not after.
+            let planned = self.plan_run(&state.config, session_id);
+
             // Refuse before mutating anything: a session with no usable
             // command has not "tried to start".
-            let spec = process_spec(&state.config, session_id)?;
+            let spec = process_spec(&state.config, session_id, &planned)?;
 
             state.runtime.status = SessionStatus::Starting;
             state.runtime.last_error = None;
-            spec
+            (spec, planned)
         };
         // The listener sees the start in flight, which is what a UI needs to
         // keep the action buttons from lying about what is happening.
@@ -384,11 +461,26 @@ impl SessionCore {
 
             match spawned {
                 Ok(run) => {
-                    let run_id = RunId::mint();
-                    let started_at = Timestamp::now();
                     let pid = run.pid();
+                    let started_at = planned.started_at;
+                    // Taken before the run goes into the registry: the pumping
+                    // threads are started once this lock is released, and an
+                    // untaken pipe would leave a chatty service blocked on its
+                    // own output.
+                    let output = planned
+                        .plan
+                        .persistence
+                        .captures_output()
+                        .then(|| run.take_output())
+                        .flatten();
+
+                    let log = Arc::new(RunLogHandle::new(RunLog::start(
+                        planned.plan.persistence.clone(),
+                        self.limits,
+                    )));
+
                     let record = RunRecord {
-                        run_id: run_id.clone(),
+                        run_id: planned.run_id.clone(),
                         session_id: session_id.to_owned(),
                         started_at,
                         ended_at: None,
@@ -396,7 +488,12 @@ impl SessionCore {
                         pid: Some(pid),
                         log_mode: state.config.logging.mode,
                         log_source: state.config.logging.source,
-                        log_file: None,
+                        // Known for the modes that have a file from the start:
+                        // a `capture` run's file exists now, and an `external`
+                        // session is linked to the application's own log. The
+                        // modes that decide at the end leave this to be filled
+                        // in when the run ends.
+                        log_file: planned.planned_log_file(&log),
                     };
 
                     // The generation marks this run; a watcher started for it
@@ -404,14 +501,18 @@ impl SessionCore {
                     state.generation += 1;
                     state.run = Some(Arc::new(run));
                     state.record = Some(record);
+                    state.log = Some(Arc::clone(&log));
+                    state.log_problem = planned.plan.problem.clone();
+                    let buffer = lock(&state.buffer).summary();
+                    state.runtime.buffer = buffer;
 
                     state.runtime.pid = Some(pid);
-                    state.runtime.run_id = Some(run_id);
+                    state.runtime.run_id = Some(planned.run_id.clone());
                     state.runtime.started_at = Some(started_at);
                     state.runtime.exit_code = None;
                     state.runtime.status = SessionStatus::Running;
 
-                    Ok(state.runtime.clone())
+                    Ok((state.runtime.clone(), output, state.generation))
                 }
                 Err(error) => {
                     let message = error.to_string();
@@ -420,6 +521,8 @@ impl SessionCore {
                     state.runtime.run_id = None;
                     state.run = None;
                     state.record = None;
+                    state.log = None;
+                    state.log_problem = None;
                     state.runtime.last_error = Some(SessionErrorInfo {
                         operation: "start".to_owned(),
                         message: message.clone(),
@@ -436,24 +539,110 @@ impl SessionCore {
 
         // Published after the session lock is released, so a sink can never
         // deadlock against the operation that produced the event.
-        if outcome.is_ok() {
-            self.publish_ending(session_id);
+        match outcome {
+            Ok((runtime, output, generation)) => {
+                // Capture is wired before anything is published or watched: a
+                // run can exit instantly, and a watcher that got there first
+                // would close the log before the pipes that feed it were even
+                // handed over — losing the whole of a short run's output.
+                self.start_capturing(session_id, generation, output);
+                self.publish_ending(session_id);
 
-            // Started only after `Running` is on the wire. A run can end very
-            // quickly, and a watcher that got there first would publish
-            // `Exited` before `Running` — a listener would then be told a
-            // session ended before it was told it started.
-            let generation = lock(&handle).generation;
-            std::thread::spawn({
-                let core = self.clone();
-                let handle = Arc::clone(&handle);
-                let session_id = session_id.to_owned();
-                move || watch_run(core, handle, session_id, generation)
-            });
-        } else {
-            self.publish_state_and_summary(session_id);
+                // Started only after `Running` is on the wire. A run can end very
+                // quickly, and a watcher that got there first would publish
+                // `Exited` before `Running` — a listener would then be told a
+                // session ended before it was told it started.
+                std::thread::spawn({
+                    let core = self.clone();
+                    let handle = Arc::clone(&handle);
+                    let session_id = session_id.to_owned();
+                    move || watch_run(core, handle, session_id, generation)
+                });
+                Ok(runtime)
+            }
+            Err(error) => {
+                self.publish_state_and_summary(session_id);
+                Err(error)
+            }
         }
-        outcome
+    }
+
+    /// Read a run's captured streams into its session, one thread per stream.
+    ///
+    /// The threads end when the pipes do — for a supervised process, when it
+    /// exits and every handle it handed on is closed — so nothing has to stop
+    /// them, and nothing has to wait for them: a run's last output arrives
+    /// after the run is over, and the session it belongs to is asked for by id
+    /// rather than held.
+    fn start_capturing(
+        &self,
+        session_id: &str,
+        generation: u64,
+        output: Option<crate::process::ProcessOutput>,
+    ) {
+        let Some(output) = output else {
+            return;
+        };
+        let sink = CapturedOutput {
+            core: self.clone(),
+            session_id: session_id.to_owned(),
+            generation,
+        };
+
+        let (drained, done) = std::sync::mpsc::channel();
+        let mut started = 0;
+        for (reader, stream) in [
+            (output.stdout, Stream::Stdout),
+            (output.stderr, Stream::Stderr),
+        ] {
+            if let Some(reader) = reader {
+                started += 1;
+                let signalled = drained.clone();
+                logging::pump(reader, stream, sink.clone(), move || {
+                    let _ = signalled.send(());
+                });
+            }
+        }
+        drop(drained);
+
+        if started > 0 {
+            if let Some(handle) = self.handle(session_id) {
+                lock(&handle).pump_drain = Some(PumpDrain {
+                    done,
+                    expected: started,
+                });
+            }
+        }
+    }
+
+    /// Take one batch of a run's captured output.
+    ///
+    /// Reached from a pumping thread, never from a lifecycle call. The
+    /// generation check is what keeps a superseded run's last bytes out of the
+    /// session's buffer: after a restart, output that was already in the pipe
+    /// belongs to the run that produced it, and showing it as the new run's
+    /// output would be a lie the user cannot detect.
+    fn take_output_batch(&self, session_id: &str, generation: u64, stream: Stream, bytes: &[u8]) {
+        let Some(handle) = self.handle(session_id) else {
+            return;
+        };
+        let mut state = lock(&handle);
+        if state.generation != generation {
+            return;
+        }
+
+        // The run's log first, then the session's scrollback: a batch that
+        // reaches the buffer but not the file would be a scrollback a user can
+        // read but cannot recover, which is the one direction D-004 lets us
+        // choose (memory is replenishable; a lost log is not).
+        if let Some(log) = state.log.as_ref() {
+            log.append(stream, bytes);
+        }
+        state.runtime.buffer = {
+            let mut buffer = lock(&state.buffer);
+            buffer.push(stream, bytes);
+            buffer.summary()
+        };
     }
 
     /// Stop a session, giving it the default grace period to unwind.
@@ -606,10 +795,404 @@ impl SessionCore {
         // alongside the state. A stop that failed left the record open and has
         // nothing new to say about it.
         match &outcome {
-            Ok(_) => self.publish_ending(session_id),
-            Err(_) => self.publish_state_and_summary(session_id),
+            Ok(_) => {
+                // The user asked for this stop and it was carried out. Whatever
+                // exit code the terminated process reported is an answer to
+                // being stopped, not a failure (`RunEnding`).
+                self.finalize_run(session_id, &handle, RunEnding::Requested);
+                self.publish_ending(session_id);
+            }
+            Err(_) => {
+                // The stop could not confirm the tree was gone, so the run may
+                // still be alive — but this session is not waiting on it any
+                // more, and an `on_error` log that never gets written because a
+                // stop failed is the one case where the log matters most.
+                self.finalize_run(session_id, &handle, RunEnding::Failed);
+                self.publish_state_and_summary(session_id);
+            }
         }
         outcome
+    }
+
+    /// The effective logging state of one session (`docs/LOGGING.md` §1.4).
+    ///
+    /// Answered whether or not a run exists: "is this being recorded, and
+    /// where?" is a property of the configuration, and a UI that can only
+    /// answer it for running sessions would have to guess the rest of the time.
+    pub fn log_status(&self, session_id: &str) -> Option<LogStatus> {
+        let handle = self.handle(session_id)?;
+        let state = lock(&handle);
+        Some(state.log_status(session_id, self.roots.as_ref()))
+    }
+
+    /// A session's retained scrollback, oldest first.
+    ///
+    /// Read on demand rather than carried in the snapshot: a snapshot is copied
+    /// into every event, and a full scrollback must not make every state change
+    /// expensive (spec §14). The frontend reads this when it needs to render a
+    /// terminal, not on every tick.
+    pub fn terminal_buffer(&self, session_id: &str) -> Option<Vec<logging::BufferedChunk>> {
+        let handle = self.handle(session_id)?;
+        let state = lock(&handle);
+        let buffer = lock(&state.buffer);
+        Some(buffer.chunks().cloned().collect())
+    }
+
+    /// Commit the current run's `on_error` log now, instead of waiting for the
+    /// run to end (`docs/LOGGING.md` §3: "save this run's log").
+    ///
+    /// Answers with the logging status afterwards, so a caller can show where
+    /// the file went without a second round trip. A session with no run, or one
+    /// whose policy does not write on request, is reported as the failed
+    /// operation it is.
+    pub fn save_run_log(&self, session_id: &str) -> Result<LogStatus, SessionError> {
+        const OPERATION: &str = "save_run_log";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        {
+            let state = lock(&handle);
+            let log = state.log.as_ref().ok_or_else(|| {
+                SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!("session `{session_id}` has no run to save a log for"),
+                    None,
+                )
+            })?;
+            log.save_now();
+        }
+        // A failed save is not a failed operation: the file may simply not be
+        // writable, and the status carries that reason (`last_error`) where the
+        // UI can show it.
+        self.log_status(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))
+    }
+
+    /// Start or stop recording a `manual` session's run
+    /// (`docs/LOGGING.md` §3).
+    ///
+    /// Refused for any other mode: `always` is already recording and `off` has
+    /// no file to start, so accepting the request would make the UI's switch
+    /// mean different things for different sessions.
+    pub fn set_log_recording(
+        &self,
+        session_id: &str,
+        recording: bool,
+    ) -> Result<LogStatus, SessionError> {
+        const OPERATION: &str = "set_log_recording";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        {
+            let state = lock(&handle);
+            if state.config.logging.mode != crate::config::EffectiveLogMode::Manual {
+                return Err(SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!(
+                        "session `{session_id}` is not configured with `logging.mode: manual`, so \
+                         recording cannot be switched on and off"
+                    ),
+                    None,
+                ));
+            }
+            let log = state.log.as_ref().ok_or_else(|| {
+                SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!("session `{session_id}` has no run to record"),
+                    None,
+                )
+            })?;
+            if recording {
+                log.start_recording();
+            } else {
+                log.stop_recording();
+            }
+        }
+        self.log_status(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))
+    }
+
+    /// Remove the Hub's own log files that retention says are past keeping
+    /// (`docs/LOGGING.md` §9).
+    ///
+    /// The budget is per session, so a noisy service that reaches its own
+    /// ceiling stops deleting its own oldest logs and never touches another
+    /// session's. Passing a `session_id` narrows the sweep to that session —
+    /// the "clean this session's old logs" action §10 lists — and `None`
+    /// sweeps every session.
+    ///
+    /// Nothing is cleaned automatically, and nothing here deletes a file that
+    /// is not the Hub's own: deleting a user's files is an action they take,
+    /// not one that happens behind them when the app starts. The button that
+    /// calls this is T10's, along with showing what a sweep would remove.
+    pub fn cleanup_logs(&self, session_id: Option<&str>) -> logging::CleanupReport {
+        let Some(roots) = &self.roots else {
+            return logging::CleanupReport::default();
+        };
+        logging::retention::enforce(
+            &roots.logs_dir,
+            session_id,
+            &logging::DEFAULT_RETENTION,
+            logging::clock::now(),
+        )
+    }
+
+    /// A session's completed runs, newest first (`docs/LOGGING.md` §6).
+    ///
+    /// Read from the run metadata on disk rather than from memory: a run
+    /// history that only existed while the app was open would not survive the
+    /// restart that a user is most likely to want it after.
+    pub fn run_history(&self, session_id: &str) -> logging::RunHistory {
+        let Some(roots) = &self.roots else {
+            return logging::RunHistory::default();
+        };
+        logging::run_history(&roots.metadata_dir, session_id)
+    }
+
+    /// Close the current run's log, finish its record, and file the record.
+    ///
+    /// Every path that ends a run calls this — a stop the user asked for, a
+    /// failure to stop, and the watcher seeing a run end on its own — because a
+    /// run whose log is never closed is a run whose output is still in a
+    /// buffer, and one whose record is never filed is missing from the history
+    /// the user will look at next time.
+    fn finalize_run(&self, session_id: &str, handle: &Arc<Mutex<SessionState>>, ending: RunEnding) {
+        // First, with the lock released: let the pipes be read out. A run that
+        // exited with output still in flight has not finished producing it, and
+        // closing its log now would file a file that is missing exactly the
+        // lines a user opens it for.
+        if let Some(drain) = lock(handle).pump_drain.take() {
+            drain.wait();
+        }
+
+        let record = {
+            let mut state = lock(handle);
+
+            if let Some(log) = state.log.take() {
+                let exit_code = state.record.as_ref().and_then(|record| record.exit_code);
+                let written = log.finish(ending.outcome(exit_code));
+
+                if let Some(problem) = log.last_error() {
+                    state.log_problem = Some(problem);
+                }
+                // Nothing was produced. An `external` session keeps its link to
+                // the application's log — that file exists whether or not the
+                // Hub wrote anything — and every other mode's record must stop
+                // naming the file it planned but never wrote
+                // (`docs/MVP_IMPLEMENTATION_SPEC.md` §4: a path *when one
+                // exists*).
+                let missing = (state.config.logging.source == LogSource::External)
+                    .then(|| state.config.logging.external_path.clone())
+                    .flatten();
+
+                if let Some(record) = state.record.as_mut() {
+                    record.log_file = written.map(|path| path.display().to_string()).or(missing);
+                }
+            }
+            state.record.clone()
+        };
+
+        // Only a run that ended has a history entry. A record with no end is
+        // an open run — a stop that could not confirm the tree was gone leaves
+        // one — and filing it would put a run in the history that a reader
+        // cannot tell from one still going.
+        if let Some(record) = record.filter(|record| record.ended_at.is_some()) {
+            self.file_run_record(session_id, &record);
+        }
+    }
+
+    /// Write a finished run's record to the metadata directory
+    /// (`docs/LOGGING.md` §6).
+    ///
+    /// A failure is recorded against the session rather than raised: the run
+    /// itself ran fine, and a missing history entry must not be reported as a
+    /// failed run. It is also not silent — it reaches the UI through the log
+    /// status, next to the log file it is about.
+    fn file_run_record(&self, session_id: &str, record: &RunRecord) {
+        let Some(roots) = &self.roots else {
+            return;
+        };
+        if let Err(error) =
+            logging::write_run(&roots.metadata_dir, record, config::local_utc_offset_secs())
+        {
+            if let Some(handle) = self.handle(session_id) {
+                lock(&handle).log_problem = Some(error);
+            }
+        }
+    }
+
+    /// Decide a run's logging before it starts.
+    ///
+    /// The run id and start time are minted here because they name the log
+    /// file, and the file's path is what the policy is resolved against: a
+    /// policy that needs a file the Hub cannot name is downgraded, and the
+    /// reason travels with the run (`docs/LOGGING.md` §1.4).
+    fn plan_run(&self, config: &SessionConfig, session_id: &str) -> PlannedRun {
+        let run_id = RunId::mint();
+        let started_at = Timestamp::now();
+
+        let log_file = (config.logging.source == LogSource::Captured)
+            .then(|| self.run_log_file(session_id, &run_id, started_at))
+            .flatten();
+
+        PlannedRun {
+            plan: LogPlan::resolve(&config.logging, log_file),
+            run_id,
+            started_at,
+        }
+    }
+
+    /// The path this run's log would live at, or `None` when the Hub has no
+    /// writable root or the session id cannot become a directory name.
+    fn run_log_file(
+        &self,
+        session_id: &str,
+        run_id: &RunId,
+        started_at: Timestamp,
+    ) -> Option<PathBuf> {
+        let roots = self.roots.as_ref()?;
+        config::run_log_path(
+            &roots.logs_dir,
+            session_id,
+            started_at.unix_secs()?,
+            config::local_utc_offset_secs(),
+            run_id.as_str(),
+        )
+    }
+}
+
+/// How a run ended, in the terms the logging layer decides with.
+///
+/// This is not [`SessionStatus`]: a run stopped by request and a run that fell
+/// over both leave `Exited` behind when the exit code is zero, and `Error`
+/// covers both an unexpected failure and a stop that could not be carried out.
+/// The logging layer needs the difference — a stop the user asked for is not
+/// evidence of a problem (`docs/LOGGING.md` §3) — so the caller that knows
+/// says which it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunEnding {
+    /// The user stopped it, and the stop was carried out.
+    Requested,
+    /// It ended without anyone asking.
+    OnItsOwn,
+    /// The lifecycle called it a failure: an error state, or a stop that could
+    /// not confirm the tree was gone.
+    Failed,
+}
+
+impl RunEnding {
+    /// The outcome `RunEnding` implies for a run that ended with `exit_code`.
+    fn outcome(self, exit_code: Option<u32>) -> RunOutcome {
+        match self {
+            RunEnding::Requested => RunOutcome::stopped(exit_code),
+            RunEnding::OnItsOwn => RunOutcome::exited(exit_code),
+            RunEnding::Failed => RunOutcome::failed(exit_code),
+        }
+    }
+}
+
+/// Everything a run needs that is decided before it starts.
+///
+/// The run id and start time are minted here rather than after the spawn
+/// because they are what name the run's log file (D-011): a run that starts and
+/// immediately fails still has one well-defined file to look for, and whether
+/// there is a file at all is settled once, before anything is launched.
+struct PlannedRun {
+    run_id: RunId,
+    started_at: Timestamp,
+    plan: LogPlan,
+}
+
+impl PlannedRun {
+    /// Whether the Hub takes this run's stdout/stderr at all
+    /// (`docs/LOGGING.md` §8: the scrollback is kept for every session; only
+    /// `source: external` declines, because the application already has it).
+    fn captures_output(&self) -> bool {
+        self.plan.persistence.captures_output()
+    }
+
+    /// The `log_file` a run's record starts with, from what the run log
+    /// actually has.
+    ///
+    /// Taken from the log itself rather than from the plan: a `capture` run
+    /// whose file could not be created must not leave a record naming a path
+    /// that does not exist (`docs/MVP_IMPLEMENTATION_SPEC.md` §4 — "persisted
+    /// log path **when one exists**"). `external` is the other answer this can
+    /// give, and it is a link to a file the application owns and already
+    /// wrote. `on_error` and `manual` write nothing until something happens,
+    /// so they leave this empty and it is filled in when the run ends — which
+    /// is the difference between "there is a log" and "there may be one".
+    fn planned_log_file(&self, log: &RunLogHandle) -> Option<String> {
+        log.produced_path()
+            .or_else(|| self.plan.persistence.external_path().cloned())
+            .map(|path| path.display().to_string())
+    }
+}
+
+/// Routes one run's captured batches to the session that owns it.
+///
+/// Holds a session id and a generation rather than a session handle: the run
+/// may be superseded while its last output is still in the pipe, and the
+/// generation is what lets the session refuse bytes that no longer belong to
+/// the run it is showing.
+#[derive(Clone)]
+struct CapturedOutput {
+    core: SessionCore,
+    session_id: String,
+    generation: u64,
+}
+
+impl OutputSink for CapturedOutput {
+    fn take(&self, stream: Stream, bytes: &[u8]) {
+        self.core
+            .take_output_batch(&self.session_id, self.generation, stream, bytes);
+    }
+}
+
+/// How long a run's end waits for its pipes to be read out.
+///
+/// A process can exit with output still in its pipe, and the run is not over
+/// until that output has been taken (`docs/LOGGING.md` §3: an `on_error` run's
+/// whole value is the output right before the failure). The wait is bounded
+/// because a pipe is only closed when *every* writer lets go, and a service
+/// that hands one to a child it outlives would otherwise hold the session
+/// here for as long as that child lives.
+///
+/// The common case returns in microseconds — a pipe's worth of already-written
+/// bytes — and the bound only matters for the case that has no answer anyway:
+/// output from a run whose pipe is still held will reach the in-memory
+/// scrollback, and a log file that has already been closed takes no more.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The pumps reading one run's pipes, and how many of them there are.
+struct PumpDrain {
+    done: std::sync::mpsc::Receiver<()>,
+    expected: usize,
+}
+
+impl PumpDrain {
+    /// Wait, up to [`DRAIN_TIMEOUT`], for every pump to report that its stream
+    /// ended.
+    ///
+    /// Must be called with no session lock held: the pumps need that lock to
+    /// hand over their last batches, and waiting for them while holding it
+    /// would be a deadlock that ends in the timeout — with exactly the output
+    /// this exists to save missing.
+    fn wait(self) {
+        let deadline = std::time::Instant::now() + DRAIN_TIMEOUT;
+        for _ in 0..self.expected {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if self.done.recv_timeout(left).is_err() {
+                // Timed out or every sender is gone: either way there is
+                // nothing more to wait for.
+                return;
+            }
+        }
     }
 }
 
@@ -631,6 +1214,90 @@ impl SessionState {
             record.exit_code = code;
         }
     }
+
+    /// The effective logging state of this session (`docs/LOGGING.md` §1.4).
+    fn log_status(&self, session_id: &str, roots: Option<&LogRoots>) -> LogStatus {
+        let logging = &self.config.logging;
+        // While a run is in flight the run log answers "what is happening
+        // now"; between runs the policy answers "what will happen next".
+        // `manual` resolves to `off` in both, which is the point of it.
+        let state = match (&self.log, self.runtime.status) {
+            (
+                Some(log),
+                SessionStatus::Starting | SessionStatus::Running | SessionStatus::Stopping,
+            ) => log.state(),
+            _ => policy_state(logging.source, logging.mode),
+        };
+
+        // The file this session is writing *now* when it is writing one, and
+        // otherwise the file the last run left behind. The two differ for the
+        // modes that decide mid-run: an `on_error` run that has been saved, and
+        // a `manual` run that is recording, have a file before their record
+        // does — and a UI that only knew about the record would report "not
+        // recording" about a session that is writing to disk at that moment.
+        let live_file = self
+            .log
+            .as_ref()
+            .filter(|log| log.is_writing())
+            .and_then(|log| log.hub_log_path())
+            .map(|path| path.display().to_string());
+
+        LogStatus {
+            session_id: session_id.to_owned(),
+            mode: logging.mode,
+            source: logging.source,
+            state,
+            truncated: self.log.as_ref().is_some_and(|log| log.is_truncated()),
+            log_file: live_file.or_else(|| {
+                // From the run record, so a `capture` run's file stays named
+                // after the run has ended and an `on_error` run that failed
+                // keeps the file it just wrote.
+                self.record
+                    .as_ref()
+                    .and_then(|record| record.log_file.clone())
+            }),
+            external_log: logging.external_path.clone(),
+            session_log_dir: session_dir(
+                roots,
+                session_id,
+                self.runtime
+                    .started_at
+                    .or(self.record.as_ref().map(|record| record.started_at)),
+            ),
+            records_input: false,
+            buffer: lock(&self.buffer).summary(),
+            last_error: self
+                .log
+                .as_ref()
+                .and_then(|log| log.last_error())
+                .or_else(|| self.log_problem.clone()),
+        }
+    }
+}
+
+/// The folder a session's Hub-written logs are in, or `None` without roots or
+/// a filesystem-safe id. Computed, never created: an empty directory for a
+/// session that has never run is noise (D-004).
+///
+/// The month is the one the session's *current* run started in, not the one it
+/// is now (`docs/LOGGING.md` §5 files runs by the month they started). For a
+/// session left running across a month boundary those differ, and a "open the
+/// log folder" that opened the wrong month's folder would show a user an empty
+/// directory next to a log that exists.
+fn session_dir(
+    roots: Option<&LogRoots>,
+    session_id: &str,
+    started_at: Option<Timestamp>,
+) -> Option<String> {
+    let roots = roots?;
+    let at = started_at.unwrap_or_else(Timestamp::now);
+    let dir = config::session_log_dir(
+        &roots.logs_dir,
+        session_id,
+        at.unix_secs()?,
+        config::local_utc_offset_secs(),
+    )?;
+    Some(dir.display().to_string())
 }
 
 /// How often a run watcher re-checks whether it has been superseded.
@@ -678,7 +1345,7 @@ fn watch_run(
         }
     }
 
-    {
+    let ending = {
         let mut state = lock(&handle);
         // Superseded by a restart, or a stop/report already owns this ending.
         if state.generation != generation || state.runtime.status != SessionStatus::Running {
@@ -706,8 +1373,17 @@ fn watch_run(
             });
         }
         state.close_run(ended, code);
-    }
+        match ended {
+            SessionStatus::Error => RunEnding::Failed,
+            // `Exited` after nobody asked: a clean exit that was not requested.
+            _ => RunEnding::OnItsOwn,
+        }
+    };
 
+    // The run's log is closed and its record filed before anything is
+    // published, so a listener that reacts to the ending already has the path
+    // of the file it produced.
+    core.finalize_run(&session_id, &handle, ending);
     core.publish_ending(&session_id);
 }
 
@@ -717,7 +1393,17 @@ fn watch_run(
 /// run is a PTY, which T07 wires to this timeline; spawning a plain process
 /// for one now would be a second, competing terminal implementation
 /// (EXECUTION_PLAN §2.3).
-fn process_spec(config: &SessionConfig, id: &str) -> Result<ProcessSpec, SessionError> {
+///
+/// The run's resolved logging decides whether its output is piped back: a
+/// session whose policy captures (`docs/LOGGING.md` §8 — every session keeps a
+/// scrollback) gets [`OutputMode::Capture`], and one linked to an
+/// application-owned log does not, because taking its output would duplicate
+/// what the application already writes (D-005).
+fn process_spec(
+    config: &SessionConfig,
+    id: &str,
+    planned: &PlannedRun,
+) -> Result<ProcessSpec, SessionError> {
     const OPERATION: &str = "start";
 
     if config.session_type != SessionType::Service {
@@ -763,7 +1449,17 @@ fn process_spec(config: &SessionConfig, id: &str) -> Result<ProcessSpec, Session
         )
     })?;
 
-    Ok(ProcessSpec { program, args, cwd })
+    let output = if planned.captures_output() {
+        OutputMode::Capture
+    } else {
+        OutputMode::Inherit
+    };
+    Ok(ProcessSpec {
+        program,
+        args,
+        cwd,
+        output,
+    })
 }
 
 /// Split a configured command line into a program and its arguments.
@@ -888,6 +1584,16 @@ mod tests {
         config.command = Some(command.to_owned());
         core.register(config).expect("registration succeeds");
         (core, sink)
+    }
+
+    /// The plan a run of `config` would get, resolved against no writable
+    /// root — the shape every unit test here works with.
+    fn planned_for(config: &SessionConfig) -> PlannedRun {
+        PlannedRun {
+            run_id: RunId::mint(),
+            started_at: Timestamp::now(),
+            plan: LogPlan::resolve(&config.logging, None),
+        }
     }
 
     #[test]
@@ -1442,7 +2148,8 @@ mod tests {
         let mut config = service("svc");
         config.cwd = Some(PathBuf::from("C:\\work"));
 
-        let spec = process_spec(&config, "svc").expect("a service has a spec");
+        let spec =
+            process_spec(&config, "svc", &planned_for(&config)).expect("a service has a spec");
         assert_eq!(spec.program, PathBuf::from("cmd.exe"));
         assert_eq!(spec.args, vec!["/c", "exit", "0"]);
         assert_eq!(spec.cwd, PathBuf::from("C:\\work"));
@@ -1455,7 +2162,7 @@ mod tests {
         let mut config = service("svc");
         config.cwd = None;
 
-        let error = process_spec(&config, "svc").expect_err("refused");
+        let error = process_spec(&config, "svc", &planned_for(&config)).expect_err("refused");
         assert_eq!(error.kind, SessionErrorKind::Failed);
         assert!(error.message.contains("cwd"), "message: {}", error.message);
     }
@@ -1469,9 +2176,704 @@ mod tests {
         config.command = None;
         config.shell = Some("powershell".to_owned());
 
-        let error = process_spec(&config, "term").expect_err("terminals are T07");
+        let error =
+            process_spec(&config, "term", &planned_for(&config)).expect_err("terminals are T07");
         assert_eq!(error.kind, SessionErrorKind::Unsupported);
         assert_eq!(error.session_id, "term");
         assert!(error.message.contains("T07"), "message: {}", error.message);
+    }
+
+    /// The pipe decision is made from the resolved policy, not from the
+    /// session type: a `captured` service has its output taken (its scrollback
+    /// is filled even when nothing is written), and one linked to the
+    /// application's own log does not (D-005).
+    #[test]
+    fn a_run_is_piped_only_when_its_policy_captures() {
+        let captured = service("svc");
+        let mut external = service("app");
+        external.logging = EffectiveLogging {
+            mode: EffectiveLogMode::Always,
+            source: LogSource::External,
+            external_path: Some("D:/app/access.log".to_owned()),
+        };
+
+        let piped = process_spec(&captured, "svc", &planned_for(&captured)).expect("a spec");
+        let linked = process_spec(&external, "app", &planned_for(&external)).expect("a spec");
+
+        assert_eq!(piped.output, OutputMode::Capture);
+        assert_eq!(linked.output, OutputMode::Inherit);
+    }
+
+    // ---- T05 (#6): logging ------------------------------------------------
+
+    mod logging {
+        use super::*;
+        use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
+        use crate::logging::test_support::TempDir;
+        use crate::logging::LogRoots;
+        use std::fs;
+        use std::path::Path as FsPath;
+
+        /// A core that writes under a scratch app-data root, with one session
+        /// registered.
+        fn core_logging_to(
+            dir: &TempDir,
+            config: SessionConfig,
+        ) -> (SessionCore, Arc<RecordingSink>) {
+            let sink = Arc::new(RecordingSink::default());
+            let core = SessionCore::new(sink.clone()).with_log_roots(LogRoots {
+                logs_dir: dir.join("logs"),
+                metadata_dir: dir.join("metadata"),
+            });
+            core.register(config).expect("registration succeeds");
+            (core, sink)
+        }
+
+        fn captured(mode: EffectiveLogMode) -> EffectiveLogging {
+            EffectiveLogging {
+                mode,
+                source: LogSource::Captured,
+                external_path: None,
+            }
+        }
+
+        fn service_printing(id: &str, command: &str, logging: EffectiveLogging) -> SessionConfig {
+            let mut config = service(id);
+            config.command = Some(command.to_owned());
+            config.logging = logging;
+            config
+        }
+
+        /// Poll `check` until it holds, so a test asserts on what the pumping
+        /// and watching threads produced rather than on how long they took.
+        fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !check() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        fn read(path: &FsPath) -> String {
+            fs::read_to_string(path).unwrap_or_default()
+        }
+
+        /// The run's log file, named the moment the run starts.
+        fn announced_log(core: &SessionCore, session_id: &str) -> PathBuf {
+            let status = core.log_status(session_id).expect("the session exists");
+            PathBuf::from(
+                status
+                    .log_file
+                    .expect("the run's file is named while it runs"),
+            )
+        }
+
+        /// T05's central criterion for a service: `captured` + `always` puts
+        /// the run's output in a run-specific file, and the run history is how
+        /// that file is found again (`docs/LOGGING.md` §6).
+        #[test]
+        fn a_captured_run_writes_a_file_its_run_record_points_at() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo listening-on-8188",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let runtime = core.start("svc").expect("start succeeds");
+            let file = announced_log(&core, "svc");
+            assert!(file.exists(), "the run file is created when the run starts");
+
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the run's output to reach its file", || {
+                read(&file).contains("listening-on-8188")
+            });
+
+            let history = core.run_history("svc");
+            let run = history.latest().expect("the run is in the history");
+            assert_eq!(Some(run.run_id.clone()), runtime.run_id);
+            assert_eq!(
+                run.log_file.as_deref(),
+                Some(file.to_string_lossy().as_ref()),
+                "the history must name the file the run wrote"
+            );
+            assert!(
+                PathBuf::from(run.log_file.clone().expect("a log file")).exists(),
+                "the file the record names does not exist"
+            );
+            assert_eq!(run.exit_code, Some(0));
+            assert!(run.ended_at.is_some(), "the run is closed");
+        }
+
+        /// Both streams are captured, and the file says which one each part
+        /// came from (`docs/LOGGING.md` §7).
+        #[test]
+        fn a_run_file_carries_both_streams_tagged() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo to-stdout & echo to-stderr 1>&2",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("svc").expect("start succeeds");
+            let file = announced_log(&core, "svc");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("both streams to reach the file", || {
+                let text = read(&file);
+                text.contains("to-stdout") && text.contains("to-stderr")
+            });
+
+            let text = read(&file);
+            assert!(
+                text.contains("to-stdout") && text.contains("stdout"),
+                "stdout is untagged: {text}"
+            );
+            assert!(
+                text.contains("to-stderr") && text.contains("stderr"),
+                "stderr is untagged: {text}"
+            );
+        }
+
+        /// §8 and D-004 together: `off` writes nothing anywhere, and the
+        /// session still has its bounded scrollback.
+        #[test]
+        fn an_off_run_leaves_no_file_and_still_has_a_scrollback() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "term",
+                "cmd.exe /c echo interactive-output",
+                EffectiveLogging {
+                    mode: EffectiveLogMode::Off,
+                    source: LogSource::None,
+                    external_path: None,
+                },
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("term").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "term",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the scrollback to fill", || {
+                core.snapshot("term")
+                    .expect("the session exists")
+                    .buffer
+                    .bytes
+                    > 0
+            });
+
+            assert!(
+                !dir.join("logs").exists(),
+                "an `off` session created a log directory"
+            );
+            let status = core.log_status("term").expect("status");
+            assert_eq!(status.state, crate::logging::LogState::Off);
+            assert!(status.log_file.is_none());
+            assert!(
+                !status.records_input,
+                "user input is never recorded by default"
+            );
+
+            let chunks = core.terminal_buffer("term").expect("a buffer");
+            let text: String = chunks.iter().map(|chunk| chunk.text()).collect();
+            assert!(
+                text.contains("interactive-output"),
+                "the scrollback lost the output: {text}"
+            );
+            // The record is filed just after the state changes, so the history
+            // is polled rather than assumed to be there the moment the session
+            // reads `Exited`.
+            wait_until("the run to be filed", || {
+                !core.run_history("term").runs.is_empty()
+            });
+            assert!(
+                core.run_history("term")
+                    .latest()
+                    .expect("the run is filed")
+                    .log_file
+                    .is_none(),
+                "an `off` run's record must name no file"
+            );
+        }
+
+        /// §13 scenario C: a clean run leaves nothing, a failed run keeps the
+        /// context from before the failure.
+        #[test]
+        fn on_error_keeps_the_context_of_a_failing_run_only() {
+            let dir = TempDir::new();
+            let clean = service_printing(
+                "clean",
+                "cmd.exe /c echo all-good",
+                captured(EffectiveLogMode::OnError),
+            );
+            let (core, _sink) = core_logging_to(&dir, clean);
+            core.start("clean").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "clean",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the clean run to be filed", || {
+                !core.run_history("clean").runs.is_empty()
+            });
+            assert!(
+                core.run_history("clean")
+                    .latest()
+                    .expect("a run record")
+                    .log_file
+                    .is_none(),
+                "a clean `on_error` run must not name a file"
+            );
+
+            let failing = service_printing(
+                "failing",
+                "cmd.exe /c echo before-the-crash & exit 3",
+                captured(EffectiveLogMode::OnError),
+            );
+            let (core, _sink) = core_logging_to(&dir, failing);
+            core.start("failing").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "failing",
+                SessionStatus::Error,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the failure's log to appear", || {
+                core.run_history("failing")
+                    .latest()
+                    .and_then(|run| run.log_file.clone())
+                    .map(|path| read(FsPath::new(&path)).contains("before-the-crash"))
+                    .unwrap_or(false)
+            });
+
+            let history = core.run_history("failing");
+            let run = history.latest().expect("a run");
+            assert_eq!(run.exit_code, Some(3));
+            let text = read(FsPath::new(run.log_file.as_deref().expect("a log file")));
+            assert!(
+                text.contains("exit code 3"),
+                "the log does not say how the run ended: {text}"
+            );
+        }
+
+        /// D-005: an application-owned log is linked, not duplicated. The Hub
+        /// must not capture the output and must not write a file of its own,
+        /// while the run record still points a user at the application's file.
+        #[test]
+        fn an_external_session_links_the_application_log_and_captures_nothing() {
+            let dir = TempDir::new();
+            let external = dir.join("app/access.log").display().to_string();
+            let config = service_printing(
+                "app",
+                "cmd.exe /c echo output-the-app-logs-itself",
+                EffectiveLogging {
+                    mode: EffectiveLogMode::Always,
+                    source: LogSource::External,
+                    external_path: Some(external.clone()),
+                },
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("app").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "app",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the run to be filed", || {
+                !core.run_history("app").runs.is_empty()
+            });
+
+            assert!(
+                !dir.join("logs").exists(),
+                "an external session must not write a Hub log"
+            );
+            let status = core.log_status("app").expect("status");
+            assert_eq!(status.state, crate::logging::LogState::External);
+            assert_eq!(status.external_log.as_deref(), Some(external.as_str()));
+            assert_eq!(status.log_file.as_deref(), Some(external.as_str()));
+            assert_eq!(
+                core.run_history("app")
+                    .latest()
+                    .expect("a run")
+                    .log_file
+                    .as_deref(),
+                Some(external.as_str())
+            );
+        }
+
+        /// A session that has never run still answers "am I being recorded?" —
+        /// including the answer "I cannot be, and here is why".
+        #[test]
+        fn a_session_with_nowhere_to_write_says_why_it_is_not_logging() {
+            let (core, _sink) = core_with_command("svc", "cmd.exe /c exit 0");
+            core.start("svc").expect("start succeeds");
+
+            let status = core.log_status("svc").expect("status");
+
+            assert_eq!(status.mode, EffectiveLogMode::Always);
+            assert_eq!(status.source, LogSource::Captured);
+            assert!(status.log_file.is_none(), "nothing can be written");
+            let problem = status.last_error.expect("the reason is reported");
+            assert!(
+                problem.message.contains("writable log directory"),
+                "unhelpful message: {}",
+                problem.message
+            );
+            core.force_stop("svc").expect("cleanup");
+        }
+
+        /// A terminal session's default policy is `off`/`none` (T01's `auto`
+        /// resolution), and its status has to say so before it ever runs —
+        /// T07 attaches the PTY, and the UI shows the policy meanwhile.
+        #[test]
+        fn a_terminal_session_reports_its_policy_before_it_has_ever_run() {
+            let dir = TempDir::new();
+            let mut config = service("shell");
+            config.session_type = SessionType::Terminal;
+            config.command = None;
+            config.shell = Some("powershell".to_owned());
+            config.logging = EffectiveLogging {
+                mode: EffectiveLogMode::Off,
+                source: LogSource::None,
+                external_path: None,
+            };
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let status = core.log_status("shell").expect("status");
+
+            assert_eq!(status.state, crate::logging::LogState::Off);
+            assert!(status.log_file.is_none());
+            assert!(!status.records_input);
+            assert!(
+                status.session_log_dir.is_some(),
+                "the folder a run would write into is known before any run"
+            );
+        }
+
+        /// §3's "save this run's log": an `on_error` run can be committed while
+        /// it is still going, and it keeps its file even if it later exits
+        /// cleanly — the user asked for it.
+        #[test]
+        fn saving_a_running_on_error_log_commits_it() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c ping -n 120 127.0.0.1",
+                captured(EffectiveLogMode::OnError),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+
+            let status = core.save_run_log("svc").expect("the save succeeds");
+
+            let file = PathBuf::from(status.log_file.expect("a file was committed"));
+            assert!(file.exists(), "the saved log does not exist");
+            core.force_stop("svc").expect("cleanup");
+            assert!(file.exists(), "a forced stop deleted the saved log");
+        }
+
+        /// §3's `manual` mode: nothing is recorded until the user asks, and
+        /// switching recording on is refused for a mode that does not have the
+        /// question.
+        #[test]
+        fn manual_recording_is_switched_on_and_off_by_request_only() {
+            let dir = TempDir::new();
+            let manual = service_printing(
+                "shell",
+                "cmd.exe /c ping -n 120 127.0.0.1",
+                captured(EffectiveLogMode::Manual),
+            );
+            let (core, _sink) = core_logging_to(&dir, manual);
+            core.start("shell").expect("start succeeds");
+
+            let idle = core.log_status("shell").expect("status");
+            assert_eq!(
+                idle.state,
+                crate::logging::LogState::Off,
+                "manual records nothing until asked"
+            );
+
+            let recording = core
+                .set_log_recording("shell", true)
+                .expect("recording starts");
+            assert_eq!(recording.state, crate::logging::LogState::Capturing);
+            let file = PathBuf::from(recording.log_file.expect("a file is open"));
+            assert!(file.exists());
+
+            let stopped = core
+                .set_log_recording("shell", false)
+                .expect("recording stops");
+            assert_eq!(stopped.state, crate::logging::LogState::Off);
+
+            core.force_stop("shell").expect("cleanup");
+
+            let always = service_printing(
+                "svc",
+                "cmd.exe /c ping -n 120 127.0.0.1",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, always);
+            core.start("svc").expect("start succeeds");
+            let refused = core
+                .set_log_recording("svc", true)
+                .expect_err("only manual sessions can be switched");
+            assert!(
+                refused.message.contains("manual"),
+                "unhelpful message: {}",
+                refused.message
+            );
+            core.force_stop("svc").expect("cleanup");
+        }
+
+        /// The scrollback is bounded per session, not per run: restarting does
+        /// not throw away what the user was reading (§8), and the snapshot
+        /// reports how much of it there is without carrying it.
+        #[test]
+        fn the_scrollback_survives_a_restart_and_stays_bounded() {
+            let dir = TempDir::new();
+            // Longer than the 64-byte scrollback below, so the bound is
+            // reached on the first run.
+            let noise = "0123456789".repeat(20);
+            let config = service_printing(
+                "svc",
+                &format!("cmd.exe /c echo {noise}"),
+                captured(EffectiveLogMode::Off),
+            );
+            let sink = Arc::new(RecordingSink::default());
+            let core = SessionCore::new(sink)
+                .with_log_roots(LogRoots {
+                    logs_dir: dir.join("logs"),
+                    metadata_dir: dir.join("metadata"),
+                })
+                .with_limits(
+                    crate::logging::BufferLimits::new(64, usize::MAX),
+                    crate::logging::DEFAULT_LOG_LIMITS,
+                );
+            core.register(config).expect("registration succeeds");
+
+            core.start("svc").expect("start succeeds");
+            wait_until("the first run's output", || {
+                core.snapshot("svc").expect("the session").buffer.bytes > 0
+            });
+            let after_first = core.snapshot("svc").expect("the session").buffer;
+
+            assert!(
+                after_first.bytes <= 64,
+                "the scrollback is not bounded: {} bytes",
+                after_first.bytes
+            );
+            assert!(
+                after_first.dropped_bytes > 0,
+                "output was silently dropped without being counted"
+            );
+
+            // A second run of the same session: the buffer belongs to the
+            // session, so what it already held is still there and its counters
+            // carry on rather than starting again.
+            core.restart("svc").expect("restart succeeds");
+            wait_until("the second run's output", || {
+                core.snapshot("svc")
+                    .expect("the session")
+                    .buffer
+                    .dropped_bytes
+                    > after_first.dropped_bytes
+            });
+
+            let after_second = core.snapshot("svc").expect("the session").buffer;
+            assert!(
+                after_second.bytes <= 64,
+                "the scrollback is not bounded after a restart: {} bytes",
+                after_second.bytes
+            );
+        }
+
+        /// §9's cleanup, through the entry point that owns it: a sweep never
+        /// takes a file that is still inside the retention window, and never
+        /// reaches outside the Hub's own log root.
+        #[test]
+        fn a_cleanup_leaves_logs_inside_the_retention_window_alone() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo keep-me",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            let file = announced_log(&core, "svc");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+
+            let report = core.cleanup_logs(Some("svc"));
+
+            assert_eq!(report.removed_count(), 0, "{:?}", report.removed);
+            assert!(file.exists(), "a fresh run's log was deleted");
+        }
+
+        /// A `manual` session the user recorded and then stopped still has a
+        /// log, and the run record has to name it — that is what makes the file
+        /// findable afterwards (`docs/LOGGING.md` §6).
+        #[test]
+        fn a_stopped_manual_recording_still_names_its_file() {
+            let dir = TempDir::new();
+            let manual = service_printing(
+                "shell",
+                "cmd.exe /c ping -n 120 127.0.0.1",
+                captured(EffectiveLogMode::Manual),
+            );
+            let (core, _sink) = core_logging_to(&dir, manual);
+            core.start("shell").expect("start succeeds");
+            let status = core
+                .set_log_recording("shell", true)
+                .expect("recording starts");
+            let file = PathBuf::from(status.log_file.expect("a file is open"));
+
+            core.set_log_recording("shell", false)
+                .expect("recording stops");
+            core.force_stop("shell").expect("cleanup");
+
+            wait_until("the run to be filed", || {
+                !core.run_history("shell").runs.is_empty()
+            });
+            assert_eq!(
+                core.run_history("shell")
+                    .latest()
+                    .expect("a run")
+                    .log_file
+                    .as_deref(),
+                Some(file.to_string_lossy().as_ref()),
+                "the record lost the file the user recorded"
+            );
+            assert!(file.exists());
+        }
+
+        /// Stopping an `on_error` session on purpose is not a failure. The
+        /// terminated process reports a non-zero code, and a log written for
+        /// every press of Stop is exactly the litter `docs/LOGGING.md` §1.2 is
+        /// about.
+        #[test]
+        fn stopping_an_on_error_run_on_purpose_writes_no_log() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c ping -n 120 127.0.0.1",
+                captured(EffectiveLogMode::OnError),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Running,
+                std::time::Duration::from_secs(30),
+            );
+
+            core.force_stop("svc").expect("cleanup");
+
+            let history = core.run_history("svc");
+            assert_eq!(
+                history.latest().expect("a run").log_file,
+                None,
+                "a requested stop filed an error log"
+            );
+            assert!(
+                !dir.join("logs").exists(),
+                "a requested stop wrote a log directory"
+            );
+        }
+
+        /// A record names a log file only when one exists (spec §4). A run
+        /// whose log directory cannot be written is still filed — the run
+        /// happened — but it must not point at a path that does not exist.
+        #[test]
+        fn a_run_whose_log_cannot_be_written_names_no_file() {
+            let dir = TempDir::new();
+            // A file where the `logs` directory would have to be.
+            fs::write(dir.join("logs"), b"not a directory").expect("the blocker is writable");
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo nowhere-to-write",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the run to be filed", || {
+                !core.run_history("svc").runs.is_empty()
+            });
+
+            let status = core.log_status("svc").expect("status");
+            assert!(status.log_file.is_none(), "a file that does not exist");
+            assert!(
+                status.last_error.is_some(),
+                "the failure to write has to be reported somewhere"
+            );
+            assert!(core
+                .run_history("svc")
+                .latest()
+                .expect("a run")
+                .log_file
+                .is_none());
+        }
+
+        /// A run that ends before its output is read is still captured: the
+        /// pipe holds the bytes, and the run is not over until they have been
+        /// taken (`docs/LOGGING.md` §3).
+        #[test]
+        fn a_run_that_exits_immediately_still_gets_its_output_written() {
+            let dir = TempDir::new();
+            // Nothing that waits: the process writes and exits at once.
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo gone-already",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            core.start("svc").expect("start succeeds");
+            let file = announced_log(&core, "svc");
+
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_until("the short run's output to reach its file", || {
+                read(&file).contains("gone-already")
+            });
+        }
     }
 }
