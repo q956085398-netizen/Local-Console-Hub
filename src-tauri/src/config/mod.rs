@@ -167,23 +167,31 @@ mod tests {
         format!("id: {id}\nname: Session {id}\ntype: {session_type}\n{extra}")
     }
 
+    /// A `sessions:` document whose items are `entries`.
+    ///
+    /// The `- ` marker already places an item's first key at column 5, so only
+    /// the continuation lines need the four-space indent that lines the rest of
+    /// the item up under it.
     fn config(entries: &[String]) -> String {
         let mut out = String::from("sessions:\n");
         for entry in entries {
-            let indented = entry
-                .lines()
-                .map(|line| format!("    {line}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            out.push_str("  - ");
-            out.push_str(&indented);
-            out.push('\n');
+            let mut lines = entry.lines();
+            if let Some(first) = lines.next() {
+                out.push_str("  - ");
+                out.push_str(first);
+                out.push('\n');
+            }
+            for line in lines {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
         }
         out
     }
 
-    /// Indent the continuation lines of a YAML fragment so it stays nested
-    /// under its parent key once [`config`] indents the whole entry.
+    /// Indent the continuation lines of a YAML fragment by two spaces, so every
+    /// key of the fragment lines up under its first one.
     fn indent_continuation(fragment: &str) -> String {
         fragment.replace('\n', "\n  ")
     }
