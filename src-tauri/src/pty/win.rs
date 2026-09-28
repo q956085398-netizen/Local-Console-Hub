@@ -109,7 +109,7 @@ impl PtyBackend {
         startup.lpAttributeList = attributes.as_mut_ptr();
 
         let mut command = wide_command_line(&spec.program, &spec.args);
-        let mut environment = environment_block();
+        let environment = environment_block();
         let cwd: Vec<u16> = spec
             .cwd
             .as_os_str()
