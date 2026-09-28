@@ -9,11 +9,13 @@ import {
   logStateLabel,
   logStateTone,
   runHasLog,
+  runFilePathNote,
+  runLogGone,
   runsNewestFirst,
   showsSourceBadge,
 } from "../../state/logs";
 import type { FixtureSession } from "../../state/fixtures";
-import type { RunRecordDto } from "../../types/runtime";
+import type { RunHistoryEntryDto } from "../../types/logs";
 import { useSessionLogs } from "../../app/useSessionLogs";
 import "./LogsPanel.css";
 
@@ -37,6 +39,10 @@ export interface LogsPanelProps {
  * and wires the file and retention actions. The fixtures are still the answer
  * for a session the backend does not know, and then the panel says so rather
  * than presenting them as live.
+ *
+ * A run whose log retention has since swept stays on the list and says so
+ * (`RunRow`): the record is the evidence the run happened, and a view that
+ * dropped the row — or offered to open a file that is gone — would lose that.
  */
 export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
   const logs = useSessionLogs(session, onNotice);
@@ -229,16 +235,31 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
 }
 
 interface RunRowProps {
-  run: RunRecordDto;
+  run: RunHistoryEntryDto;
   onOpen: (runId?: string) => void;
   onFolder: (runId?: string) => void;
   onCopy: (path: string) => void;
 }
 
-/** One run: what it was, how it ended, and where its log went. */
+/**
+ * One run: what it was, how it ended, and where its log went.
+ *
+ * A run can outlive its log — retention deletes files and never the record of
+ * the run that wrote them (`docs/LOGGING.md` §9) — so a row may point at a file
+ * that is not on disk. It says so, and it offers only the folder action: the
+ * folder survives a sweep, while "open log" and "copy path" would act on a file
+ * that is gone. Nothing here is coloured — a swept log is retention working,
+ * not a lifecycle failure (UI_STYLE_GUIDE §10).
+ *
+ * The wording states the fact and stops there. "不在磁盘上" rather than "已被
+ * 清理", because this row cannot tell a swept log from one an `external`
+ * application has not written yet, and naming a cause it did not observe would
+ * be the kind of invention the rest of the tab avoids.
+ */
 function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
   const outcome = runOutcomeBadge(run);
   const file = run.logFile;
+  const gone = runLogGone(run);
   return (
     <li className="logs-panel__run">
       <div className="logs-panel__run-top">
@@ -250,39 +271,43 @@ function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
           <span className="logs-panel__run-time">{formatClock(run.startedAt)}</span>
           {runHasLog(run) && (
             <div className="logs-panel__run-actions">
+              {!gone && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--icon-sm"
+                    title="打开日志"
+                    aria-label={`打开 run-${run.runId} 的日志`}
+                    onClick={() => onOpen(run.runId)}
+                  >
+                    <ScrollText size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--icon-sm"
+                    title="复制路径"
+                    aria-label={`复制 run-${run.runId} 的日志路径`}
+                    onClick={() => file != null && onCopy(file)}
+                  >
+                    <Copy size={14} />
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="btn btn--ghost btn--icon-sm"
-                title="打开日志"
-                aria-label={`打开 run-${run.runId} 的日志`}
-                onClick={() => onOpen(run.runId)}
-              >
-                <ScrollText size={14} />
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--icon-sm"
-                title="打开所在目录"
+                title={gone ? "打开所在目录 · 日志文件不在磁盘上，目录仍然保留" : "打开所在目录"}
                 aria-label={`打开 run-${run.runId} 的目录`}
                 onClick={() => onFolder(run.runId)}
               >
                 <FolderOpen size={14} />
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--icon-sm"
-                title="复制路径"
-                aria-label={`复制 run-${run.runId} 的日志路径`}
-                onClick={() => file != null && onCopy(file)}
-              >
-                <Copy size={14} />
               </button>
             </div>
           )}
         </div>
       </div>
       <p className="logs-panel__run-detail">
-        {file ?? "未落盘"}
+        {runFilePathNote(run)}
         {run.pid != null ? ` · PID ${run.pid}` : ""}
         {run.exitCode != null && run.endedAt != null ? ` · exit ${run.exitCode}` : ""}
       </p>

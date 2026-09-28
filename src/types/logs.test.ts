@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isCleanupReportDto, isLogErrorDto, isLogStatusDto, isRunHistoryDto } from "./logs";
+import {
+  isCleanupReportDto,
+  isLogErrorDto,
+  isLogStatusDto,
+  isRunHistoryDto,
+  isRunHistoryEntryDto,
+} from "./logs";
 
 /** The payload `get_log_info` actually sends, nulls and all. */
 const wire = {
@@ -95,6 +101,7 @@ describe("run history", () => {
         logMode: "always",
         logSource: "captured",
         logFile: "C:/logs/comfyui/2026-09/run.log",
+        logFilePresent: true,
       },
     ],
     unreadable: [],
@@ -116,6 +123,28 @@ describe("run history", () => {
 
   it("rejects a history whose runs are not run records", () => {
     expect(isRunHistoryDto({ runs: [{ runId: "c8aa" }], unreadable: [] })).toBe(false);
+  });
+
+  /// The one field an entry adds to a record, and the reason the mirror is not
+  /// the record's guard alone: a row has to be able to say its log was swept
+  /// (`LOGGING.md` §9), and a payload that did not say so would leave the view
+  /// offering an action that fails.
+  it("reads the file answer off every entry", () => {
+    expect(isRunHistoryEntryDto(history.runs[0])).toBe(true);
+    expect(isRunHistoryEntryDto({ ...history.runs[0], logFile: null, logFilePresent: false })).toBe(
+      true,
+    );
+  });
+
+  it("rejects an entry that does not say whether the file is there", () => {
+    const record = Object.fromEntries(
+      Object.entries(history.runs[0]).filter(([key]) => key !== "logFilePresent"),
+    );
+
+    expect(isRunHistoryEntryDto(record)).toBe(false);
+    expect(isRunHistoryDto({ ...history, runs: [record] })).toBe(false);
+    // The wrong spelling of the answer is not an answer either.
+    expect(isRunHistoryEntryDto({ ...history.runs[0], logFilePresent: "true" })).toBe(false);
   });
 });
 

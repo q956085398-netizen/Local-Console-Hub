@@ -12,7 +12,10 @@
  * documented inline; each moves into a DTO when its ticket lands:
  *   - `group` / `dependsOn` — config concerns (T01 follow-up);
  *   - `busy` / `ready` — runtime flags, spec §4 (T08);
- *   - `lines` — the live PTY stream (T07).
+ *   - `lines` — the live PTY stream (T07);
+ *   - `FixtureRun.logFilePresent` — the one thing a run record cannot say
+ *     about itself, carried by the entry around it in the real payload
+ *     (`types/logs.ts`, `DECISIONS.md` D-019).
  *
  * Timestamps are minted relative to module load so uptimes stay plausible
  * (3h 12m, 2h 14m, 12m …) without becoming clock fixtures.
@@ -34,12 +37,24 @@ export interface FixtureGroup {
   hint: string;
 }
 
+/**
+ * A fixture run record plus whether the log it names is still on disk.
+ *
+ * The real payload says this on the entry that wraps the record
+ * (`RunHistoryEntryDto`); a fixture has no wrapper, so the extra sits here.
+ * Absent means the file is there — the normal case, and what every fixture run
+ * but comfyui's `c711` means.
+ */
+export interface FixtureRun extends RunRecordDto {
+  logFilePresent?: boolean;
+}
+
 /** One fixture session: DTOs plus the documented UI-only extras above. */
 export interface FixtureSession {
   config: SessionConfigDto;
   runtime: SessionRuntimeDto;
   /** Newest last; mirrors the run history T10 will read from the backend. */
-  runs: RunRecordDto[];
+  runs: FixtureRun[];
   group: string;
   busy?: boolean;
   ready?: boolean;
@@ -155,6 +170,11 @@ export const FIXTURE_SESSIONS: FixtureSession[] = [
         logSource: "captured",
         logFile:
           "%LOCALAPPDATA%\\LocalConsoleHub\\logs\\comfyui\\2026-09\\2026-09-26_02-21-00__run-c711.log",
+        // The row state retention creates and the tab has to render: the run
+        // is in the history, the log it names was swept (D-019). The fixture
+        // carries it because there is otherwise no way to look at this row
+        // without a live backend and a real sweep.
+        logFilePresent: false,
       },
       {
         runId: "c8aa",

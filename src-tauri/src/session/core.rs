@@ -948,6 +948,12 @@ impl SessionCore {
     /// Read from the run metadata on disk rather than from memory: a run
     /// history that only existed while the app was open would not survive the
     /// restart that a user is most likely to want it after.
+    ///
+    /// Each entry says whether its log is still on disk, because a sweep may
+    /// have taken it since: [`SessionCore::cleanup_logs`] deletes log files and
+    /// never the record of the run that wrote them, and the history is where
+    /// that difference becomes visible rather than being discovered by a file
+    /// action that fails.
     pub fn run_history(&self, session_id: &str) -> logging::RunHistory {
         let Some(roots) = &self.roots else {
             return logging::RunHistory::default();
@@ -1089,10 +1095,10 @@ impl SessionCore {
                 }
             }
             let history = self.run_history(session_id);
-            let Some(record) = history
+            let Some(entry) = history
                 .runs
                 .iter()
-                .find(|record| record.run_id.as_str() == wanted)
+                .find(|entry| entry.run.run_id.as_str() == wanted)
             else {
                 return Err(SessionError::failed(
                     session_id,
@@ -1104,7 +1110,7 @@ impl SessionCore {
                     None,
                 ));
             };
-            return match &record.log_file {
+            return match &entry.run.log_file {
                 Some(path) => Ok(PathBuf::from(path)),
                 None => Err(SessionError::failed(
                     session_id,
@@ -2532,7 +2538,7 @@ mod tests {
             });
 
             let history = core.run_history("svc");
-            let run = history.latest().expect("the run is in the history");
+            let run = &history.latest().expect("the run is in the history").run;
             assert_eq!(Some(run.run_id.clone()), runtime.run_id);
             assert_eq!(
                 run.log_file.as_deref(),
@@ -2642,6 +2648,7 @@ mod tests {
                 core.run_history("term")
                     .latest()
                     .expect("the run is filed")
+                    .run
                     .log_file
                     .is_none(),
                 "an `off` run's record must name no file"
@@ -2673,6 +2680,7 @@ mod tests {
                 core.run_history("clean")
                     .latest()
                     .expect("a run record")
+                    .run
                     .log_file
                     .is_none(),
                 "a clean `on_error` run must not name a file"
@@ -2694,13 +2702,14 @@ mod tests {
             wait_until("the failure's log to appear", || {
                 core.run_history("failing")
                     .latest()
+                    .map(|entry| &entry.run)
                     .and_then(|run| run.log_file.clone())
                     .map(|path| read(FsPath::new(&path)).contains("before-the-crash"))
                     .unwrap_or(false)
             });
 
             let history = core.run_history("failing");
-            let run = history.latest().expect("a run");
+            let run = &history.latest().expect("a run").run;
             assert_eq!(run.exit_code, Some(3));
             let text = read(FsPath::new(run.log_file.as_deref().expect("a log file")));
             assert!(
@@ -2750,6 +2759,7 @@ mod tests {
                 core.run_history("app")
                     .latest()
                     .expect("a run")
+                    .run
                     .log_file
                     .as_deref(),
                 Some(external.as_str())
@@ -2998,6 +3008,7 @@ mod tests {
                 core.run_history("shell")
                     .latest()
                     .expect("a run")
+                    .run
                     .log_file
                     .as_deref(),
                 Some(file.to_string_lossy().as_ref()),
@@ -3031,7 +3042,7 @@ mod tests {
 
             let history = core.run_history("svc");
             assert_eq!(
-                history.latest().expect("a run").log_file,
+                history.latest().expect("a run").run.log_file,
                 None,
                 "a requested stop filed an error log"
             );
@@ -3077,6 +3088,7 @@ mod tests {
                 .run_history("svc")
                 .latest()
                 .expect("a run")
+                .run
                 .log_file
                 .is_none());
         }
@@ -3133,7 +3145,12 @@ mod tests {
             wait_for_filing(&core, "svc");
 
             let file = core.log_file_path("svc", None).expect("a path");
-            let run = core.run_history("svc").latest().cloned().expect("a run");
+            let run = &core
+                .run_history("svc")
+                .latest()
+                .cloned()
+                .expect("a run")
+                .run;
 
             assert_eq!(
                 file,
@@ -3163,7 +3180,12 @@ mod tests {
                 std::time::Duration::from_secs(30),
             );
             wait_for_filing(&core, "svc");
-            let first = core.run_history("svc").latest().cloned().expect("a run");
+            let first = &core
+                .run_history("svc")
+                .latest()
+                .cloned()
+                .expect("a run")
+                .run;
 
             // A second run replaces the current file; the first one stays.
             core.start("svc").expect("restart succeeds");
@@ -3338,6 +3360,73 @@ mod tests {
             assert!(swept.failures.is_empty(), "{:?}", swept.failures);
             assert!(!stale.exists());
             assert!(fresh.exists(), "the newest run's log was swept");
+        }
+
+        /// §6 and §9 together: a sweep takes the Hub's log files and never the
+        /// record of the run that wrote them.
+        ///
+        /// The record is the evidence the run happened. Deleting it because its
+        /// log aged out would trade the answer to "what has this session been
+        /// doing" for tidiness, so the run stays in the history and says instead
+        /// that the file it names is gone — which is what the Logs tab renders,
+        /// rather than an action that fails when the user clicks it.
+        #[test]
+        fn a_swept_run_stays_in_the_history_without_its_log() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo sweep-me",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_for_filing(&core, "svc");
+
+            let file = core.log_file_path("svc", None).expect("a path");
+            assert!(
+                core.run_history("svc")
+                    .latest()
+                    .expect("a run")
+                    .log_file_present,
+                "the run's log is not on disk to begin with"
+            );
+
+            // The run's own file has to become sweepable, and retention keeps
+            // the newest file of a session however old it is: a later file
+            // takes that place, and the run's own is aged past the limit the
+            // way a month of not looking at it would.
+            let later = file.with_file_name("2099-01-01_00-00-00__run-later.log");
+            fs::write(&later, b"later output").expect("writable");
+            age_by_days(&file, 45);
+
+            let swept = core.cleanup_logs(Some("svc"));
+
+            assert_eq!(swept.removed, vec![file.clone()]);
+            assert!(!file.exists());
+            let history = core.run_history("svc");
+            assert_eq!(history.runs.len(), 1, "the sweep erased the run itself");
+            let entry = history.latest().expect("the run is still in the history");
+            assert!(
+                !entry.log_file_present,
+                "the row claims a file that was just deleted"
+            );
+            assert!(!entry.log_is_openable());
+            assert_eq!(
+                entry.run.log_file.as_deref(),
+                Some(file.to_string_lossy().as_ref()),
+                "the record must keep naming the file the run wrote"
+            );
+            assert!(
+                !crate::logging::session_run_files(&dir.join("metadata"), "json", Some("svc"))
+                    .is_empty(),
+                "the sweep reached the run metadata"
+            );
         }
 
         /// §9's promise, kept even for a config that puts an application's log

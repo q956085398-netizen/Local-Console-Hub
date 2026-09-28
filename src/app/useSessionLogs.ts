@@ -33,15 +33,11 @@ import {
   type CleanupReportDto,
   type LogErrorDto,
   type LogStatusDto,
+  type RunHistoryEntryDto,
 } from "../types/logs";
-import {
-  isSessionErrorDto,
-  RUN_RECORD_UPDATED,
-  SESSION_STATE_CHANGED,
-  type RunRecordDto,
-} from "../types/runtime";
+import { isSessionErrorDto, RUN_RECORD_UPDATED, SESSION_STATE_CHANGED } from "../types/runtime";
 import type { FixtureSession } from "../state/fixtures";
-import { cleanupOutcome, previewLogStatus } from "../state/logs";
+import { cleanupOutcome, previewLogStatus, previewRuns } from "../state/logs";
 
 /** Where the tab's values came from: Session Core, or the fixture record. */
 export type LogsProvenance = "live" | "preview";
@@ -50,7 +46,7 @@ export type LogsProvenance = "live" | "preview";
 export interface SessionLogs {
   provenance: LogsProvenance;
   status: LogStatusDto;
-  runs: RunRecordDto[];
+  runs: RunHistoryEntryDto[];
   /** Run records that could not be read, so the list can say it is incomplete. */
   unreadable: LogErrorDto[];
   loading: boolean;
@@ -93,7 +89,7 @@ export function useSessionLogs(
   const sessionId = session.config.id;
   const [provenance, setProvenance] = useState<LogsProvenance>("preview");
   const [status, setStatus] = useState<LogStatusDto>(() => previewLogStatus(session));
-  const [runs, setRuns] = useState<RunRecordDto[]>(session.runs);
+  const [runs, setRuns] = useState<RunHistoryEntryDto[]>(() => previewRuns(session));
   const [unreadable, setUnreadable] = useState<LogErrorDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [plan, setPlan] = useState<CleanupReportDto | null>(null);
@@ -105,7 +101,7 @@ export function useSessionLogs(
 
   const fallBackToPreview = useCallback(() => {
     setStatus(previewLogStatus(session));
-    setRuns(session.runs);
+    setRuns(previewRuns(session));
     setUnreadable([]);
     setProvenance("preview");
   }, [session]);

@@ -7,8 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { CleanupReportDto, LogStatusDto } from "../types/logs";
-import type { RunRecordDto } from "../types/runtime";
+import type { CleanupReportDto, LogStatusDto, RunHistoryEntryDto } from "../types/logs";
 import { FIXTURE_SESSIONS, type FixtureSession } from "./fixtures";
 import {
   bufferNote,
@@ -21,8 +20,12 @@ import {
   logStateLabel,
   logStateTone,
   previewLogStatus,
+  previewRuns,
   runsNewestFirst,
+  runFilePathNote,
   runHasLog,
+  runLogGone,
+  runLogPresent,
   showsSourceBadge,
 } from "./logs";
 
@@ -43,7 +46,7 @@ function status(overrides: Partial<LogStatusDto> = {}): LogStatusDto {
   };
 }
 
-function run(overrides: Partial<RunRecordDto> = {}): RunRecordDto {
+function run(overrides: Partial<RunHistoryEntryDto> = {}): RunHistoryEntryDto {
   return {
     runId: "aaaa",
     sessionId: "svc",
@@ -51,6 +54,7 @@ function run(overrides: Partial<RunRecordDto> = {}): RunRecordDto {
     logMode: "always",
     logSource: "captured",
     logFile: "C:/logs/svc/2026-09/run.log",
+    logFilePresent: true,
     ...overrides,
   };
 }
@@ -208,6 +212,47 @@ describe("run history", () => {
     // The wire's other spelling of "no file" — a live run arrives this way.
     expect(runHasLog(run({ logFile: null }))).toBe(false);
   });
+
+  /// §9's sweep and §6's history, from the row's point of view: the log a run
+  /// wrote can be gone while the run itself is still the record that it ran.
+  /// The row has to say so — an action offered on a file that no longer exists
+  /// is what the user would otherwise see, as a failure notice.
+  it("marks a run whose log is no longer on disk", () => {
+    const swept = run({ logFilePresent: false });
+
+    expect(runHasLog(swept)).toBe(true);
+    expect(runLogPresent(swept)).toBe(false);
+    expect(runLogGone(swept)).toBe(true);
+  });
+
+  it("does not call a run with a live log swept", () => {
+    expect(runLogGone(run())).toBe(false);
+    expect(runLogGone(run({ logFilePresent: false, logFile: null }))).toBe(false);
+  });
+
+  /// The three row states, each said in its own words — and the third says
+  /// only what this slot knows: a swept log and an `external` file that has not
+  /// been written yet look the same from here, so the row does not name a cause
+  /// it never observed (§1.4).
+  it("says where a run's log is, or why there is nothing to open", () => {
+    const path = "C:/logs/svc/2026-09/run.log";
+
+    expect(runFilePathNote(run())).toBe(path);
+    expect(runFilePathNote(run({ logFile: null, logFilePresent: false }))).toBe("未落盘");
+    expect(runFilePathNote(run({ logFilePresent: false }))).toBe(
+      `日志文件不在磁盘上（运行记录保留） · ${path}`,
+    );
+  });
+
+  /// The two questions a row asks are different ones, and neither implies the
+  /// other: a run that wrote nothing has no log and nothing missing.
+  it("separates 'never wrote a log' from 'the log is gone'", () => {
+    const nothingWritten = run({ logFile: null, logFilePresent: false });
+
+    expect(runHasLog(nothingWritten)).toBe(false);
+    expect(runLogPresent(nothingWritten)).toBe(false);
+    expect(runLogGone(nothingWritten)).toBe(false);
+  });
 });
 
 describe("retention wording", () => {
@@ -221,9 +266,16 @@ describe("retention wording", () => {
   it("says how much a sweep would take, and what it will not touch", () => {
     const prompt = cleanupPrompt(report());
 
-    expect(prompt).toContain("1 个文件");
+    expect(prompt).toContain("1 个日志文件");
     expect(prompt).toContain("2.0 KiB");
     expect(prompt).toContain("最近一次运行");
+  });
+
+  /// The confirmation has to be about files: a sweep takes logs, never the run
+  /// records, and a user agreeing to it should not have to wonder whether they
+  /// are about to lose their history (§6, §9).
+  it("promises the run history survives the sweep", () => {
+    expect(cleanupPrompt(report())).toContain("运行历史记录");
   });
 
   it("does not fabricate a sweep when there is nothing to take", () => {
@@ -290,6 +342,30 @@ describe("preview data", () => {
     expect(currentLogPath(preview)).toBeUndefined();
     expect(preview.recordsInput).toBe(false);
     expect(bufferNote(preview)).toContain("内存缓冲");
+  });
+
+  /// The preview mirror answers the same question the live payload does, or a
+  /// fixture row would be rendered through a shape the backend never sends and
+  /// the guards would reject it.
+  ///
+  /// comfyui carries one swept run on purpose (`FixtureRun.logFilePresent`):
+  /// without it there is no way to look at that row without a live backend and
+  /// a real sweep, and the fixture is the only place that state can be seen.
+  it("gives a fixture's runs the file answer the live payload carries", () => {
+    const runs = previewRuns(fixture("comfyui"));
+
+    expect(runs.length).toBeGreaterThan(1);
+    expect(runs.filter(runLogGone).map((entry) => entry.runId)).toEqual(["c711"]);
+    expect(runs.filter(runLogPresent)).toHaveLength(runs.length - 1);
+  });
+
+  /// The `off` terminal's records name no file, which is not the same as one
+  /// whose file is gone: the row says "未落盘", not "已被清理" (§1.2).
+  it("reads a logging-off terminal's runs as having nothing to open", () => {
+    const runs = previewRuns(fixture("pwsh"));
+
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((entry) => !runHasLog(entry) && !runLogGone(entry))).toBe(true);
   });
 
   it("sizes the scrollback in units a person reads", () => {

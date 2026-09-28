@@ -72,10 +72,31 @@ export interface LogStatusDto {
   lastError?: LogErrorDto | null;
 }
 
+/**
+ * One entry of the run history: the run, and whether its log is still on disk
+ * (`src-tauri/src/logging/metadata.rs`).
+ *
+ * The backend flattens the record and adds one key rather than nesting the
+ * record under a new one, so every field below keeps the name and place it has
+ * in a run record everywhere else (`types/runtime.ts`).
+ */
+export interface RunHistoryEntryDto extends RunRecordDto {
+  /**
+   * Whether the file `logFile` names is on disk right now.
+   *
+   * Retention deletes log files and never the record of the run that wrote
+   * them (`LOGGING.md` §9), so a row can outlive the file it points at. This is
+   * how it says so, instead of offering an action that fails when it is
+   * clicked. `false` for a run that never wrote a log at all, which is why the
+   * reading rule is "`logFile` names a file **and** this is true".
+   */
+  logFilePresent: boolean;
+}
+
 /** A session's run history as it exists on disk (`LOGGING.md` §6). */
 export interface RunHistoryDto {
   /** Completed runs, most recent start first. */
-  runs: RunRecordDto[];
+  runs: RunHistoryEntryDto[];
   /** Entries that exist but could not be read: the list is incomplete, and the
    * view has to be able to say so rather than present it as the whole truth. */
   unreadable: LogErrorDto[];
@@ -137,6 +158,22 @@ export function isLogStatusDto(value: unknown): value is LogStatusDto {
   );
 }
 
+/**
+ * Runtime guard for one run-history entry.
+ *
+ * The record guard answers for everything the entry inherits; the single field
+ * it adds is the one that has to be checked here. A payload that carried the
+ * record without the file answer is rejected rather than rendered as a row
+ * whose file actions are decided by a guess.
+ */
+export function isRunHistoryEntryDto(value: unknown): value is RunHistoryEntryDto {
+  if (!isRunRecordDto(value)) {
+    return false;
+  }
+  const candidate: Partial<RunHistoryEntryDto> = value;
+  return typeof candidate.logFilePresent === "boolean";
+}
+
 /** Runtime guard for `get_run_history`'s payload. */
 export function isRunHistoryDto(value: unknown): value is RunHistoryDto {
   if (!isObject(value)) {
@@ -145,7 +182,7 @@ export function isRunHistoryDto(value: unknown): value is RunHistoryDto {
   const candidate = value as Record<string, unknown>;
   return (
     Array.isArray(candidate.runs) &&
-    candidate.runs.every(isRunRecordDto) &&
+    candidate.runs.every(isRunHistoryEntryDto) &&
     Array.isArray(candidate.unreadable) &&
     candidate.unreadable.every(isLogErrorDto)
   );

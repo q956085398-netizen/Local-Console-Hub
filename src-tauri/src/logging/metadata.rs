@@ -32,6 +32,16 @@
 //! rule T01 applies to config entries applies here, because a run history that
 //! disappears when one file is truncated is worse than one that says a file
 //! could not be read.
+//!
+//! ## A swept log does not erase the run
+//!
+//! Retention sweeps log *files* (`super::retention`), under a different root
+//! from these records, so a run whose log aged out stays in the history: the
+//! record is the evidence the run happened, and losing it would trade the
+//! answer to "what has this session been doing" for tidiness. What a record
+//! cannot answer on its own is whether the file it names is still there, so
+//! [`RunHistoryEntry`] carries that answer beside the record rather than
+//! letting a reader assume a file exists because a path is written down.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,12 +51,42 @@ use crate::session::runtime::RunRecord;
 
 use super::error::{io_error, LogError};
 
+/// One entry of a session's run history: the run, and whether its log is still
+/// on disk.
+///
+/// The stored document stays exactly [`RunRecord`] (`docs/DECISIONS.md` D-016:
+/// the file on disk and the history the UI reads are one shape). This wrapper
+/// exists on the read path only, and flattens the record rather than nesting
+/// it, so every field keeps the name and place it has everywhere else and this
+/// adds one key instead of moving all of them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHistoryEntry {
+    #[serde(flatten)]
+    pub run: RunRecord,
+    /// Whether the file this run's record names is on disk *right now*.
+    ///
+    /// Asked the way the file actions will ask it — the stored path, as it
+    /// stands, against the filesystem — so a row that offers "open log" and the
+    /// answer that backs it cannot disagree about the same file. `false` for a
+    /// run that left no log at all, which is why the reading rule is
+    /// "`logFile` names a file *and* `logFilePresent` is true".
+    pub log_file_present: bool,
+}
+
+impl RunHistoryEntry {
+    /// Whether this run's log can still be opened.
+    pub fn log_is_openable(&self) -> bool {
+        self.log_file_present
+    }
+}
+
 /// A session's run history as it exists on disk, newest first.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunHistory {
     /// Completed runs, most recent start first.
-    pub runs: Vec<RunRecord>,
+    pub runs: Vec<RunHistoryEntry>,
     /// Entries that exist but could not be read, so a caller can say the list
     /// is incomplete rather than present it as the whole truth.
     pub unreadable: Vec<LogError>,
@@ -58,7 +98,7 @@ impl RunHistory {
     }
 
     /// The most recent run, if any.
-    pub fn latest(&self) -> Option<&RunRecord> {
+    pub fn latest(&self) -> Option<&RunHistoryEntry> {
         self.runs.first()
     }
 }
@@ -112,12 +152,30 @@ pub fn read_run(path: &Path) -> Result<RunRecord, LogError> {
 /// A session with no history is an empty history, not an error: a session that
 /// has never run is the normal state of a fresh config (the same rule T01
 /// applies to a missing config file).
+///
+/// Each entry is asked whether the log it names is still on disk, because a
+/// sweep may have taken it since (`super::retention`) and the history is where
+/// that has to become visible. Nothing is removed for being gone: see the
+/// module note.
+///
+/// Asked on read rather than written down by the sweep: a log can also be
+/// deleted outside the Hub, and an answer recorded once would then be a claim
+/// about a file nobody re-checked.
 pub fn run_history(metadata_root: &Path, session_id: &str) -> RunHistory {
     let mut history = RunHistory::default();
 
     for file in super::layout::session_run_files(metadata_root, "json", Some(session_id)) {
         match read_run(&file.path) {
-            Ok(record) => history.runs.push(record),
+            Ok(record) => {
+                let log_file_present = record
+                    .log_file
+                    .as_deref()
+                    .is_some_and(|path| Path::new(path).exists());
+                history.runs.push(RunHistoryEntry {
+                    run: record,
+                    log_file_present,
+                });
+            }
             // The error already names the entry it was about and whether it
             // could not be read or could not be parsed.
             Err(error) => history.unreadable.push(error),
@@ -128,11 +186,11 @@ pub fn run_history(metadata_root: &Path, session_id: &str) -> RunHistory {
     // by hand still lists where it belongs. Runs from the same second — a
     // restart loop does that — are ordered by their ids, which are unique.
     history.runs.sort_by(|left, right| {
-        let left_key = left.started_at.unix_secs().unwrap_or(0);
-        let right_key = right.started_at.unix_secs().unwrap_or(0);
+        let left_key = left.run.started_at.unix_secs().unwrap_or(0);
+        let right_key = right.run.started_at.unix_secs().unwrap_or(0);
         right_key
             .cmp(&left_key)
-            .then_with(|| right.run_id.as_str().cmp(left.run_id.as_str()))
+            .then_with(|| right.run.run_id.as_str().cmp(left.run.run_id.as_str()))
     });
     history
 }
@@ -233,8 +291,57 @@ mod tests {
         let history = run_history(dir.path(), "comfyui");
 
         assert_eq!(history.runs.len(), 2);
-        assert_eq!(history.latest().expect("a run").run_id, newer.run_id);
-        assert_eq!(history.runs[1].run_id, older.run_id);
+        assert_eq!(history.latest().expect("a run").run.run_id, newer.run_id);
+        assert_eq!(history.runs[1].run.run_id, older.run_id);
+    }
+
+    /// The question a record cannot answer by itself: the file it names may be
+    /// gone. A record whose log is still there says so, and one whose log was
+    /// swept is still listed — the run happened, and the history is the only
+    /// place that says so (`docs/LOGGING.md` §6).
+    #[test]
+    fn a_record_reports_whether_its_log_is_still_on_disk() {
+        let dir = TempDir::new();
+        let logs = dir.join("logs/comfyui/2026-09");
+        fs::create_dir_all(&logs).expect("the month folder is creatable");
+        let present = logs.join("2026-09-24_09-30-15__run-8f31.log");
+        let swept = logs.join("2026-09-24_08-30-15__run-7a20.log");
+        fs::write(&present, b"captured output").expect("writable");
+
+        let mut with_log = record("8f31", Some(&present.display().to_string()));
+        with_log.started_at = start_instant();
+        write_run(dir.path(), &with_log, 0).expect("written");
+        let mut gone = record("7a20", Some(&swept.display().to_string()));
+        gone.started_at = Timestamp::from_system_time(UNIX_EPOCH);
+        write_run(dir.path(), &gone, 0).expect("written");
+
+        let history = run_history(dir.path(), "comfyui");
+
+        assert_eq!(history.runs.len(), 2, "a swept log removed its run");
+        let newest = history.latest().expect("a run");
+        assert!(newest.log_file_present);
+        assert!(newest.log_is_openable());
+        assert!(
+            !history.runs[1].log_file_present,
+            "a record whose file is gone claims to have one"
+        );
+        assert!(!swept.exists());
+    }
+
+    /// A run that left no file at all is not a run whose file was swept: both
+    /// answer "there is nothing to open", and the distinction the UI needs rides
+    /// on `log_file` naming a path at all.
+    #[test]
+    fn a_run_that_never_wrote_a_log_reports_no_file_to_open() {
+        let dir = TempDir::new();
+        write_run(dir.path(), &record("8f31", None), 0).expect("written");
+
+        let history = run_history(dir.path(), "comfyui");
+        let entry = history.latest().expect("a run");
+
+        assert!(entry.run.log_file.is_none());
+        assert!(!entry.log_file_present);
+        assert!(!entry.log_is_openable());
     }
 
     /// One damaged entry must not hide the rest of a session's history, and the
