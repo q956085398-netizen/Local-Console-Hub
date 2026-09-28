@@ -87,8 +87,8 @@ const REAP_TIMEOUT: Duration = Duration::from_millis(500);
 /// What to start for one run.
 ///
 /// Deliberately argv-shaped: turning a configured command string into `program`
-/// + `args` (and choosing the shell that runs it) is the caller's decision, not
-/// a policy this layer should invent.
+/// plus `args` (and choosing the shell that runs it) is the caller's decision,
+/// not a policy this layer should invent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessSpec {
     /// Executable to start. A full path is preferred; `PATH` lookup is left to

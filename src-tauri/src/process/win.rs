@@ -201,7 +201,7 @@ pub fn is_process_alive(pid: u32) -> bool {
     let mut code: u32 = 0;
     let read = unsafe { GetExitCodeProcess(process as _, &mut code) };
     unsafe { CloseHandle(process as _) };
-    read != 0 && code == STILL_ACTIVE
+    read != 0 && code == STILL_ACTIVE as u32
 }
 
 /// Describe the last Win32 failure as a bare cause — the raw error code and the
