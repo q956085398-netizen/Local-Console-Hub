@@ -7,6 +7,7 @@ import {
   typeLabel,
 } from "../../state/derivations";
 import type { SessionView } from "../../state/session-view";
+import { isPresent } from "../../types/runtime";
 import "./DetailsPanel.css";
 
 export interface DetailsPanelProps {
@@ -35,8 +36,8 @@ export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
     ["类型", typeLabel(config.sessionType)],
     ["状态", statusLabel(runtime.status, session.busy ?? false, session.ready ?? false)],
     ["启动命令", config.command ?? config.shell ?? "—"],
-    ["Run", runtime.runId !== undefined ? `run-${runtime.runId}` : "—"],
-    ["退出码", runtime.exitCode !== undefined ? String(runtime.exitCode) : "—"],
+    ["Run", isPresent(runtime.runId) ? `run-${runtime.runId}` : "—"],
+    ["退出码", isPresent(runtime.exitCode) ? String(runtime.exitCode) : "—"],
     ["PTY", runtime.ptyAttached ? "attached" : "未附加"],
     [
       "日志模式",
@@ -48,7 +49,7 @@ export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
         runtime.buffer.droppedBytes > 0 ? ` · 已丢弃 ${runtime.buffer.droppedBytes} B` : ""
       }`,
     ],
-    ...(runtime.lastError !== undefined
+    ...(isPresent(runtime.lastError)
       ? ([[`最近错误（${runtime.lastError.operation}）`, runtime.lastError.message]] as Array<
           [string, string]
         >)

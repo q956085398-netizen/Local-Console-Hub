@@ -29,6 +29,72 @@ function snapshot(overrides: Partial<SessionRuntimeDto> = {}): SessionRuntimeDto
   };
 }
 
+/**
+ * The wire writes `null` for an absent optional.
+ *
+ * `SessionRuntime`'s fields are `Option<T>` on the Rust side with no
+ * `skip_serializing_if`, and the Rust tests assert exactly that
+ * (`value["pid"].is_null()`), so a snapshot with the fields *missing* is not a
+ * shape the backend produces. These fixtures are the real one — the T06 tests
+ * next to them use `undefined`, which is why a guard that rejected `null` went
+ * unnoticed until a live snapshot was rendered (T07 #8).
+ */
+function wireSnapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    sessionId: "sillytavern",
+    status: "stopped",
+    pid: null,
+    runId: null,
+    startedAt: null,
+    exitCode: null,
+    ptyAttached: false,
+    logging: { mode: "off", source: "none", external_path: null },
+    buffer: { bytes: 0, lines: 0, droppedBytes: 0 },
+    lastError: null,
+    ...overrides,
+  };
+}
+
+/** A run record as the wire writes it: a live run has null for what has not
+ * happened yet, and `logFile` is null for the modes that decide late. */
+function wireRun(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    runId: "8f31",
+    sessionId: "sillytavern",
+    startedAt: "2026-09-28T06:00:00Z",
+    endedAt: null,
+    exitCode: null,
+    pid: null,
+    logMode: "on_error",
+    logSource: "captured",
+    logFile: null,
+    ...overrides,
+  };
+}
+
+describe("the wire's nulls", () => {
+  it("accepts a snapshot whose absent optionals are null, not missing", () => {
+    expect(isSessionRuntimeDto(wireSnapshot())).toBe(true);
+  });
+
+  it("accepts a running snapshot, whose exitCode and lastError are null", () => {
+    expect(
+      isSessionRuntimeDto(
+        wireSnapshot({
+          status: "running",
+          pid: 12384,
+          runId: "a1",
+          startedAt: "2026-09-28T06:00:00Z",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a run record whose optionals are null", () => {
+    expect(isRunRecordDto(wireRun())).toBe(true);
+  });
+});
+
 describe("isSessionRuntimeDto", () => {
   it("accepts a well-formed running snapshot", () => {
     expect(isSessionRuntimeDto(snapshot())).toBe(true);

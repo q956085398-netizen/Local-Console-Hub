@@ -61,10 +61,11 @@ export function useTerminalStream(
   /**
    * The run the view is showing. A new run is a new stream: the backend bumps
    * the generation on every start, and this view has to attach to it rather
-   * than keep rendering the run that ended. `undefined` covers a session that
-   * has not run since the app opened.
+   * than keep rendering the run that ended. `null` (the wire's "no run yet")
+   * and `undefined` both cover a session that has not run since the app
+   * opened.
    */
-  runId: string | undefined,
+  runId: string | null | undefined,
   live: boolean,
   handlers: TerminalStreamHandlers,
 ): TerminalStream {
