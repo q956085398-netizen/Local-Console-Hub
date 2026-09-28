@@ -33,9 +33,12 @@ function snapshot(overrides: Partial<SessionRuntimeDto> = {}): SessionRuntimeDto
  * The wire writes `null` for an absent optional.
  *
  * `SessionRuntime`'s fields are `Option<T>` on the Rust side with no
- * `skip_serializing_if`, and the Rust tests assert exactly that
- * (`value["pid"].is_null()`), so a snapshot with the fields *missing* is not a
- * shape the backend produces. These fixtures are the real one — the T06 tests
+ * `skip_serializing_if`, and the Rust tests assert exactly that —
+ * `a_session_that_has_never_started_claims_no_run` and
+ * `a_live_run_reports_no_end_and_no_exit_code` in
+ * `src-tauri/src/session/runtime.rs` assert `is_null()` for pid, runId,
+ * startedAt, exitCode and lastError. If either side of that pair changes, both
+ * must (`src/types/ipc.test.ts` pins `ping` the same way). These fixtures are the real one — the T06 tests
  * next to them use `undefined`, which is why a guard that rejected `null` went
  * unnoticed until a live snapshot was rendered (T07 #8).
  */
