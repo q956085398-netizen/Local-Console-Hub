@@ -407,7 +407,7 @@ mod tests {
                 "contradict",
             ),
             // persisting mode without a source
-            ("mode: always", "needs `source`"),
+            ("mode: always", "needs `source: captured`"),
             // persistence mode with nothing to persist
             ("mode: always\nsource: none", "nothing to persist"),
             // external without a path
