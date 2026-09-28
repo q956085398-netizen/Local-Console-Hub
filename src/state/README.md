@@ -10,24 +10,36 @@ and lifecycle changes originate in Session Core.
 - `derivations.ts` — pure view rules over the DTOs (status tones and labels,
   action availability, callout wording, metadata pairs, row chips, grouping,
   filtering). Unit-tested; components stay thin wrappers around these.
-- `fixtures.ts` — the T06 fixture workspace. Every config/runtime/run value
-  passes the landed DTO guards; T07–T10 replace it with live `list_sessions`
-  payloads.
+- `session-view.ts` — `SessionView`, the shape a row and the workspace render:
+  a session's validated configuration, its runtime snapshot, and the UI-only
+  extras. It is what the workspace is made of, whichever source filled it.
+- `fixtures.ts` — the T06 fixture workspace, rendered when no backend answers.
+- `terminal-stream.ts` — where a terminal view is in the stream it renders,
+  and whether a live batch joins it or is already shown. Pure; unit-tested.
+- `terminal-attach.ts` — the attachment protocol (subscribe, replay, input,
+  resize) against an injected `TerminalBackend`, so it is testable without a
+  DOM or a Tauri host.
 - `view.ts` — UI-only vocabulary (workspace tabs).
 
-## Fixture boundary (T06 #7)
+## Where the sessions come from (T07 #8)
 
-`FixtureSession` is a **fixture container, not a contract**: components
-receive display data as props and never import the fixture arrays (only
-`App.tsx` does). The extras it carries beyond the landed DTOs are documented
-per field on the type, and are not a second runtime model:
+`src/app/useSessionRegistry.ts` reads Session Core when a backend is answering
+(`list_session_configs` + `list_sessions`, then the `session-state-changed`
+events) and falls back to `FIXTURE_SESSIONS` when none is — the browser
+preview, and the moment before the first listing returns. The two sources fill
+the *same* `SessionView`, so the shell renders one model, not two.
+
+`SessionView`'s extras beyond the landed DTOs are documented per field on the
+type and are not a second runtime model:
 
 - `busy` / `ready` — spec §4's optional runtime flags. `src-tauri/src/session/
   state.rs` notes neither exists yet; T08 (#9) produces them. They supplement
   lifecycle state and never replace it.
-- `lines` — the terminal stream T07 (#8) replaces with the PTY.
-- `group` / `dependsOn` — **no landed field and no owning ticket yet** (the
-  session config schema has neither). They are recorded as `FixtureExtras`
-  with this note rather than presented as contracts; a config-schema issue
-  must add them before anything depends on them.
-
+- `group` — a UI concern with **no landed field and no owning ticket** (the
+  config schema has none). Live sessions therefore render under one group,
+  `LIVE_GROUP`, named for where they came from. A config-schema issue must add
+  the field before anything depends on a classification.
+- `dependsOn` — likewise unlanded; the details panel renders what it is given
+  (the live source provides nothing).
+- `lines` — the preview stream, read only when no backend is attached. With a
+  backend, the PTY is the stream and this field is never rendered.
