@@ -32,12 +32,12 @@ pub struct SessionConfigError {
 }
 
 impl SessionConfigError {
-    fn field(index: usize, id: &str, field: &str, message: String) -> Self {
+    fn field(index: usize, id: &str, field: &str, message: impl Into<String>) -> Self {
         SessionConfigError {
             index,
             session_id: Some(id.to_owned()),
             field: Some(field.to_owned()),
-            message,
+            message: message.into(),
         }
     }
 }
@@ -290,7 +290,7 @@ fn validate_port(
 ///
 /// Contradictions (e.g. `mode: off` with `source: captured`) are rejected
 /// with a message naming the valid combination instead of guessing.
-pub(crate) fn resolve_logging(
+fn resolve_logging(
     index: usize,
     id: &str,
     session_type: SessionType,
@@ -301,7 +301,7 @@ pub(crate) fn resolve_logging(
     let external_path = match raw.path.as_deref() {
         None => None,
         Some(path) if path.trim().is_empty() => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.path",
@@ -310,7 +310,7 @@ pub(crate) fn resolve_logging(
         }
         Some(path) => {
             if raw.source != Some(LogSource::External) {
-                return Err(field_err(
+                return Err(SessionConfigError::field(
                     index,
                     id,
                     "logging.path",
@@ -339,7 +339,7 @@ pub(crate) fn resolve_logging(
         // External: the application owns the log; the Hub only links it.
         (Some(LogSource::External), LogMode::Always | LogMode::Auto) => {
             let path = external_path.clone().ok_or_else(|| {
-                field_err(
+                SessionConfigError::field(
                     index,
                     id,
                     "logging.path",
@@ -354,16 +354,17 @@ pub(crate) fn resolve_logging(
             }
         }
         (Some(LogSource::External), LogMode::Off) => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.mode",
                 "`mode: off` persists nothing while `source: external` links an \
-                 application-owned log — remove the logging block, or use `mode: always`",
+                 application-owned log, which is contradictory — remove the logging \
+                 block, or use `mode: always`",
             ));
         }
         (Some(LogSource::External), mode) => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.mode",
@@ -376,10 +377,9 @@ pub(crate) fn resolve_logging(
             ));
         }
         // Captured: the Hub persists stdout/stderr by policy.
-        (Some(LogSource::Captured), LogMode::Auto) => match session_type {
-            SessionType::Service => service_default(),
-            SessionType::Terminal => {
-                return Err(field_err(
+        (Some(LogSource::Captured), LogMode::Auto) => {
+            if session_type == SessionType::Terminal {
+                return Err(SessionConfigError::field(
                     index,
                     id,
                     "logging.mode",
@@ -388,9 +388,10 @@ pub(crate) fn resolve_logging(
                      `manual`)",
                 ));
             }
-        },
+            service_default()
+        }
         (Some(LogSource::Captured), LogMode::Off) => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.mode",
@@ -403,12 +404,12 @@ pub(crate) fn resolve_logging(
             source: LogSource::Captured,
             external_path: None,
         },
-        // Explicit none: no persistence at all.
-        (Some(LogSource::None), LogMode::Off) => off_none(),
-        (Some(LogSource::None), LogMode::Auto) => match session_type {
-            SessionType::Terminal => off_none(),
-            SessionType::Service => {
-                return Err(field_err(
+        // Explicit none, or no source at all with `mode: off`: no
+        // persistence either way.
+        (Some(LogSource::None), LogMode::Off) | (None, LogMode::Off) => off_none(),
+        (Some(LogSource::None), LogMode::Auto) => {
+            if session_type == SessionType::Service {
+                return Err(SessionConfigError::field(
                     index,
                     id,
                     "logging.mode",
@@ -417,9 +418,10 @@ pub(crate) fn resolve_logging(
                      persistence explicitly",
                 ));
             }
-        },
+            off_none()
+        }
         (Some(LogSource::None), mode) => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.mode",
@@ -430,14 +432,16 @@ pub(crate) fn resolve_logging(
                 ),
             ));
         }
-        // Source unspecified.
-        (None, LogMode::Auto) => match session_type {
-            SessionType::Terminal => off_none(),
-            SessionType::Service => service_default(),
-        },
-        (None, LogMode::Off) => off_none(),
+        // Source unspecified: per-type defaults from `docs/LOGGING.md` §3.
+        (None, LogMode::Auto) => {
+            if session_type == SessionType::Service {
+                service_default()
+            } else {
+                off_none()
+            }
+        }
         (None, mode) => {
-            return Err(field_err(
+            return Err(SessionConfigError::field(
                 index,
                 id,
                 "logging.source",
@@ -450,10 +454,6 @@ pub(crate) fn resolve_logging(
         }
     };
     Ok(effective)
-}
-
-fn field_err(index: usize, id: &str, field: &str, message: String) -> SessionConfigError {
-    SessionConfigError::field(index, id, field, message)
 }
 
 fn mode_name(mode: LogMode) -> &'static str {

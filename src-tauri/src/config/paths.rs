@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset, TimeZone};
+use chrono::{DateTime, FixedOffset};
 
 /// Whether `value` is safe to use as a single path component (session ids
 /// and run ids become directory/file names — D-011).

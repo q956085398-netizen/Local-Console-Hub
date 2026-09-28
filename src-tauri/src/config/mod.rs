@@ -182,6 +182,12 @@ mod tests {
         out
     }
 
+    /// Indent the continuation lines of a YAML fragment so it stays nested
+    /// under its parent key once [`config`] indents the whole entry.
+    fn indent_continuation(fragment: &str) -> String {
+        fragment.replace('\n', "\n  ")
+    }
+
     #[test]
     fn empty_document_is_an_empty_session_list() {
         for text in ["", "   \n", "# only a comment\n"] {
@@ -408,7 +414,7 @@ mod tests {
             let entry = session_yaml(
                 "badlog",
                 "service",
-                &format!("command: run\nlogging:\n  {block}"),
+                &format!("command: run\nlogging:\n  {}", indent_continuation(block)),
             );
             let loaded = load_from_str(&config(&[entry]));
             assert_eq!(
@@ -437,7 +443,7 @@ mod tests {
             let entry = session_yaml(
                 "oklog",
                 "service",
-                &format!("command: run\nlogging:\n  {block}"),
+                &format!("command: run\nlogging:\n  {}", indent_continuation(block)),
             );
             let loaded = load_from_str(&config(&[entry]));
             assert!(

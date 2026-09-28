@@ -24,7 +24,7 @@ pub enum SessionType {
 
 impl SessionType {
     /// Literal used in YAML config and DTOs.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             SessionType::Service => "service",
             SessionType::Terminal => "terminal",
@@ -68,7 +68,7 @@ pub enum EffectiveLogMode {
 
 impl EffectiveLogMode {
     /// Literal used in DTOs; matches the YAML vocabulary.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             EffectiveLogMode::Off => "off",
             EffectiveLogMode::Always => "always",
@@ -80,7 +80,7 @@ impl EffectiveLogMode {
 
 impl LogSource {
     /// Literal used in YAML and DTOs.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             LogSource::None => "none",
             LogSource::Captured => "captured",
