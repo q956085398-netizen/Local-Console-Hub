@@ -664,7 +664,10 @@ mod tests {
         let pty = start();
         expect_output(&pty, "PS", STARTUP.as_secs());
 
-        send(&pty, "Write-Host -ForegroundColor Red (\"LCH-RED-\" + \"2A\")");
+        send(
+            &pty,
+            "Write-Host -ForegroundColor Red (\"LCH-RED-\" + \"2A\")",
+        );
         let seen = expect_output(&pty, "LCH-RED-2A", 20);
         assert!(
             seen.contains('\u{1b}'),
