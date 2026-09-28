@@ -1,9 +1,8 @@
 # V2 UI 设计规格转译缓存（DESIGN_SPEC_EXTRACTED）
 
 > **用途**：`assets/ui/ui-v2-service.png`、`assets/ui/ui-v2-terminal.png` 的结构化文字
-> 规格，供没有视觉能力的主力模型照着实现（CLAUDE.md R1）。后续会话直接读本文档，
-> 不重复转译。
-> **权威性**：以两张参考图与 `docs/UI_STYLE_GUIDE.md` 为准；本文档的 token 与结构
+> 规格，让后续会话/协作者不必反复读图就能对齐 token 与结构。
+> **权威性**：`docs/UI_STYLE_GUIDE.md` 的产品语义优先；本文档的 token 与结构
 > 取自参考图的**上游源码**（见下），因此是精确值而非目测估值。
 > **上游来源**：`E:\Grok-UI-Design\LocalConsoleHub` —— V2 预览图的真实来源工程
 > （Tailwind v4 + shadcn 风格原型）。两张参考图即该工程 `screenshots/qa-home.png`、
@@ -12,11 +11,9 @@
 > (`src/components/hub/*`、`src/lib/hub/*`)。**该工程是设计来源，不是应用架构** ——
 > 其 auth / database / deployment / preview-runtime 子系统一律不引入
 > （UI_STYLE_GUIDE §12、T06 out-of-scope）。
-> **生成记录**：首版转译由视觉模型完成；`ui-vision` 服务器当时返回 HTTP 429
-> （智谱余额不足，code 1113），故用会话内另一视觉模型完成。该版含估值误差（错误地
-> 给出蓝色主按钮、并虚构了 macOS 三点窗口按钮）。得到上游源码后已按源码**重写**本文档
-> —— 颜色/字体/结构一律以源码为准。充值 ui-vision 后可用其 `analyze_design`
-> （`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）复核。
+> **生成记录**：首版转译由模型读图完成，含目测误差（把中性灰主按钮报成蓝色、并虚构了
+> 图中不存在的 macOS 三点窗口按钮）。拿到上游源码后已按源码**重写**本文档 ——
+> 颜色/字体/结构一律以源码为准；后续如需复核，直接看图并与上游源码交叉验证。
 
 ## 1. 设计 token（源码精确值）
 

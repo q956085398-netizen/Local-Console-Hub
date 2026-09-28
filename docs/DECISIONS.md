@@ -311,8 +311,8 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 用户可见行为：界面为中性灰交互 + 状态色语义的深色控制台；Token 与
 `docs/DESIGN_SPEC_EXTRACTED.md` 一一对应，可直接复用。
 
-运维：若参考图更新，先用 `ui-vision` 的 `analyze_design` 复核，再回到上游源码核对
-token，最后更新 `DESIGN_SPEC_EXTRACTED.md`。
+运维：若参考图更新，先直接读图核对，再回到上游源码核对 token，最后更新
+`DESIGN_SPEC_EXTRACTED.md`。
 
 ---
 
