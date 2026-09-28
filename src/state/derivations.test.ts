@@ -286,6 +286,27 @@ describe("acceptsTerminalInput", () => {
     ).toBe(false);
   });
 
+  it("refuses input while a terminal is stopping, even though it is still attached", () => {
+    // `stop` sets `Stopping` and waits out the grace period before the run
+    // ends, and the flag is only cleared when it does — so for that window the
+    // snapshot reports an attachment the backend will not take input for.
+    expect(
+      acceptsTerminalInput(
+        config({ sessionType: "terminal" }),
+        runtime({ status: "stopping", ptyAttached: true }),
+      ),
+    ).toBe(false);
+  });
+
+  it("accepts input only for a running attached terminal", () => {
+    expect(
+      acceptsTerminalInput(
+        config({ sessionType: "terminal" }),
+        runtime({ status: "running", ptyAttached: true }),
+      ),
+    ).toBe(true);
+  });
+
   it("refuses input for a service, whatever the snapshot claims", () => {
     // The backend refuses a service at `terminal_write` because a supervised run
     // has no attached stdin; the view must not offer what will be refused, so

@@ -169,21 +169,29 @@ export function ptyChromeLabel(config: SessionConfigDto, runtime: SessionRuntime
 /**
  * Whether a session's terminal view may send keystrokes (T07 #8).
  *
- * The rule the backend applies at `terminal_write`, expressed over the DTOs
- * rather than guessed by the view: only an interactive terminal that is
- * actually running has an attached stdin. A supervised service "has no
- * attached stdin to type into" — `SessionCore::terminal_write` refuses it, with
- * a test that says so — and a terminal that is not running has no terminal.
+ * The backend's own predicate at `terminal_write`, transcribed rather than
+ * approximated: it accepts input only for a run that is a terminal *and*
+ * `Running` (`SessionCore::terminal_write`'s `Input::Pty` arm), so this asks
+ * for exactly those three things over the DTOs — the type, the lifecycle state
+ * and the attachment.
  *
- * A view that offered input without this would turn every keystroke into a
- * refusal notice, which is a worse answer than a pane that plainly does not
- * take typing.
+ * The state conjunct is not redundant with `ptyAttached`, which is the subtle
+ * part: the flag is cleared when the run *ends* (`close_run`), while `stop`
+ * sets `Stopping` first and then waits out the grace period. Without the state
+ * check a pane is typable throughout that window — and every keystroke comes
+ * back as "has no running terminal; start it before typing into it", which is
+ * the per-keystroke refusal notice this gate exists to prevent. The same
+ * window does not exist on the way up: `start` sets `Running` and the flag in
+ * one lock hold, so no snapshot reports the attachment before the state.
+ *
+ * A supervised service needs no separate case: it "has no attached stdin to
+ * type into", which `terminal_write` refuses with its own test.
  */
 export function acceptsTerminalInput(
   config: SessionConfigDto,
   runtime: SessionRuntimeDto,
 ): boolean {
-  return config.sessionType === "terminal" && runtime.ptyAttached;
+  return config.sessionType === "terminal" && runtime.status === "running" && runtime.ptyAttached;
 }
 
 /**
