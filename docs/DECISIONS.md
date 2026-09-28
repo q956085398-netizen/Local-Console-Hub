@@ -282,6 +282,40 @@ RFC 3339 UTC 时间戳、JSON 缩进写入 `metadata/<session_id>/<YYYY-MM>/`。
 
 ---
 
+## D-017：V2 视觉 token 以上游原型源码为准，中性色交互面
+
+**状态：Accepted（2026-09-28，T06 落地时签认）**
+
+V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设计工作区
+`E:\Grok-UI-Design\LocalConsoleHub`（Tailwind v4 原型）。T06 落地时以该工程的构建
+样式表与组件源码为 token 权威来源，**不采用**视觉模型对截图的目测估值。
+
+由此冻结的关键视觉事实（与目测版本相反）：
+
+- 主按钮是**中性灰** `#c5ccd6` + 深色文字，**不是蓝色**；蓝色不参与交互面，
+  颜色只承担生命周期语义（延续 UI_STYLE_GUIDE §10）；
+- 状态色为柔和色域：Running `#6fba8a`、Busy/Warn `#c9b07a`、Error `#d27878`、
+  Idle `#6d717b`；窗口底色 `#0b0c0f`，终端 `#090a0d`；
+- 字体为 IBM Plex Sans / IBM Plex Mono，实现用 `@fontsource/*` 本地打包（桌面应用
+  不依赖字体 CDN）；
+- 终端面板**没有** macOS 三点窗口按钮；Tabs 激活下划线为 1px 中性色，不是 2px 蓝线。
+
+原因：
+
+- 参考图是截图，含抗锯齿与缩放，目测取色必然有偏差，且容易「补全」图中不存在的
+  元素（本次首轮转译即虚构了三点窗口按钮与蓝色主按钮）；
+- 上游源码是同一设计的可执行真值，取到的 hex、间距、文案无需猜测；
+- 该工程仅作为**设计来源**：其 auth / database / deployment / preview-runtime
+  子系统不进入产品（UI_STYLE_GUIDE §12）。
+
+用户可见行为：界面为中性灰交互 + 状态色语义的深色控制台；Token 与
+`docs/DESIGN_SPEC_EXTRACTED.md` 一一对应，可直接复用。
+
+运维：若参考图更新，先直接读图核对，再回到上游源码核对 token，最后更新
+`DESIGN_SPEC_EXTRACTED.md`。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：

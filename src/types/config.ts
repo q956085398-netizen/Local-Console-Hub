@@ -65,8 +65,12 @@ export interface ConfigReportDto {
 }
 
 const SESSION_TYPES: readonly SessionTypeValue[] = ["service", "terminal"];
-const LOG_MODES: readonly EffectiveLogModeValue[] = ["off", "always", "on_error", "manual"];
-const LOG_SOURCES: readonly LogSourceValue[] = ["none", "captured", "external"];
+
+/** Every valid log mode, for runtime guards on both sides of the contract. */
+export const LOG_MODES: readonly EffectiveLogModeValue[] = ["off", "always", "on_error", "manual"];
+
+/** Every valid log source, for runtime guards on both sides of the contract. */
+export const LOG_SOURCES: readonly LogSourceValue[] = ["none", "captured", "external"];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

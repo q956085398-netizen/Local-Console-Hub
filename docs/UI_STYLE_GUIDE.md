@@ -69,7 +69,7 @@ The normative tabs are:
 - **Logs** — persistence policy and run history;
 - **Details** — identity, close impact, dependencies and technical metadata.
 
-Details is allowed because it moves low-frequency information out of the terminal without creating a permanent side panel.
+Details is allowed because it moves low-frequency information out of the terminal without creating a permanent side panel. It carries the *low-frequency* fields only (identity, close impact, dependencies, exit/PTY/buffer detail): values already live in the header metadata line — PID, port, uptime, cwd, effective log policy — are not repeated here (§13 forbids excessive duplication).
 
 ## 7. Terminal
 
@@ -115,7 +115,7 @@ The tray is not a miniature copy of the full app.
 
 - dark near-black surfaces with restrained contrast;
 - thin borders and subtle elevation;
-- blue for interaction/focus, not lifecycle truth;
+- interaction and focus use the neutral light-gray (`#c5ccd6`), never a color — **color is reserved for lifecycle truth** (T06 measured this from the approved V2 source; recorded in DECISIONS.md D-017);
 - green = healthy/running, amber = busy/warning, red = error/destructive, gray = stopped/inactive;
 - monospace text for terminal and compact technical metadata;
 - concise Chinese/English labels are acceptable, but implementation should be internally consistent;

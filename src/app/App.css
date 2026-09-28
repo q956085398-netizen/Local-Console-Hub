@@ -1,0 +1,65 @@
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.app-main__rail {
+  display: flex;
+  min-height: 0;
+  width: 280px;
+  flex: none;
+  border-right: 1px solid var(--border);
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace__content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 8px;
+}
+
+/* Narrow widths: the rail becomes an overlay drawer so the terminal keeps
+ * priority (UI_STYLE_GUIDE §11). */
+.app-main--narrow {
+  position: relative;
+}
+
+.app-main--narrow .app-main__rail {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  transition: transform 0.15s ease-out;
+  box-shadow: none;
+}
+
+.app-main--narrow .app-main__rail--open {
+  transform: translateX(0);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.app-main__backdrop {
+  position: absolute;
+  z-index: 10;
+  inset: 0;
+  background: rgba(5, 7, 12, 0.5);
+}

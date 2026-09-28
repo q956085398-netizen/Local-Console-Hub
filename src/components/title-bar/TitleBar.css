@@ -1,0 +1,72 @@
+.title-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.title-bar__menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-fg);
+  cursor: pointer;
+  flex: none;
+}
+.title-bar__menu:hover {
+  background: var(--secondary);
+  color: var(--fg);
+}
+
+.title-bar__mark {
+  width: 20px;
+  height: 20px;
+  margin-left: 4px;
+  flex: none;
+}
+
+.title-bar__name-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.title-bar__name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-bar__pill {
+  flex: none;
+  border-radius: 999px;
+  background: var(--secondary);
+  padding: 1px 8px;
+  font-size: 10px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+
+.title-bar__summary {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-fg);
+  white-space: nowrap;
+  flex: none;
+}
