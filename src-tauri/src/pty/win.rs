@@ -30,7 +30,8 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, SetConsoleCtrlHandler, COORD,
+    HPCON,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -116,6 +117,12 @@ impl PtyBackend {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
+
+        // A terminal that inherits the "Ctrl+C is ignored" flag would take the
+        // pty's `0x03` byte as a `CTRL_C_EVENT` and discard it, so a user could
+        // not stop anything they started. It is inherited at process creation,
+        // which is why this is cleared here rather than left to the session.
+        clear_inherited_ctrl_c_ignore();
 
         let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         let started = unsafe {
@@ -274,6 +281,21 @@ impl Drop for ConHandle {
     fn drop(&mut self) {
         unsafe { ClosePseudoConsole(self.0 as _) };
     }
+}
+
+/// Clear the "Ctrl+C is ignored" flag this process was started with.
+///
+/// `SetConsoleCtrlHandler(NULL, TRUE)` is inherited by every child a process
+/// creates, so a Hub launched by a service, an updater or any launcher that
+/// ignores Ctrl+C would hand the flag to each shell it hosts. The Hub is a GUI
+/// application with no console of its own to keep out of harm's way, so it
+/// drops the flag before every spawn; a process that never had it takes the
+/// no-op path.
+fn clear_inherited_ctrl_c_ignore() {
+    // A null handler with `FALSE` is the documented way to turn the flag back
+    // off, and the flag is process-wide state rather than a resource this layer
+    // owns — there is no failure a caller could act on.
+    unsafe { SetConsoleCtrlHandler(None, 0) };
 }
 
 /// A freshly created anonymous pipe pair, as (read end, write end).

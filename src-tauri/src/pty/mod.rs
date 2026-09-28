@@ -969,4 +969,42 @@ mod tests {
         assert!(message.contains("missing.exe"), "{message}");
         assert!(message.contains("lch-t02"), "{message}");
     }
+
+    /// Turn the inherited "Ctrl+C is ignored" flag on, the way a launcher that
+    /// starts the Hub as a background service does. It is process-wide state,
+    /// and the layer clears it again on its next spawn.
+    fn ignore_ctrl_c() {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        unsafe { SetConsoleCtrlHandler(None, 1) };
+    }
+
+    #[test]
+    fn a_shell_spawned_from_a_ctrl_c_ignoring_process_still_interrupts() {
+        // The flag is inherited at process creation, so a Hub started by a
+        // service would otherwise hand it to every shell it hosts: the pty's
+        // `0x03` byte would arrive as a `CTRL_C_EVENT` and be discarded, and no
+        // user could stop a command they had started. Dropping it before the
+        // spawn is what lets this terminal stop its sleep.
+        ignore_ctrl_c();
+        let pty = start();
+        expect_output(&pty, "PS", STARTUP.as_secs());
+
+        send(
+            &pty,
+            "Write-Host (\"LCH-IGNORE-\" + \"START\"); Start-Sleep -Seconds 60; Write-Host \
+             (\"LCH-IGNORE-\" + \"NEVER\")",
+        );
+        expect_output(&pty, "LCH-IGNORE-START", 20);
+
+        pty.interrupt().expect("Ctrl+C reaches the terminal");
+        expect_output(&pty, ">", 20);
+        send(&pty, "Write-Host (\"LCH-IGNORE-\" + \"RESUMED\")");
+        let seen = expect_output(&pty, "LCH-IGNORE-RESUMED", 20);
+        assert!(
+            !seen.contains("LCH-IGNORE-NEVER"),
+            "the interrupted sleep must not run to completion, saw {seen:?}"
+        );
+
+        pty.kill().expect("cleanup");
+    }
 }
