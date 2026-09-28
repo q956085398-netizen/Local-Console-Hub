@@ -14,6 +14,7 @@
 use serde::Serialize;
 
 use super::runtime::{RunRecord, SessionRuntime};
+use super::terminal::OutputBatch;
 
 /// `session-state-changed` — a session moved through the lifecycle.
 pub const SESSION_STATE_CHANGED: &str = "session-state-changed";
@@ -23,6 +24,12 @@ pub const RUN_RECORD_UPDATED: &str = "run-record-updated";
 
 /// `app-summary-changed` — the app-wide counts changed.
 pub const APP_SUMMARY_CHANGED: &str = "app-summary-changed";
+
+/// `terminal-output` — a batch of a run's terminal output (T07).
+///
+/// Batched rather than one event per read: §9 asks for exactly that, and the
+/// relay behind it (`crate::session::terminal`) is where the batching happens.
+pub const TERMINAL_OUTPUT: &str = "terminal-output";
 
 /// App-wide session counts, for the tray summary and window chrome.
 ///
@@ -71,6 +78,7 @@ pub enum SessionEvent {
     StateChanged(SessionStateChanged),
     RunRecordUpdated(RunRecordUpdated),
     AppSummaryChanged(AppSummaryChanged),
+    TerminalOutput(TerminalOutput),
 }
 
 impl SessionEvent {
@@ -80,6 +88,7 @@ impl SessionEvent {
             SessionEvent::StateChanged(_) => SESSION_STATE_CHANGED,
             SessionEvent::RunRecordUpdated(_) => RUN_RECORD_UPDATED,
             SessionEvent::AppSummaryChanged(_) => APP_SUMMARY_CHANGED,
+            SessionEvent::TerminalOutput(_) => TERMINAL_OUTPUT,
         }
     }
 
@@ -89,6 +98,7 @@ impl SessionEvent {
             SessionEvent::StateChanged(event) => Some(&event.session_id),
             SessionEvent::RunRecordUpdated(event) => Some(&event.session_id),
             SessionEvent::AppSummaryChanged(_) => None,
+            SessionEvent::TerminalOutput(event) => Some(&event.session_id),
         }
     }
 
@@ -103,8 +113,52 @@ impl SessionEvent {
             SessionEvent::StateChanged(inner) => serde_json::to_value(inner),
             SessionEvent::RunRecordUpdated(inner) => serde_json::to_value(inner),
             SessionEvent::AppSummaryChanged(inner) => serde_json::to_value(inner),
+            SessionEvent::TerminalOutput(inner) => serde_json::to_value(inner),
         }
         .unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// Payload of [`TERMINAL_OUTPUT`].
+///
+/// The bytes travel base64-encoded, not as text: a terminal's output is UTF-8
+/// *plus* ANSI/VT sequences, and a chunk boundary can fall inside a multi-byte
+/// character. Decoding a chunk as text would turn one such boundary into two
+/// replacement characters, which is exactly the Unicode acceptance criterion
+/// failing on a technicality. The view hands the decoded bytes to the terminal
+/// renderer, which decodes UTF-8 across chunk boundaries the way a terminal
+/// must.
+///
+/// `start`/`end` are the byte range of the run's stream this batch covers, and
+/// `generation` names the run: see `crate::session::terminal` for why a view
+/// needs both to append live output to a replayed scrollback without
+/// duplicating or skipping anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutput {
+    pub session_id: String,
+    pub generation: u64,
+    pub start: u64,
+    pub end: u64,
+    /// The batch's bytes, base64-encoded (standard alphabet, padded).
+    pub data: String,
+}
+
+impl TerminalOutput {
+    /// The payload for one batch of a session's output.
+    ///
+    /// Built from the batch rather than from loose offsets so the range and
+    /// the bytes cannot disagree.
+    pub fn from_batch(session_id: impl Into<String>, batch: &OutputBatch) -> Self {
+        use base64::Engine;
+
+        TerminalOutput {
+            session_id: session_id.into(),
+            generation: batch.generation,
+            start: batch.start,
+            end: batch.end,
+            data: base64::engine::general_purpose::STANDARD.encode(&batch.bytes),
+        }
     }
 }
 
@@ -152,6 +206,15 @@ mod tests {
                     error: 0,
                 },
             }),
+            SessionEvent::TerminalOutput(TerminalOutput::from_batch(
+                "comfyui",
+                &OutputBatch {
+                    generation: 1,
+                    start: 0,
+                    end: 4,
+                    bytes: b"$ ls".to_vec(),
+                },
+            )),
         ]
     }
 
@@ -167,6 +230,7 @@ mod tests {
                 "session-state-changed",
                 "run-record-updated",
                 "app-summary-changed",
+                "terminal-output",
             ]
         );
     }
@@ -210,5 +274,42 @@ mod tests {
                 event.name()
             );
         }
+    }
+
+    /// The "Unicode works" acceptance criterion starts at this boundary: a
+    /// batch travels as bytes, so a read that splits a multi-byte character —
+    /// routine for a console host, not exotic — cannot corrupt it. A payload
+    /// carrying text would fail here on the first keystroke of a CJK name.
+    #[test]
+    fn terminal_output_survives_a_chunk_boundary_inside_a_character() {
+        use base64::Engine;
+
+        // "你好" split after its first byte: the case a per-chunk UTF-8 decode
+        // would render as two replacement characters.
+        let split_character = &"你好".as_bytes()[..1];
+        let payload = TerminalOutput::from_batch(
+            "term",
+            &OutputBatch {
+                generation: 7,
+                start: 0,
+                end: 1,
+                bytes: split_character.to_vec(),
+            },
+        );
+
+        let value = serde_json::to_value(&payload).expect("payload serializes");
+        assert_eq!(value["generation"], serde_json::json!(7));
+        assert_eq!(value["start"], serde_json::json!(0));
+        assert_eq!(value["end"], serde_json::json!(1));
+        assert_eq!(value["sessionId"], serde_json::json!("term"));
+
+        let data = value["data"].as_str().expect("data is a string");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .expect("data is base64");
+        assert_eq!(
+            decoded, split_character,
+            "the byte must survive the wire unchanged"
+        );
     }
 }

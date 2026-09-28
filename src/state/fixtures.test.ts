@@ -28,6 +28,19 @@ describe("FIXTURE_SESSIONS", () => {
     expect(liveCounts(FIXTURE_SESSIONS)).toEqual({ total: 6, running: 4, busy: 1 });
   });
 
+  /// A supervised service has no PTY at all: Session Core sets `pty_attached`
+  /// only for a terminal run it actually attached (`core.rs`,
+  /// `start`'s terminal branch), and `terminal_write` refuses a service with
+  /// "no attached stdin to type into". The reference prototype's mock labelled
+  /// its service pane "PTY attached · stdin 可用", which is what the fixture
+  /// copied before T07 made the live path real — a claim the backend can never
+  /// produce, and one the terminal chrome would then repeat to the user.
+  it("never claims a PTY for a supervised service", () => {
+    for (const fixture of FIXTURE_SESSIONS.filter((s) => s.config.sessionType === "service")) {
+      expect(fixture.runtime.ptyAttached).toBe(false);
+    }
+  });
+
   it("keeps every fixture runtime aligned with its config id and logging", () => {
     for (const fixture of FIXTURE_SESSIONS) {
       expect(fixture.runtime.sessionId).toBe(fixture.config.id);

@@ -1,5 +1,9 @@
 node_modules
 dist
+.claude/worktrees
+
+# Machine-local app settings: git-ignored, not part of the repository
+.claude/settings.local.json
 src-tauri/target
 src-tauri/gen
 src-tauri/icons

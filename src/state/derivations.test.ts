@@ -17,6 +17,7 @@ import {
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
+  acceptsTerminalInput,
   ptyChromeLabel,
   runOutcome,
   runOutcomeBadge,
@@ -27,7 +28,8 @@ import {
   titlebarSummaryText,
   typeLabel,
 } from "./derivations";
-import { FIXTURE_GROUPS, type FixtureSession } from "./fixtures";
+import { FIXTURE_GROUPS } from "./fixtures";
+import type { SessionView } from "./session-view";
 
 function config(overrides: Partial<SessionConfigDto> = {}): SessionConfigDto {
   return {
@@ -70,7 +72,7 @@ function toRuntimeLogging(logging: EffectiveLoggingDto): RuntimeEffectiveLogging
  * logging. Tests that need the two to diverge (a live run overriding the
  * config) pass an explicit `runtime` override.
  */
-function fixture(overrides: Partial<FixtureSession> = {}): FixtureSession {
+function fixture(overrides: Partial<SessionView> = {}): SessionView {
   const resolved = overrides.config ?? config();
   return {
     config: resolved,
@@ -87,7 +89,85 @@ function fixture(overrides: Partial<FixtureSession> = {}): FixtureSession {
   };
 }
 
+/** One run record as the wire writes it (a live run has `null` where a
+ * finished one has an end and a code). */
+function runRecord(): RunRecordDto {
+  return {
+    runId: "a91c",
+    sessionId: "sillytavern",
+    startedAt: "2026-09-28T05:00:00Z",
+    endedAt: null,
+    exitCode: null,
+    pid: 18420,
+    logMode: "always",
+    logSource: "captured",
+    logFile: null,
+  };
+}
+
 const NOW = new Date("2026-09-28T08:14:30Z");
+
+/**
+ * A stopped session as the backend actually writes one: every absent optional
+ * is `null`, not a missing key (see the wire note in `types/runtime.ts`).
+ *
+ * These exist because the T06 fixtures used `undefined`, so nothing exercised
+ * the real shape until T07 #8 rendered live snapshots — where `pid: null` came
+ * out as a literal "PID null" and a `null` `lastError` was dereferenced.
+ */
+const WIRE_STOPPED: Partial<SessionRuntimeDto> = {
+  status: "stopped",
+  pid: null,
+  runId: null,
+  startedAt: null,
+  exitCode: null,
+  ptyAttached: false,
+  logging: { mode: "off", source: "none", external_path: null },
+  lastError: null,
+};
+
+describe("reading the wire's nulls", () => {
+  it("renders an absent PID as a dash, not as `PID null`", () => {
+    const pairs = metadataPairs(config(), runtime(WIRE_STOPPED), NOW);
+    expect(pairs.find((pair) => pair.label === "PID")?.value).toBe("—");
+  });
+
+  it("omits uptime for a session that has never started", () => {
+    const pairs = metadataPairs(config(), runtime(WIRE_STOPPED), NOW);
+    expect(pairs.some((pair) => pair.label === "up")).toBe(false);
+  });
+
+  it("shows the close-impact callout rather than crashing on a null lastError", () => {
+    // `headerCallout` dereferenced `lastError` before checking it, so a null
+    // one threw the render rather than falling through.
+    expect(() => headerCallout(config(), runtime(WIRE_STOPPED))).not.toThrow();
+    expect(headerCallout(config(), runtime(WIRE_STOPPED))).toBeNull();
+  });
+
+  it("reports a failed run's error when lastError is present", () => {
+    const callout = headerCallout(
+      config(),
+      runtime({
+        ...WIRE_STOPPED,
+        status: "error",
+        lastError: { operation: "run", message: "exit code 1" },
+      }),
+    );
+    expect(callout).toEqual({ kind: "error", title: "上次错误", text: "exit code 1" });
+  });
+
+  it("treats a run with no end as running, whether null or missing", () => {
+    expect(runOutcome({ ...runRecord(), endedAt: null })).toBe("running");
+    expect(runOutcome({ ...runRecord(), endedAt: undefined })).toBe("running");
+  });
+
+  it("reports an ended run's outcome", () => {
+    expect(runOutcome({ ...runRecord(), endedAt: "2026-09-28T06:00:00Z", exitCode: 0 })).toBe("ok");
+    expect(runOutcome({ ...runRecord(), endedAt: "2026-09-28T06:00:00Z", exitCode: 3 })).toBe(
+      "error",
+    );
+  });
+});
 
 describe("statusTone / statusLabel / typeLabel / isLive", () => {
   it("maps lifecycle states to the reference's tones and labels", () => {
@@ -189,6 +269,49 @@ describe("availableActions", () => {
     expect(availableActions(config(), runtime()).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopping" })).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopped" })).forceStop).toBe(false);
+  });
+});
+
+describe("acceptsTerminalInput", () => {
+  it("lets a running interactive terminal take typing", () => {
+    expect(
+      acceptsTerminalInput(config({ sessionType: "terminal" }), runtime({ ptyAttached: true })),
+    ).toBe(true);
+  });
+
+  it("refuses input for a terminal that is not running", () => {
+    expect(
+      acceptsTerminalInput(config({ sessionType: "terminal" }), runtime({ ptyAttached: false })),
+    ).toBe(false);
+  });
+
+  it("refuses input while a terminal is stopping, even though it is still attached", () => {
+    // `stop` sets `Stopping` and waits out the grace period before the run
+    // ends, and the flag is only cleared when it does — so for that window the
+    // snapshot reports an attachment the backend will not take input for.
+    expect(
+      acceptsTerminalInput(
+        config({ sessionType: "terminal" }),
+        runtime({ status: "stopping", ptyAttached: true }),
+      ),
+    ).toBe(false);
+  });
+
+  it("accepts input only for a running attached terminal", () => {
+    expect(
+      acceptsTerminalInput(
+        config({ sessionType: "terminal" }),
+        runtime({ status: "running", ptyAttached: true }),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses input for a service, whatever the snapshot claims", () => {
+    // The backend refuses a service at `terminal_write` because a supervised run
+    // has no attached stdin; the view must not offer what will be refused, so
+    // the session type gates it independently of the attachment flag.
+    expect(acceptsTerminalInput(config(), runtime({ ptyAttached: true }))).toBe(false);
+    expect(acceptsTerminalInput(config(), runtime({ ptyAttached: false }))).toBe(false);
   });
 });
 

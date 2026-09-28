@@ -36,7 +36,7 @@ import {
   type RunHistoryEntryDto,
 } from "../types/logs";
 import { isSessionErrorDto, RUN_RECORD_UPDATED, SESSION_STATE_CHANGED } from "../types/runtime";
-import type { FixtureSession } from "../state/fixtures";
+import type { SessionView } from "../state/session-view";
 import { cleanupOutcome, previewLogStatus, previewRuns } from "../state/logs";
 
 /** Where the tab's values came from: Session Core, or the fixture record. */
@@ -83,7 +83,7 @@ export interface CleanupState {
 }
 
 export function useSessionLogs(
-  session: FixtureSession,
+  session: SessionView,
   onNotice: (message: string) => void,
 ): SessionLogs {
   const sessionId = session.config.id;

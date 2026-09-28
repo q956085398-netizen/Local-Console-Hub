@@ -3,7 +3,18 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "src-tauri/target/", "src-tauri/gen/"] },
+  {
+    // `.claude/worktrees/` holds the app's per-session checkouts of this repo.
+    // Git already excludes them; without this the TS parser sees two candidate
+    // tsconfig roots and refuses to lint anything at all.
+    ignores: [
+      "dist/",
+      "node_modules/",
+      "src-tauri/target/",
+      "src-tauri/gen/",
+      ".claude/worktrees/",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

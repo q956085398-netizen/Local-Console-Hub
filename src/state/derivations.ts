@@ -17,7 +17,8 @@ import type {
   SessionRuntimeDto,
   SessionStatusValue,
 } from "../types/runtime";
-import type { FixtureGroup, FixtureSession } from "./fixtures";
+import { isPresent } from "../types/runtime";
+import type { SessionView, WorkloadGroup } from "./session-view";
 
 /** Pip/badge tone semantics (UI_STYLE_GUIDE §10). */
 export type StatusTone = "run" | "busy" | "warn" | "err" | "idle";
@@ -84,7 +85,7 @@ export interface LiveCounts {
 }
 
 /** Count the live summary over sessions carrying runtime + busy flag. */
-export function liveCounts(sessions: FixtureSession[]): LiveCounts {
+export function liveCounts(sessions: SessionView[]): LiveCounts {
   let running = 0;
   let busy = 0;
   for (const session of sessions) {
@@ -166,6 +167,34 @@ export function ptyChromeLabel(config: SessionConfigDto, runtime: SessionRuntime
 }
 
 /**
+ * Whether a session's terminal view may send keystrokes (T07 #8).
+ *
+ * The backend's own predicate at `terminal_write`, transcribed rather than
+ * approximated: it accepts input only for a run that is a terminal *and*
+ * `Running` (`SessionCore::terminal_write`'s `Input::Pty` arm), so this asks
+ * for exactly those three things over the DTOs — the type, the lifecycle state
+ * and the attachment.
+ *
+ * The state conjunct is not redundant with `ptyAttached`, which is the subtle
+ * part: the flag is cleared when the run *ends* (`close_run`), while `stop`
+ * sets `Stopping` first and then waits out the grace period. Without the state
+ * check a pane is typable throughout that window — and every keystroke comes
+ * back as "has no running terminal; start it before typing into it", which is
+ * the per-keystroke refusal notice this gate exists to prevent. The same
+ * window does not exist on the way up: `start` sets `Running` and the flag in
+ * one lock hold, so no snapshot reports the attachment before the state.
+ *
+ * A supervised service needs no separate case: it "has no attached stdin to
+ * type into", which `terminal_write` refuses with its own test.
+ */
+export function acceptsTerminalInput(
+  config: SessionConfigDto,
+  runtime: SessionRuntimeDto,
+): boolean {
+  return config.sessionType === "terminal" && runtime.status === "running" && runtime.ptyAttached;
+}
+
+/**
  * Scrollback-loss notice, or null when nothing was discarded
  * (`docs/LOGGING.md` §8: discarded output is counted and surfaced so the UI
  * can say "older output was dropped" instead of showing a gapped history).
@@ -177,11 +206,11 @@ export function bufferDiscardNotice(runtime: SessionRuntimeDto): string | null {
   return `更早的输出已被丢弃（${runtime.buffer.droppedBytes} B）`;
 }
 
-/** Sessions this one depends on, resolved from the fixture workspace. */
-export function dependenciesOf(session: FixtureSession, all: FixtureSession[]): FixtureSession[] {
+/** Sessions this one depends on, resolved from the workspace it is rendered in. */
+export function dependenciesOf(session: SessionView, all: readonly SessionView[]): SessionView[] {
   return (session.dependsOn ?? [])
     .map((id) => all.find((candidate) => candidate.config.id === id))
-    .filter((candidate): candidate is FixtureSession => candidate !== undefined);
+    .filter((candidate): candidate is SessionView => candidate !== undefined);
 }
 
 /** Badge label + tone for a run record's outcome. */
@@ -208,7 +237,7 @@ export function headerCallout(
   if (isLive(runtime.status)) {
     return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
   }
-  if (runtime.lastError != null) {
+  if (isPresent(runtime.lastError)) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };
   }
   return null;
@@ -263,10 +292,10 @@ export function metadataPairs(
         ? "external"
         : logModeLabel(logging.mode);
   const pairs: Array<{ label: string; value: string }> = [
-    { label: "PID", value: runtime.pid != null ? String(runtime.pid) : "—" },
+    { label: "PID", value: isPresent(runtime.pid) ? String(runtime.pid) : "—" },
   ];
   if (config.port !== undefined) pairs.push({ label: "port", value: `:${config.port}` });
-  if (runtime.startedAt != null && runtime.status === "running") {
+  if (isPresent(runtime.startedAt) && runtime.status === "running") {
     pairs.push({ label: "up", value: formatDuration(runtime.startedAt, now) });
   }
   pairs.push({ label: "cwd", value: config.cwd ?? "—" });
@@ -286,7 +315,7 @@ export interface RowMetaChip {
  * effect, otherwise `External` for an application-owned log. The prototype's
  * `Auto` label cannot appear here — `auto` resolves before the frontend
  * (src/types/config.ts), so the row states what is actually happening. */
-export function sidebarRowMeta(session: FixtureSession): RowMetaChip[] {
+export function sidebarRowMeta(session: SessionView): RowMetaChip[] {
   const chips: RowMetaChip[] = [];
   if (session.config.sessionType === "service") {
     chips.push({ text: session.config.port !== undefined ? `:${session.config.port}` : "service" });
@@ -312,28 +341,22 @@ export function sidebarRowMeta(session: FixtureSession): RowMetaChip[] {
   return chips;
 }
 
-/**
- * Outcome of a run record for the history list.
- *
- * `== null`, not `=== undefined`: an unfinished run arrives with `endedAt` as
- * `null` (see the note in `types/runtime.ts`), and reading that as an ended run
- * would file every live run under "error".
- */
+/** Outcome of a run record for the history list. */
 export function runOutcome(run: RunRecordDto): "running" | "ok" | "error" {
-  if (run.endedAt == null) return "running";
+  if (!isPresent(run.endedAt)) return "running";
   return run.exitCode === 0 ? "ok" : "error";
 }
 
 /** A sidebar workload group. */
 export interface SessionGroup {
-  group: FixtureGroup;
-  items: FixtureSession[];
+  group: WorkloadGroup;
+  items: SessionView[];
 }
 
 /** Group sessions by workload in the fixture groups' declared order. */
 export function groupSessions(
-  sessions: FixtureSession[],
-  groups: readonly FixtureGroup[],
+  sessions: SessionView[],
+  groups: readonly WorkloadGroup[],
 ): SessionGroup[] {
   return groups
     .map((group) => ({
@@ -344,7 +367,7 @@ export function groupSessions(
 }
 
 /** Filter sessions by name, purpose, port, id or type, case-insensitively. */
-export function filterSessions(sessions: FixtureSession[], rawQuery: string): FixtureSession[] {
+export function filterSessions(sessions: SessionView[], rawQuery: string): SessionView[] {
   const query = rawQuery.trim().toLowerCase();
   if (!query) return sessions;
   return sessions.filter((session) => {

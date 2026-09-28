@@ -8,7 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { CleanupReportDto, LogStatusDto, RunHistoryEntryDto } from "../types/logs";
-import { FIXTURE_SESSIONS, type FixtureSession } from "./fixtures";
+import { FIXTURE_SESSIONS } from "./fixtures";
+import type { SessionView } from "./session-view";
 import {
   bufferNote,
   cleanupOutcome,
@@ -59,7 +60,7 @@ function run(overrides: Partial<RunHistoryEntryDto> = {}): RunHistoryEntryDto {
   };
 }
 
-function fixture(id: string): FixtureSession {
+function fixture(id: string): SessionView {
   const found = FIXTURE_SESSIONS.find((session) => session.config.id === id);
   if (found === undefined) {
     throw new Error(`no fixture session ${id}`);

@@ -320,12 +320,6 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 
 **状态：Accepted（2026-09-29，T10 落地时签认）**
 
-> 编号说明：这条决策在 `feat/t10-logs-view` 上最初写成 D-018。同时进行的 T07
-> （`feat/t07-interactive-terminal`）已经占用了 D-018–D-020（交互终端由 Session Core
-> 托管 PTY、终端输出的字节区间事件、config + snapshot 两半），两条分支同出于
-> `17f1316`，因此后合并者必须让号。本条改为 D-021：T07 的编号保持连续，其它分支的
-> 新决策从 D-022 起。
-
 `open_log_file` / `open_log_folder` / `preview_log_cleanup` / `cleanup_logs`
 四个命令只接受 `session_id` 与可选 `run_id`，**不接受路径**。路径由
 `SessionCore::log_file_target` 按会话自己的状态解析（external → 应用自有日志；
@@ -348,6 +342,90 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 
 运维：新增日志相关命令时沿用同一形状——命令给会话与 run 标识，Core 给路径；
 破坏性动作一律先给计划再执行。
+=======
+## D-018：交互终端由 Session Core 托管 PTY；「关闭会话」没有优雅阶梯
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+一个 `type: terminal` 会话的运行体是 **PTY**（T02 层，`crate::pty`），不是受监督进程；
+`start_spec` 按会话类型分派（service → T03 进程，terminal → PTY），两条运行路径共用
+同一套生命周期状态机（同一个 `Run` 枚举对外只回答生命周期要问的那几件事：等待退出、
+读退出码、停止、强制停止）。
+
+关闭终端 = 关闭控制台：`Pty::kill()` 终止 shell 并**确认其已退出**后才返回，因此
+`StopReport.graceful_delivered` 恒为 `false`——不存在可投递的优雅信号（ConPTY 上没有
+`CTRL_BREAK` 的对应物），报告 `true` 会是在声称一个从未发生的礼让。这与 D-007 对进程
+树的阶梯并不冲突：D-007 管的是受监督服务，终端会话的「优雅手势」是**输入**——用户按下的
+Ctrl+C 走 `terminal_write` 的 `0x03` 字节，它中断正在运行的命令，**不关闭会话**（spec §7）。
+
+shell 未能在终止后退出时，停止操作按失败上报、会话落到 `Error`，而不是假装停干净了。
+
+用户可见行为：终端会话的「停止」立即结束 shell；Ctrl+C 只打断当前命令；两者在 UI 上
+是两个不同动作（`停止` 按钮 vs 键盘中断）。
+
+---
+
+## D-019：终端输出以带字节区间的事件批次到达 UI；attach 强制切一刀
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+终端输出通过 `terminal-output` 事件送到前端，每个批次携带：
+
+- `generation`——它属于哪一次运行（重启会 +1）；
+- `start` / `end`——它覆盖该运行字节流的哪一段（半开区间）；
+- `data`——该段字节，**base64**（标准字母表、带填充）。
+
+批次在会话内部由 relay 合并：够 `BATCH_MAX_BYTES`（64 KiB）或最早一个待发字节等满
+`BATCH_WINDOW`（16 ms）就切一刀；终端读取线程每 16 ms 唤醒一次作为静默期的兜底，
+服务进程走 watcher 的 100 ms tick。这是 spec §9/§14「不要每行一个事件、一个高输出会话
+不得拖垮整个 UI」的落点：2000 行输出在测试中被压成远少于 200 个事件。
+
+**偏移量的契约**：`attach_terminal` 返回保留的 scrollback、该 scrollback 覆盖到的字节偏移
+（`emitted`）与 `generation`；视图重放 chunks，然后**整批追加** `end` 超过该偏移的批次、
+整批丢弃 `end` 不超过它的批次——不切批次。这个「不切」之所以成立，是因为 attach 在**同一
+次持锁**里把待发输出切出来发布：`emitted` 因此只会落在批次边界上。`emitted` 在字节**进入
+scrollback 时**推进（不是发布时），所以任一次 attach 读到的偏移与它读到的 scrollback 永远
+自洽。
+
+字节用 base64 而不是文本：控制台的一次读取可能落在多字节字符中间，按 chunk 解码会把接缝
+渲染成替换字符（`terminal-output` 与 `attach` 的 chunk 都因此携带字节）。前端把字节交给
+xterm.js，由它以流式 UTF-8 解码，跨 write 的多字节字符不受影响。
+
+偏移量只数**当前这次运行**的字节：scrollback 是会话的（`docs/LOGGING.md` §8，重启不会
+清空），所以重启后 attach 重放的内容会比 `emitted` 更长——这是有意的，重放覆盖了上一轮
+的输出，而新运行的批次从 0 开始追加，仍然不丢不重。
+
+用户可见行为：切换会话、切到「日志/详情」页签、隐藏窗口后回来，终端既不重复也不丢失已经
+显示过的输出；被丢弃（超出上限）的历史由 `buffer.droppedBytes` 明示。
+
+「有界」有两层含义，这里把两层都定下来：**内存**由结构保证——PTY 输出队列上限
+256 KiB（T02）、会话 scrollback 上限（LOGGING §8）与单批上限 64 KiB 共同封顶，任何
+进程都无法把 Hub 的内存推高；**事件速率**由 relay 的窗口封顶——每会话每 16 ms 至多一批，
+与当前有没有视图挂载无关。第二层刻意**不**做「按需发布」：字节无论如何都必须进
+scrollback（否则切换会话或隐藏窗口回来后看不到），省下的只是序列化与 IPC；如果 T11 的
+性能收尾认为这笔开销值得省，再按「有无视图挂载」门控，而不是现在引入一份「谁在看」的
+状态。
+
+---
+
+## D-020：会话在 UI 里是 config + snapshot 两半；`list_session_configs` 补上 config
+
+**状态：Accepted（2026-09-29，T07 落地时签认）**
+
+窗口渲染一个会话需要两半：它**是什么**（名称、类型、用途、关闭影响、端口、cwd、shell ——
+即校验后的 config）和它**在做什么**（状态、PID、运行时长、缓冲 —— 即 `SessionRuntime`
+snapshot）。T04 起 IPC 只有后者；T07 增加 `list_session_configs`，从**同一注册表**回答前者，
+因此窗口列出的一行一定是 Session Core 能 start/stop/attach 的会话。
+
+后端可用时窗口就以这两半渲染真实会话，后端不可用（浏览器预览、首次列表返回之前）才退回
+T06 的 fixture 工作区——两种来源是同一个 `SessionView` 形状，不是两套模型。
+
+实时会话没有分组（配置 schema 没有 `group` 字段，也没有归属工单），因此统一挂在
+`Configured`（hint `config.yaml`）一个分组下：如实说明来源，而不是发明一套配置并不具备的
+分类。fixture 工作区仍使用参考图里的三个分组，用于与参考图比对。
+
+用户可见行为：应用启动即显示 `config.yaml` 中的真实会话；终端的启动/停止/重启作用于真实
+会话；预览模式下的动作只提示不执行。
 
 ---
 
@@ -392,3 +470,7 @@ V2 参考图（`assets/ui/ui-v2-service.png`、`ui-v2-terminal.png`）产自设�
 5. 更新本文档和相关规范。
 
 设计决策可以变化，但变化必须可追踪。
+
+编号：新增决策取 `docs/DECISIONS.md` 与所有**未合并分支**上已用编号的最大值 +1。
+两条分支同时从同一点分出时，先合并者保持原号，后合并者让号——日志路径这条就因此
+从 D-018 让到了 D-021（T07 先占用了 D-018–D-020）。

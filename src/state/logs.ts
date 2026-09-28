@@ -16,8 +16,8 @@
 
 import type { EffectiveLogModeValue, LogSourceValue } from "../types/config";
 import type { CleanupReportDto, LogStatusDto, RunHistoryEntryDto } from "../types/logs";
-import type { RunRecordDto } from "../types/runtime";
-import type { FixtureSession } from "./fixtures";
+import { isPresent, type RunRecordDto } from "../types/runtime";
+import type { SessionView } from "./session-view";
 import type { StatusTone } from "./derivations";
 
 /** Human label of the effective persistence state (`LOGGING.md` §1.4). */
@@ -116,7 +116,7 @@ export function logPathEntries(status: LogStatusDto): Array<{ label: string; val
       value: current,
     });
   }
-  if (status.sessionLogDir != null) {
+  if (isPresent(status.sessionLogDir)) {
     // An `external` session still has a Hub log folder — the one it does *not*
     // write into. Naming it answers "where would a Hub log go?" without
     // implying one exists there (D-011).
@@ -187,7 +187,7 @@ export function cleanupOutcome(report: CleanupReportDto): string {
 
 /** Whether a run's row can offer the file actions. */
 export function runHasLog(run: RunRecordDto): boolean {
-  return run.logFile != null;
+  return isPresent(run.logFile);
 }
 
 /**
@@ -226,10 +226,13 @@ export function runLogGone(run: RunHistoryEntryDto): boolean {
  * be the invention the rest of the tab is built to avoid.
  */
 export function runFilePathNote(run: RunHistoryEntryDto): string {
-  if (runLogGone(run)) {
+  if (!isPresent(run.logFile)) {
+    return "未落盘";
+  }
+  if (!runLogPresent(run)) {
     return `日志文件不在磁盘上（运行记录保留） · ${run.logFile}`;
   }
-  return run.logFile ?? "未落盘";
+  return run.logFile;
 }
 
 /** Run history, newest first, whatever order the source listed it in. */
@@ -247,7 +250,7 @@ export function runsNewestFirst<T extends RunRecordDto>(runs: T[]): T[] {
  * through exactly the code path a registered one does — which is what makes
  * the fixtures useful for looking at the tab without a live run.
  */
-export function previewLogStatus(session: FixtureSession): LogStatusDto {
+export function previewLogStatus(session: SessionView): LogStatusDto {
   // The snapshot's block, not the config's: it is the same shape a live
   // runtime reports, which is what the tab renders from.
   const logging = session.runtime.logging;
@@ -279,12 +282,12 @@ export function previewLogStatus(session: FixtureSession): LogStatusDto {
  *
  * The same mirror [`previewLogStatus`] is: a fixture record says where a log
  * went, and the file answer comes from the fixture — a run that names a log has
- * one unless the fixture says its file was swept (`FixtureRun`). A run that
+ * one unless the fixture says its file was swept (`SessionRun`). A run that
  * names no log — the `off` terminal's records — answers "nothing to open",
  * exactly as the backend does for one. A preview row is labelled as preview in
  * the tab (`useSessionLogs`), never passed off as a live read.
  */
-export function previewRuns(session: FixtureSession): RunHistoryEntryDto[] {
+export function previewRuns(session: SessionView): RunHistoryEntryDto[] {
   return session.runs.map((run) => ({
     ...run,
     logFilePresent: run.logFilePresent ?? runHasLog(run),
