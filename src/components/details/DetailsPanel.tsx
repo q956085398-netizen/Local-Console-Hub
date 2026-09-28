@@ -6,11 +6,15 @@ import {
   statusTone,
   typeLabel,
 } from "../../state/derivations";
-import { FIXTURE_SESSIONS, type FixtureSession } from "../../state/fixtures";
+import type { SessionView } from "../../state/session-view";
 import "./DetailsPanel.css";
 
 export interface DetailsPanelProps {
-  fixture: FixtureSession;
+  session: SessionView;
+  /** Every rendered session, for the dependency lookup — the same list the
+   * rail is showing, so "depends on X" can never name a session the user
+   * cannot see. */
+  sessions: readonly SessionView[];
 }
 
 /**
@@ -23,13 +27,13 @@ export interface DetailsPanelProps {
  * does not carry: the launch command, run identity, run outcome, PTY state
  * and the scrollback summary.
  */
-export default function DetailsPanel({ fixture }: DetailsPanelProps) {
-  const { config, runtime } = fixture;
-  const deps = dependenciesOf(fixture, FIXTURE_SESSIONS);
+export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
+  const { config, runtime } = session;
+  const deps = dependenciesOf(session, sessions);
 
   const rows: Array<[string, string]> = [
     ["类型", typeLabel(config.sessionType)],
-    ["状态", statusLabel(runtime.status, fixture.busy ?? false, fixture.ready ?? false)],
+    ["状态", statusLabel(runtime.status, session.busy ?? false, session.ready ?? false)],
     ["启动命令", config.command ?? config.shell ?? "—"],
     ["Run", runtime.runId !== undefined ? `run-${runtime.runId}` : "—"],
     ["退出码", runtime.exitCode !== undefined ? String(runtime.exitCode) : "—"],

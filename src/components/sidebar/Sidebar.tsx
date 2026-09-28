@@ -6,7 +6,7 @@ import {
   statusTone,
   type SessionGroup,
 } from "../../state/derivations";
-import type { FixtureSession } from "../../state/fixtures";
+import type { SessionView } from "../../state/session-view";
 import "./Sidebar.css";
 
 export interface SidebarProps {
@@ -86,7 +86,7 @@ export default function Sidebar({
 }
 
 interface SessionRowProps {
-  item: FixtureSession;
+  item: SessionView;
   selected: boolean;
   now: Date;
   onSelect: (sessionId: string) => void;

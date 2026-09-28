@@ -17,7 +17,7 @@ import type {
   SessionRuntimeDto,
   SessionStatusValue,
 } from "../types/runtime";
-import type { FixtureGroup, FixtureSession } from "./fixtures";
+import type { WorkloadGroup, SessionView } from "./session-view";
 
 /** Pip/badge tone semantics (UI_STYLE_GUIDE §10). */
 export type StatusTone = "run" | "busy" | "warn" | "err" | "idle";
@@ -84,7 +84,7 @@ export interface LiveCounts {
 }
 
 /** Count the live summary over sessions carrying runtime + busy flag. */
-export function liveCounts(sessions: FixtureSession[]): LiveCounts {
+export function liveCounts(sessions: SessionView[]): LiveCounts {
   let running = 0;
   let busy = 0;
   for (const session of sessions) {
@@ -177,11 +177,11 @@ export function bufferDiscardNotice(runtime: SessionRuntimeDto): string | null {
   return `更早的输出已被丢弃（${runtime.buffer.droppedBytes} B）`;
 }
 
-/** Sessions this one depends on, resolved from the fixture workspace. */
-export function dependenciesOf(session: FixtureSession, all: FixtureSession[]): FixtureSession[] {
+/** Sessions this one depends on, resolved from the workspace it is rendered in. */
+export function dependenciesOf(session: SessionView, all: readonly SessionView[]): SessionView[] {
   return (session.dependsOn ?? [])
     .map((id) => all.find((candidate) => candidate.config.id === id))
-    .filter((candidate): candidate is FixtureSession => candidate !== undefined);
+    .filter((candidate): candidate is SessionView => candidate !== undefined);
 }
 
 /** Badge label + tone for a run record's outcome. */
@@ -301,7 +301,7 @@ export interface RowMetaChip {
  * effect, otherwise `External` for an application-owned log. The prototype's
  * `Auto` label cannot appear here — `auto` resolves before the frontend
  * (src/types/config.ts), so the row states what is actually happening. */
-export function sidebarRowMeta(session: FixtureSession): RowMetaChip[] {
+export function sidebarRowMeta(session: SessionView): RowMetaChip[] {
   const chips: RowMetaChip[] = [];
   if (session.config.sessionType === "service") {
     chips.push({ text: session.config.port !== undefined ? `:${session.config.port}` : "service" });
@@ -335,14 +335,14 @@ export function runOutcome(run: RunRecordDto): "running" | "ok" | "error" {
 
 /** A sidebar workload group. */
 export interface SessionGroup {
-  group: FixtureGroup;
-  items: FixtureSession[];
+  group: WorkloadGroup;
+  items: SessionView[];
 }
 
 /** Group sessions by workload in the fixture groups' declared order. */
 export function groupSessions(
-  sessions: FixtureSession[],
-  groups: readonly FixtureGroup[],
+  sessions: SessionView[],
+  groups: readonly WorkloadGroup[],
 ): SessionGroup[] {
   return groups
     .map((group) => ({
@@ -353,7 +353,7 @@ export function groupSessions(
 }
 
 /** Filter sessions by name, purpose, port, id or type, case-insensitively. */
-export function filterSessions(sessions: FixtureSession[], rawQuery: string): FixtureSession[] {
+export function filterSessions(sessions: SessionView[], rawQuery: string): SessionView[] {
   const query = rawQuery.trim().toLowerCase();
   if (!query) return sessions;
   return sessions.filter((session) => {

@@ -15,14 +15,11 @@ import {
   sidebarSummaryText,
   titlebarSummaryText,
 } from "../state/derivations";
-import {
-  DEFAULT_SELECTED_SESSION_ID,
-  FIXTURE_GROUPS,
-  FIXTURE_SESSIONS,
-  type FixtureSession,
-} from "../state/fixtures";
+import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
+import { LIVE_GROUP } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
 import { useBackendPing } from "./useBackendPing";
+import { useSessionRegistry } from "./useSessionRegistry";
 import { useMediaQuery } from "./useMediaQuery";
 import "./App.css";
 
@@ -32,15 +29,22 @@ const NOTICE_TIMEOUT_MS = 4000;
 const CLOCK_TICK_MS = 5000;
 
 /**
- * The V2 workspace shell (T06 #7).
+ * The V2 workspace shell (T06 #7, wired to Session Core by T07 #8).
  *
  * Structure per docs/UI_STYLE_GUIDE.md: compact title bar, grouped session
  * sidebar, selected-session workspace (header + 终端/日志/详情 tabs, terminal
- * dominant), minimal status bar. Data is fixture-driven until the runtime
- * tickets land; every fixture value already passes the landed DTO guards, so
- * swapping in live snapshots is a data change only.
+ * dominant), minimal status bar.
+ *
+ * Where the sessions come from is `useSessionRegistry`'s business: the backend's
+ * registry when one is answering, the T06 fixture workspace otherwise. Either
+ * way the shell renders the same `SessionView` shape, and the lifecycle
+ * controls act on Session Core rather than on what the window happens to think.
  */
 export default function App() {
+  const connection = useBackendPing();
+  const registry = useSessionRegistry(connection);
+  const sessions = registry.sessions;
+
   // `#session=<id>` deep link (tray/restore surfaces can target a session).
   const [selectedId, setSelectedId] = useState(
     () =>
@@ -55,7 +59,6 @@ export default function App() {
   const [now, setNow] = useState(() => new Date());
   const narrow = useMediaQuery("(max-width: 767px)");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const connection = useBackendPing();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -68,17 +71,51 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  const filtered = useMemo(() => filterSessions(FIXTURE_SESSIONS, query), [query]);
-  const groups = useMemo(() => groupSessions(filtered, FIXTURE_GROUPS), [filtered]);
-  const selected: FixtureSession =
-    FIXTURE_SESSIONS.find((session) => session.config.id === selectedId) ?? FIXTURE_SESSIONS[0];
-  const counts = useMemo(() => liveCounts(FIXTURE_SESSIONS), []);
+  const filtered = useMemo(() => filterSessions(sessions, query), [sessions, query]);
+  const groups = useMemo(
+    () => groupSessions(filtered, registry.live ? [LIVE_GROUP] : FIXTURE_GROUPS),
+    [filtered, registry.live],
+  );
 
-  /** Fixture mode: actions render from real lifecycle rules but perform
-   * nothing — the runtime tickets (T07/T08) wire them to Session Core. */
-  const onFixtureAction = (label: string) => {
-    setNotice(`Fixture 预览 ·「${label}」将在运行时接入后生效`);
+  // The selection is derived rather than repaired. The workspace can change
+  // under it — a deep link naming a fixture session, then a backend whose
+  // config has no such id — and the honest rendering of "that session is not
+  // here" is the first one that is, not a header for a session the rail cannot
+  // show. `selectedId` keeps whatever the user last chose, so a session that
+  // comes back is still selected.
+  const selected = sessions.find((session) => session.config.id === selectedId) ?? sessions[0];
+  const counts = useMemo(() => liveCounts(sessions), [sessions]);
+
+  /** Preview mode: actions render from the real lifecycle rules but perform
+   * nothing, because there is no run behind them to act on. */
+  const onPreviewAction = (label: string) => {
+    setNotice(`预览模式 ·「${label}」需要连接到后端`);
   };
+
+  if (selected === undefined) {
+    // Nothing to render yet: the backend has not answered and the fixture
+    // workspace is the only other source, so a shell with no sessions means a
+    // config with no sessions in it.
+    return (
+      <div className="app-shell">
+        <TitleBar
+          summary={titlebarSummaryText({ total: 0, running: 0, busy: 0 })}
+          pill={connection.state === "unavailable" ? "preview" : "connected"}
+          narrow={narrow}
+          drawerOpen={drawerOpen}
+          onToggleDrawer={() => setDrawerOpen((open) => !open)}
+        />
+        <div className="app-main">
+          <section className="workspace workspace--empty">
+            <p className="workspace__empty-hint">
+              没有可显示的会话。配置文件中还没有会话，或后端尚未就绪。
+            </p>
+          </section>
+        </div>
+        <StatusBar counts={counts} connection={connection} notice={registry.error ?? notice} />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -109,7 +146,7 @@ export default function App() {
               setSelectedId(sessionId);
               setDrawerOpen(false);
             }}
-            onAdd={() => onFixtureAction("新建会话")}
+            onAdd={() => onPreviewAction("新建会话")}
           />
         </div>
         <section className="workspace">
@@ -119,19 +156,54 @@ export default function App() {
             busy={selected.busy ?? false}
             ready={selected.ready ?? false}
             now={now}
-            onAction={onFixtureAction}
+            onAction={(label) => {
+              if (!registry.live) {
+                onPreviewAction(label);
+                return;
+              }
+              // The controls carry a label rather than a command because they
+              // render the same in both modes; the mapping to Session Core's
+              // named operations is here, in one place, where the rest of the
+              // wiring lives.
+              switch (label) {
+                case "启动":
+                  registry.start(selected.config.id);
+                  break;
+                case "停止":
+                  registry.stop(selected.config.id);
+                  break;
+                case "重启":
+                  registry.restart(selected.config.id);
+                  break;
+                case "强制结束进程树":
+                  registry.forceStop(selected.config.id);
+                  break;
+                default:
+                  onPreviewAction(label);
+              }
+            }}
             onFocusTerminal={() => setTab("terminal")}
             onOpenLogs={() => setTab("logs")}
           />
           <WorkspaceTabs active={tab} onChange={setTab} />
           <div className="workspace__content">
-            {tab === "terminal" && <TerminalHost fixture={selected} onAction={onFixtureAction} />}
-            {tab === "logs" && <LogsPanel fixture={selected} onAction={onFixtureAction} />}
-            {tab === "details" && <DetailsPanel fixture={selected} />}
+            {tab === "terminal" && (
+              <TerminalHost
+                session={selected}
+                live={registry.live}
+                onStart={() =>
+                  registry.live
+                    ? registry.start(selected.config.id)
+                    : onPreviewAction(`启动 ${selected.config.name}`)
+                }
+              />
+            )}
+            {tab === "logs" && <LogsPanel session={selected} onAction={onPreviewAction} />}
+            {tab === "details" && <DetailsPanel session={selected} sessions={sessions} />}
           </div>
         </section>
       </div>
-      <StatusBar counts={counts} connection={connection} notice={notice} />
+      <StatusBar counts={counts} connection={connection} notice={registry.error ?? notice} />
     </div>
   );
 }

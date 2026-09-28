@@ -1,51 +1,24 @@
 /**
  * Fixture workspace data for the V2 UI shell (T06 #7).
  *
- * Parallel-safe by design (#7): every config/runtime/run value passes the
- * landed DTO guards, so swapping this module for real `list_sessions` /
- * event payloads (T07–T10) is a data change, not a model change. The cast,
- * wording and buffer content mirror the approved V2 prototype's demo data
- * (E:/Grok-UI-Design/LocalConsoleHub, the source of the reference
- * screenshots) so the shell can be compared against them visually.
+ * This is the workspace the app renders when no backend is answering — the
+ * browser preview, and the moment before the first `list_session_configs`
+ * returns. When a backend *is* answering, T07 (#8) renders its sessions
+ * instead (`src/app/useSessionRegistry.ts`), and the terminal attaches to the
+ * real PTY rather than showing these preview lines.
  *
- * Fields the landed DTOs do not carry yet are confined to this module and
- * documented inline; each moves into a DTO when its ticket lands:
- *   - `group` / `dependsOn` — config concerns (T01 follow-up);
- *   - `busy` / `ready` — runtime flags, spec §4 (T08);
- *   - `lines` — the live PTY stream (T07).
+ * Every config/runtime/run value here passes the landed DTO guards, so the two
+ * sources are the same model and the shell renders either one: what changes is
+ * where the data came from, not what it is. The cast, wording and buffer
+ * content mirror the approved V2 prototype's demo data
+ * (E:/Grok-UI-Design/LocalConsoleHub, the source of the reference screenshots)
+ * so the shell can be compared against them visually.
  *
  * Timestamps are minted relative to module load so uptimes stay plausible
  * (3h 12m, 2h 14m, 12m …) without becoming clock fixtures.
  */
 
-import type { SessionConfigDto } from "../types/config";
-import type { RunRecordDto, SessionRuntimeDto } from "../types/runtime";
-
-/** One line of terminal preview; T07 replaces this with the PTY stream. */
-export interface TerminalPreviewLine {
-  kind: "sys" | "out" | "err" | "in";
-  text: string;
-}
-
-/** Workload group of the sidebar (labels and hints from the V2 prototype). */
-export interface FixtureGroup {
-  id: string;
-  label: string;
-  hint: string;
-}
-
-/** One fixture session: DTOs plus the documented UI-only extras above. */
-export interface FixtureSession {
-  config: SessionConfigDto;
-  runtime: SessionRuntimeDto;
-  /** Newest last; mirrors the run history T10 will read from the backend. */
-  runs: RunRecordDto[];
-  group: string;
-  busy?: boolean;
-  ready?: boolean;
-  dependsOn?: string[];
-  lines?: TerminalPreviewLine[];
-}
+import type { SessionView, WorkloadGroup } from "./session-view";
 
 function iso(relativeMs: number): string {
   return new Date(Date.now() - relativeMs).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -55,13 +28,13 @@ const H = 3600 * 1000;
 const M = 60 * 1000;
 const DAY = 24 * H;
 
-export const FIXTURE_GROUPS: readonly FixtureGroup[] = [
+export const FIXTURE_GROUPS: readonly WorkloadGroup[] = [
   { id: "ai", label: "AI Apps", hint: "长期本地模型与 WebUI" },
   { id: "debug", label: "Debug / Test", hint: "临时接口与调试壳" },
   { id: "temp", label: "Temporary", hint: "用完即走的终端" },
 ];
 
-export const FIXTURE_SESSIONS: FixtureSession[] = [
+export const FIXTURE_SESSIONS: SessionView[] = [
   {
     group: "ai",
     config: {
