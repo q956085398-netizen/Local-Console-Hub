@@ -139,7 +139,11 @@ impl OutputRelay {
     }
 
     /// Bytes taken but not yet published.
-    pub fn pending_bytes(&self) -> usize {
+    ///
+    /// For the tests that pin the relay's timing: production code asks what is
+    /// *due* (`take`/`drain`) and never what is merely pending.
+    #[cfg(test)]
+    fn pending_bytes(&self) -> usize {
         self.pending.len()
     }
 
@@ -203,6 +207,19 @@ impl OutputRelay {
     fn window_elapsed(&self, now: Instant) -> bool {
         self.opened_at
             .is_some_and(|opened| now.saturating_duration_since(opened) >= BATCH_WINDOW)
+    }
+
+    /// Take every batch that is due, oldest first.
+    ///
+    /// The loop a caller otherwise writes itself, in the one place that can be
+    /// sure it terminates: each round takes at least one byte off the front, so
+    /// a caller cannot end up spinning on a batch that is not due.
+    pub fn drain(&mut self, now: Instant, force: bool) -> Vec<OutputBatch> {
+        let mut batches = Vec::new();
+        while let Some(batch) = self.take(now, force) {
+            batches.push(batch);
+        }
+        batches
     }
 
     /// Split the front of the pending bytes off as a batch.

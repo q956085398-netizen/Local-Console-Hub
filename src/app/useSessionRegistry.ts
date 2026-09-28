@@ -17,8 +17,15 @@ export interface SessionRegistry {
   /** The sessions to render, in the registry's order. */
   sessions: SessionView[];
   /**
-   * Whether these come from the backend. `false` means no backend is
-   * answering and the workspace is the T06 fixture preview.
+   * Where `sessions` came from. `"preview"` is the T06 fixture workspace: no
+   * backend is answering yet, or none ever will (the browser).
+   */
+  source: SessionSource;
+  /**
+   * Whether a backend is answering at all — a different question from where
+   * the list came from, and both are asked. The terminal attaches to whatever
+   * session is selected as soon as there is a backend, while the rail only
+   * calls itself the backend's once the listing has landed.
    */
   live: boolean;
   /** The most recent failed action, for the status bar. */
@@ -27,8 +34,10 @@ export interface SessionRegistry {
   stop(sessionId: string): void;
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
-  clearError(): void;
 }
+
+/** Where the rendered sessions came from. */
+export type SessionSource = "preview" | "backend";
 
 /**
  * The session workspace, from Session Core when there is one to ask (T07 #8).
@@ -51,6 +60,7 @@ export interface SessionRegistry {
 export function useSessionRegistry(connection: BackendConnection): SessionRegistry {
   const live = connection.state === "connected";
   const [sessions, setSessions] = useState<SessionView[]>(() => FIXTURE_SESSIONS);
+  const [source, setSource] = useState<SessionSource>("preview");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -60,6 +70,10 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     let cancelled = false;
 
     const applySnapshot = (runtime: SessionRuntimeDto) => {
+      // The session moved, so whatever went wrong with it has been answered by
+      // something newer than the message. Leaving it up would have the status
+      // bar report a failure the app has already moved past.
+      setError(null);
       setSessions((current) => {
         const index = current.findIndex((view) => view.config.id === runtime.sessionId);
         if (index < 0) {
@@ -96,6 +110,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
         if (!Array.isArray(runtimes) || !runtimes.every(isSessionRuntimeDto)) {
           throw new Error("list_sessions 返回了无法识别的载荷");
         }
+        setSource("backend");
         setSessions(sessionsFromLive(configs, runtimes));
       } catch (cause) {
         if (!cancelled) {
@@ -121,14 +136,14 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
   return useMemo<SessionRegistry>(
     () => ({
       sessions,
+      source,
       live,
       error,
       start: (sessionId) => run("start_session", sessionId),
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
       forceStop: (sessionId) => run("force_stop_session", sessionId),
-      clearError: () => setError(null),
     }),
-    [sessions, live, error, run],
+    [sessions, source, live, error, run],
   );
 }

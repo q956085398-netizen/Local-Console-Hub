@@ -1044,11 +1044,7 @@ impl SessionCore {
             if state.generation != generation {
                 return;
             }
-            let mut batches = Vec::new();
-            while let Some(batch) = state.relay.take(Instant::now(), force) {
-                batches.push(batch);
-            }
-            batches
+            state.relay.drain(Instant::now(), force)
         };
 
         for batch in &batches {
@@ -1279,6 +1275,13 @@ impl SessionCore {
     /// Answering for a session that is not running is deliberate: the view
     /// renders the last run's scrollback under its "not running" state rather
     /// than an empty panel that pretends there is nothing to see.
+    ///
+    /// The scrollback is the *session's*, not the run's (`docs/LOGGING.md` §8
+    /// keeps it across a restart), so after a restart the replay holds earlier
+    /// runs' bytes as well and covers more than `emitted` — which counts this
+    /// run's stream from zero. That is the intended reading, and it is why the
+    /// rule above is about offsets into *one run's* stream rather than about
+    /// how much text the view has rendered.
     pub fn terminal_attachment(
         &self,
         session_id: &str,
@@ -1294,10 +1297,7 @@ impl SessionCore {
         let (attached, batches) = {
             let mut state = lock(&handle);
 
-            let mut batches = Vec::new();
-            while let Some(batch) = state.relay.take(Instant::now(), true) {
-                batches.push(batch);
-            }
+            let batches = state.relay.drain(Instant::now(), true);
 
             let (chunks, summary) = {
                 let buffer = lock(&state.buffer);
@@ -3574,6 +3574,7 @@ mod tests {
     mod terminal_tests {
         use super::*;
         use crate::pty::INTERRUPT_BYTE;
+        use base64::Engine;
 
         /// The absolute path T02's tests use, so these do not depend on how
         /// PATH happens to be set in the environment the tests run in.
@@ -3647,9 +3648,19 @@ mod tests {
         /// wait — the echoed command line cannot (`LCH-ECHO-` + `1A` never
         /// appears literally in what was sent).
         fn expect_in_scrollback(core: &SessionCore, id: &str, marker: &str) {
-            wait_until(&format!("`{marker}` to render"), || {
-                scrollback(core, id).contains(marker)
-            });
+            let deadline = std::time::Instant::now() + STARTUP;
+            while std::time::Instant::now() < deadline {
+                if scrollback(core, id).contains(marker) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            // The transcript, so a failure here says what the shell did
+            // instead of only what was expected of it.
+            panic!(
+                "the terminal never showed `{marker}`, saw: {:?}",
+                scrollback(core, id)
+            );
         }
 
         /// Send one command line, the way a terminal sends Enter.
@@ -3720,6 +3731,55 @@ mod tests {
                 "Ctrl+C must not close the session"
             );
             assert!(runtime.pty_attached);
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// The other half of the Ctrl+C criterion: it has to actually
+        /// *interrupt* what the shell is running (`MVP §16`, "Ctrl+C interrupts
+        /// a long-running command") — at the session level, not just at the
+        /// layer below.
+        ///
+        /// The running command sleeps for five minutes. The follow-up command
+        /// can only answer within [`STARTUP`] if the interrupt reached the
+        /// shell and gave the prompt back; without it the test times out rather
+        /// than passing late.
+        #[test]
+        fn ctrl_c_interrupts_the_command_that_is_running() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            expect_in_scrollback(&core, "term", "PS");
+
+            // The marker proves the pipeline is *executing* before the
+            // interrupt arrives, rather than still being typed — the same
+            // shape T02's own Ctrl+C test uses.
+            send(
+                &core,
+                "term",
+                "Write-Host (\"LCH-STARTED-\" + \"CTRLC\"); Start-Sleep -Seconds 300;                  Write-Host (\"LCH-NEVER-\" + \"CTRLC\")",
+            );
+            expect_in_scrollback(&core, "term", "LCH-STARTED-CTRLC");
+
+            core.terminal_write("term", &[INTERRUPT_BYTE])
+                .expect("the interrupt reaches the terminal");
+            // Only then is a follow-up command meaningful: sending it earlier
+            // races the console host's interrupt handling, which flushes
+            // pending input (the quirk T02's own test records).
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            send(&core, "term", "Write-Host (\"LCH-RESUMED-\" + \"CTRLC\")");
+
+            expect_in_scrollback(&core, "term", "LCH-RESUMED-CTRLC");
+            // The sleep was cancelled, so the marker after it never ran. Only
+            // the executed command could print it: the echoed line splits the
+            // literals, so the echo cannot satisfy this.
+            assert!(
+                !scrollback(&core, "term").contains("LCH-NEVER-CTRLC"),
+                "the interrupted command's tail must not run"
+            );
+            assert_eq!(
+                core.snapshot("term").expect("registered").status,
+                SessionStatus::Running
+            );
 
             core.stop("term").expect("cleanup");
         }
@@ -3824,17 +3884,11 @@ mod tests {
             let replayed: usize = attached
                 .chunks
                 .iter()
-                .map(|chunk| {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(&chunk.data)
-                        .expect("chunks arrive as base64")
-                        .len()
-                })
+                .map(|chunk| chunk_text(chunk).len())
                 .sum();
             assert_eq!(
                 replayed as u64, attached.emitted,
-                "the offset must be exactly what the replay covers"
+                "one run in, the offset is exactly what the replay covers"
             );
 
             send(&core, "term", "Write-Host (\"LCH-AFTER-\" + \"ATTACH\")");
@@ -3878,7 +3932,56 @@ mod tests {
             core.stop("term").expect("cleanup");
         }
 
-        /// A view measures itself before the session starts, and a shell
+        /// After a restart, the offsets start over while the scrollback does
+        /// not.
+        ///
+        /// The scrollback belongs to the *session* (`docs/LOGGING.md` §8 keeps
+        /// it across a restart), so a view attaching afterwards replays the
+        /// previous run's bytes too — while `emitted` counts the new run from
+        /// zero. The rule still holds, and this is the case that would break if
+        /// the offset were read as "how much text the view has rendered": the
+        /// new run's very first batch ends past the offset and must be
+        /// appended, not dropped as already shown.
+        #[test]
+        fn an_attachment_after_a_restart_counts_the_new_run_from_zero() {
+            let (core, sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            send(&core, "term", "Write-Host (\"LCH-FIRST-\" + \"RUN\")");
+            expect_in_scrollback(&core, "term", "LCH-FIRST-RUN");
+
+            core.restart("term").expect("restart succeeds");
+            let attached = core
+                .terminal_attachment("term")
+                .expect("the session attaches");
+
+            let replayed: String = attached.chunks.iter().map(chunk_text).collect();
+            assert!(
+                replayed.contains("LCH-FIRST-RUN"),
+                "the session's scrollback survives a restart: {replayed:?}"
+            );
+            assert!(
+                replayed.len() as u64 >= attached.emitted,
+                "the replay covers earlier runs as well as this one"
+            );
+
+            let after = sink.events().len();
+            send(&core, "term", "Write-Host (\"LCH-SECOND-\" + \"RUN\")");
+            wait_until("the new run's output to be published", || {
+                sink.events().iter().skip(after).any(|event| {
+                    matches!(
+                        event,
+                        SessionEvent::TerminalOutput(output)
+                            if output.generation == attached.generation
+                                && output.end > attached.emitted
+                    )
+                })
+            });
+            expect_in_scrollback(&core, "term", "LCH-SECOND-RUN");
+
+            core.stop("term").expect("cleanup");
+        }
+
+        /// A view measures itself before its session starts, and a shell
         /// started at the default 80×24 and corrected a moment later is not the
         /// same screen — so the size is remembered rather than dropped.
         #[test]
@@ -4017,6 +4120,34 @@ mod tests {
             core.stop("term").expect("cleanup");
         }
 
+        /// Spec §6 requires Unicode **input** as well as output: a keystroke is
+        /// a byte, and the session must carry it to the shell rather than
+        /// mangling it on the way in.
+        ///
+        /// The command is sent as UTF-8 bytes through `terminal_write` and asks
+        /// the shell to echo what it received as characters — so the assertion
+        /// only holds if the bytes arrived intact. The characters are compared
+        /// by code point (`[int][char]`) rather than by their shape, which
+        /// keeps the test about the transport rather than about how this
+        /// machine's console renders CJK text.
+        #[test]
+        fn non_ascii_input_reaches_the_shell() {
+            let (core, _sink) = core_with_terminal("term", |_| {});
+            core.start("term").expect("start succeeds");
+            expect_in_scrollback(&core, "term", "PS");
+
+            // Typed as input, exactly as a paste would arrive.
+            send(
+                &core,
+                "term",
+                "$t = '中文✓'; $c = ($t.ToCharArray() | ForEach-Object { [int]$_ }) -join '-';                  Write-Host (\"LCH-IN-\" + $c)",
+            );
+
+            // 中 = 0x4E2D, 文 = 0x6587, ✓ = 0x2713.
+            expect_in_scrollback(&core, "term", "LCH-IN-20013-25991-10003");
+            core.stop("term").expect("cleanup");
+        }
+
         /// Spec §14: "one high-output session must not freeze the whole UI",
         /// and §9: output must be "batched enough that high-volume output does
         /// not create an expensive UI event per line".
@@ -4088,7 +4219,6 @@ mod tests {
 
         /// One retained chunk as text, for assertions about a replay.
         fn chunk_text(chunk: &RetainedChunk) -> String {
-            use base64::Engine;
             String::from_utf8_lossy(
                 &base64::engine::general_purpose::STANDARD
                     .decode(&chunk.data)
@@ -4099,7 +4229,6 @@ mod tests {
 
         /// The bytes one published batch carries.
         fn batch_bytes(batch: &TerminalOutput) -> usize {
-            use base64::Engine;
             base64::engine::general_purpose::STANDARD
                 .decode(&batch.data)
                 .expect("batches arrive as base64")

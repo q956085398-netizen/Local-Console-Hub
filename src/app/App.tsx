@@ -15,6 +15,7 @@ import {
   sidebarSummaryText,
   titlebarSummaryText,
 } from "../state/derivations";
+import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
 import { LIVE_GROUP } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
@@ -73,8 +74,8 @@ export default function App() {
 
   const filtered = useMemo(() => filterSessions(sessions, query), [sessions, query]);
   const groups = useMemo(
-    () => groupSessions(filtered, registry.live ? [LIVE_GROUP] : FIXTURE_GROUPS),
-    [filtered, registry.live],
+    () => groupSessions(filtered, registry.source === "backend" ? [LIVE_GROUP] : FIXTURE_GROUPS),
+    [filtered, registry.source],
   );
 
   // The selection is derived rather than repaired. The workspace can change
@@ -90,6 +91,39 @@ export default function App() {
    * nothing, because there is no run behind them to act on. */
   const onPreviewAction = (label: string) => {
     setNotice(`预览模式 ·「${label}」需要连接到后端`);
+  };
+
+  /**
+   * What a session control was asked for.
+   *
+   * The lifecycle actions are Session Core's named operations; the rest are
+   * either this shell's own business (a new session: there is no config writer
+   * yet) or a later ticket's (opening a URL or a directory needs a backend
+   * command, T08/T10), and saying so is better than a button that appears to
+   * work.
+   */
+  const onSessionAction = (action: SessionAction) => {
+    const label = SESSION_ACTION_LABELS[action];
+    if (!registry.live) {
+      onPreviewAction(label);
+      return;
+    }
+    switch (action) {
+      case "start":
+        registry.start(selected.config.id);
+        break;
+      case "stop":
+        registry.stop(selected.config.id);
+        break;
+      case "restart":
+        registry.restart(selected.config.id);
+        break;
+      case "force-stop":
+        registry.forceStop(selected.config.id);
+        break;
+      default:
+        setNotice(`「${label}」尚未接入`);
+    }
   };
 
   if (selected === undefined) {
@@ -146,7 +180,7 @@ export default function App() {
               setSelectedId(sessionId);
               setDrawerOpen(false);
             }}
-            onAdd={() => onPreviewAction("新建会话")}
+            onAdd={() => onSessionAction("new-session")}
           />
         </div>
         <section className="workspace">
@@ -156,32 +190,7 @@ export default function App() {
             busy={selected.busy ?? false}
             ready={selected.ready ?? false}
             now={now}
-            onAction={(label) => {
-              if (!registry.live) {
-                onPreviewAction(label);
-                return;
-              }
-              // The controls carry a label rather than a command because they
-              // render the same in both modes; the mapping to Session Core's
-              // named operations is here, in one place, where the rest of the
-              // wiring lives.
-              switch (label) {
-                case "启动":
-                  registry.start(selected.config.id);
-                  break;
-                case "停止":
-                  registry.stop(selected.config.id);
-                  break;
-                case "重启":
-                  registry.restart(selected.config.id);
-                  break;
-                case "强制结束进程树":
-                  registry.forceStop(selected.config.id);
-                  break;
-                default:
-                  onPreviewAction(label);
-              }
-            }}
+            onAction={onSessionAction}
             onFocusTerminal={() => setTab("terminal")}
             onOpenLogs={() => setTab("logs")}
           />
