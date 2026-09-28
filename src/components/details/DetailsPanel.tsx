@@ -1,7 +1,8 @@
 import {
-  formatDuration,
+  dependenciesOf,
   logModeLabel,
   logSourceLabel,
+  statusLabel,
   statusTone,
   typeLabel,
 } from "../../state/derivations";
@@ -10,41 +11,44 @@ import "./DetailsPanel.css";
 
 export interface DetailsPanelProps {
   fixture: FixtureSession;
-  now: Date;
 }
 
 /**
- * Details tab: identity, close impact, dependencies and low-frequency
- * technical metadata (UI_STYLE_GUIDE §6) — the information that must stay off
- * the terminal surface without earning a permanent side panel. Dependency
- * status is read from the same fixture the sidebar renders (T08 owns the
- * real dependency model).
+ * Details tab: identity, close impact, dependencies and the *low-frequency*
+ * technical fields (UI_STYLE_GUIDE §6).
+ *
+ * Deliberately does not repeat the header's live metadata line — PID, port,
+ * uptime, cwd and effective log policy are already visible one tab across
+ * (§13 forbids excessive duplication). What lives here is what the header
+ * does not carry: the launch command, run identity, run outcome, PTY state
+ * and the scrollback summary.
  */
-export default function DetailsPanel({ fixture, now }: DetailsPanelProps) {
+export default function DetailsPanel({ fixture }: DetailsPanelProps) {
   const { config, runtime } = fixture;
-  const deps = (fixture.dependsOn ?? [])
-    .map((id) => FIXTURE_SESSIONS.find((session) => session.config.id === id))
-    .filter((session): session is FixtureSession => session !== undefined);
+  const deps = dependenciesOf(fixture, FIXTURE_SESSIONS);
 
   const rows: Array<[string, string]> = [
     ["类型", typeLabel(config.sessionType)],
-    ["状态", runtime.status + (fixture.busy ? " · busy" : fixture.ready ? " · ready" : "")],
-    ["PID", runtime.pid !== undefined ? String(runtime.pid) : "—"],
-    ["Run", runtime.runId !== undefined ? `run-${runtime.runId}` : "—"],
-    ["端口", config.port !== undefined ? String(config.port) : "—"],
-    ["URL", config.url ?? "—"],
-    ["工作目录", config.cwd ?? "—"],
+    ["状态", statusLabel(runtime.status, fixture.busy ?? false, fixture.ready ?? false)],
     ["启动命令", config.command ?? config.shell ?? "—"],
+    ["Run", runtime.runId !== undefined ? `run-${runtime.runId}` : "—"],
+    ["退出码", runtime.exitCode !== undefined ? String(runtime.exitCode) : "—"],
+    ["PTY", runtime.ptyAttached ? "attached" : "未附加"],
     [
       "日志模式",
       `${logModeLabel(runtime.logging.mode)} / ${logSourceLabel(runtime.logging.source)}`,
     ],
     [
-      "运行时长",
-      runtime.startedAt !== undefined && runtime.status === "running"
-        ? formatDuration(runtime.startedAt, now)
-        : "—",
+      "内存缓冲",
+      `${runtime.buffer.lines} 行 · ${runtime.buffer.bytes} B${
+        runtime.buffer.droppedBytes > 0 ? ` · 已丢弃 ${runtime.buffer.droppedBytes} B` : ""
+      }`,
     ],
+    ...(runtime.lastError !== undefined
+      ? ([[`最近错误（${runtime.lastError.operation}）`, runtime.lastError.message]] as Array<
+          [string, string]
+        >)
+      : []),
   ];
 
   return (
@@ -53,6 +57,15 @@ export default function DetailsPanel({ fixture, now }: DetailsPanelProps) {
         <p className="details-panel__eyebrow">它是谁</p>
         <h3 className="details-panel__name">{config.name}</h3>
         <p className="details-panel__purpose">{config.purpose ?? "—"}</p>
+        <p className="details-panel__identity">
+          <span className="details-panel__mono">{config.cwd ?? "—"}</span>
+          {config.url !== undefined && (
+            <>
+              {" · "}
+              <span className="details-panel__mono">{config.url}</span>
+            </>
+          )}
+        </p>
       </div>
 
       <div className="details-panel__impact">
@@ -73,7 +86,7 @@ export default function DetailsPanel({ fixture, now }: DetailsPanelProps) {
                 <span
                   className={`badge badge--${statusTone(dep.runtime.status, dep.busy ?? false)}`}
                 >
-                  {dep.runtime.status}
+                  {statusLabel(dep.runtime.status, dep.busy ?? false, dep.ready ?? false)}
                 </span>
               </li>
             ))}

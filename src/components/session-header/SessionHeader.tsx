@@ -5,7 +5,6 @@ import type { SessionRuntimeDto } from "../../types/runtime";
 import {
   availableActions,
   headerCallout,
-  isLive,
   metadataPairs,
   statusLabel,
   statusTone,
@@ -54,8 +53,6 @@ export default function SessionHeader({
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [menuOpen]);
 
-  const live = isLive(runtime.status);
-
   return (
     <header className="session-header">
       <div className="session-header__top">
@@ -84,7 +81,7 @@ export default function SessionHeader({
             <button
               type="button"
               className="btn btn--secondary btn--sm"
-              disabled={runtime.status === "stopping"}
+              disabled={actions.stopDisabled}
               onClick={() => onAction("停止")}
             >
               <Square size={14} />
@@ -94,6 +91,8 @@ export default function SessionHeader({
           <button
             type="button"
             className="btn btn--secondary btn--sm"
+            disabled={!actions.restart}
+            title={actions.restart ? undefined : "需等待上一次运行结束"}
             onClick={() => onAction("重启")}
           >
             <RotateCw size={14} />
@@ -110,15 +109,17 @@ export default function SessionHeader({
               打开网页
             </button>
           )}
-          <button
-            type="button"
-            className="btn btn--secondary btn--sm"
-            title={config.cwd}
-            onClick={() => onAction("打开目录")}
-          >
-            <FolderOpen size={14} />
-            目录
-          </button>
+          {actions.directory && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              title={config.cwd}
+              onClick={() => onAction("打开目录")}
+            >
+              <FolderOpen size={14} />
+              目录
+            </button>
+          )}
           <div className="session-header__more" ref={menuRef}>
             <button
               type="button"
@@ -177,8 +178,8 @@ export default function SessionHeader({
                 <div className="more-menu__separator" role="separator" />
                 <MenuItem
                   destructive
-                  disabled={!live}
-                  title={live ? "只作用于本会话的受管进程树" : "仅运行中的会话可用"}
+                  disabled={!actions.forceStop}
+                  title={actions.forceStop ? "只作用于本会话的受管进程树" : "仅运行中的会话可用"}
                   onSelect={() => {
                     setMenuOpen(false);
                     onAction("强制结束进程树");

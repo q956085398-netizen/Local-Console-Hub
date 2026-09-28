@@ -1,5 +1,11 @@
 import { Copy, FolderOpen, ScrollText, Trash2 } from "lucide-react";
-import { logModeLabel, logSourceLabel, loggingHeadline, runOutcome } from "../../state/derivations";
+import {
+  logPolicyBadge,
+  logSourceLabel,
+  loggingHeadline,
+  runOutcome,
+  runOutcomeBadge,
+} from "../../state/derivations";
 import type { FixtureSession } from "../../state/fixtures";
 import "./LogsPanel.css";
 
@@ -24,18 +30,13 @@ export default function LogsPanel({ fixture, onAction }: LogsPanelProps) {
     (run) => run.logFile !== undefined || runOutcome(run) === "error" || logging.source !== "none",
   );
   const current = runs.find((run) => run.runId === runtime.runId) ?? runs[runs.length - 1];
-  const capturing =
-    runtime.status === "running" &&
-    logging.source === "captured" &&
-    (logging.mode === "always" || logging.mode === "manual");
-  const policyTone = capturing ? "run" : logging.mode === "off" ? "idle" : "warn";
-  const policyLabel = capturing ? "Capturing" : logModeLabel(logging.mode);
+  const policy = logPolicyBadge(logging, runtime.status);
 
   return (
     <div className="logs-panel">
       <div className="logs-panel__policy">
         <div className="logs-panel__badges">
-          <span className={`badge badge--${policyTone}`}>{policyLabel}</span>
+          <span className={`badge badge--${policy.tone}`}>{policy.label}</span>
           <span className="badge badge--outline">{logSourceLabel(logging.source)}</span>
           <span className="badge badge--outline">stdin 不记录</span>
         </div>
@@ -96,17 +97,13 @@ export default function LogsPanel({ fixture, onAction }: LogsPanelProps) {
             </li>
           ) : (
             [...visibleRuns].reverse().map((run) => {
-              const outcome = runOutcome(run);
+              const outcome = runOutcomeBadge(run);
               return (
                 <li key={run.runId} className="logs-panel__run">
                   <div className="logs-panel__run-top">
                     <div className="logs-panel__run-id">
                       <span className="logs-panel__run-name">run-{run.runId}</span>
-                      <span
-                        className={`badge badge--${outcome === "running" ? "run" : outcome === "error" ? "err" : "idle"}`}
-                      >
-                        {outcome === "running" ? "running" : outcome === "error" ? "error" : "ok"}
-                      </span>
+                      <span className={`badge badge--${outcome.tone}`}>{outcome.label}</span>
                     </div>
                     <span className="logs-panel__run-time">{formatClock(run.startedAt)}</span>
                   </div>

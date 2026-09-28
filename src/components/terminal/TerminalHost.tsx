@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Play } from "lucide-react";
+import { bufferDiscardNotice, ptyChromeLabel } from "../../state/derivations";
 import type { FixtureSession } from "../../state/fixtures";
 import "./TerminalHost.css";
 
@@ -21,6 +22,7 @@ export default function TerminalHost({ fixture, onAction }: TerminalHostProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const lines = fixture.lines ?? [];
   const live = fixture.runtime.status === "running";
+  const discardNotice = bufferDiscardNotice(fixture.runtime);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -30,12 +32,10 @@ export default function TerminalHost({ fixture, onAction }: TerminalHostProps) {
   return (
     <div className="terminal-host">
       <div className="terminal-host__chrome">
-        <p className="terminal-host__mode">
-          {fixture.config.sessionType === "terminal"
-            ? "ConPTY · interactive"
-            : "PTY attached · stdin 可用"}
+        <p className="terminal-host__mode">{ptyChromeLabel(fixture.config, fixture.runtime)}</p>
+        <p className="terminal-host__state">
+          {discardNotice ?? (live ? "connected" : fixture.runtime.status)}
         </p>
-        <p className="terminal-host__state">{live ? "connected" : fixture.runtime.status}</p>
       </div>
       <div className="terminal-host__body" ref={bodyRef}>
         {lines.map((line, index) => (

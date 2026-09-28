@@ -16,7 +16,7 @@
  * together with it.
  */
 
-import type { EffectiveLogModeValue, LogSourceValue } from "./config";
+import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue } from "./config";
 
 /** Lifecycle states, serialized snake_case by `SessionStatus`. */
 export type SessionStatusValue =
@@ -112,13 +112,11 @@ export function isRuntimeEffectiveLoggingDto(value: unknown): value is RuntimeEf
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  const modes: readonly unknown[] = ["off", "always", "on_error", "manual"];
-  const sources: readonly unknown[] = ["none", "captured", "external"];
   return (
     typeof candidate.mode === "string" &&
-    modes.includes(candidate.mode) &&
+    LOG_MODES.includes(candidate.mode as EffectiveLogModeValue) &&
     typeof candidate.source === "string" &&
-    sources.includes(candidate.source) &&
+    LOG_SOURCES.includes(candidate.source as LogSourceValue) &&
     optionalString(candidate, "external_path")
   );
 }
@@ -196,8 +194,6 @@ export function isRunRecordDto(value: unknown): value is RunRecordDto {
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  const modes: readonly unknown[] = ["off", "always", "on_error", "manual"];
-  const sources: readonly unknown[] = ["none", "captured", "external"];
   return (
     typeof candidate.runId === "string" &&
     typeof candidate.sessionId === "string" &&
@@ -206,9 +202,9 @@ export function isRunRecordDto(value: unknown): value is RunRecordDto {
     optionalInteger(candidate, "exitCode") &&
     optionalInteger(candidate, "pid") &&
     typeof candidate.logMode === "string" &&
-    modes.includes(candidate.logMode) &&
+    LOG_MODES.includes(candidate.logMode as EffectiveLogModeValue) &&
     typeof candidate.logSource === "string" &&
-    sources.includes(candidate.logSource) &&
+    LOG_SOURCES.includes(candidate.logSource as LogSourceValue) &&
     optionalString(candidate, "logFile")
   );
 }

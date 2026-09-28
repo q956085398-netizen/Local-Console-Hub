@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { SessionConfigDto } from "../types/config";
-import type { RunRecordDto, SessionRuntimeDto } from "../types/runtime";
+import type { EffectiveLoggingDto, SessionConfigDto } from "../types/config";
+import type { RunRecordDto, RuntimeEffectiveLoggingDto, SessionRuntimeDto } from "../types/runtime";
 import {
   availableActions,
+  bufferDiscardNotice,
+  dependenciesOf,
   filterSessions,
   formatDuration,
   groupSessions,
@@ -12,10 +14,13 @@ import {
   isLive,
   liveCounts,
   logModeLabel,
+  logPolicyBadge,
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
+  ptyChromeLabel,
   runOutcome,
+  runOutcomeBadge,
   sidebarRowMeta,
   sidebarSummaryText,
   statusLabel,
@@ -55,13 +60,31 @@ function runtime(overrides: Partial<SessionRuntimeDto> = {}): SessionRuntimeDto 
   };
 }
 
+/** Config-side logging block in the runtime's wire casing (see runtime.ts). */
+function toRuntimeLogging(logging: EffectiveLoggingDto): RuntimeEffectiveLoggingDto {
+  return { mode: logging.mode, source: logging.source, external_path: logging.externalPath };
+}
+
+/**
+ * A fixture whose snapshot logging is seeded from its config — mirroring the
+ * backend, where `SessionRuntime::stopped` takes the validated effective
+ * logging. Tests that need the two to diverge (a live run overriding the
+ * config) pass an explicit `runtime` override.
+ */
 function fixture(overrides: Partial<FixtureSession> = {}): FixtureSession {
+  const resolved = overrides.config ?? config();
   return {
-    config: config(),
-    runtime: runtime(),
-    runs: [],
-    group: "ai",
-    ...overrides,
+    config: resolved,
+    runtime: runtime({
+      logging: toRuntimeLogging(resolved.logging),
+      ...overrides.runtime,
+    }),
+    runs: overrides.runs ?? [],
+    group: overrides.group ?? "ai",
+    busy: overrides.busy,
+    ready: overrides.ready,
+    dependsOn: overrides.dependsOn,
+    lines: overrides.lines,
   };
 }
 
@@ -135,9 +158,22 @@ describe("availableActions", () => {
     expect(availableActions(config(), runtime({ status: "stopping" })).start).toBe(false);
   });
 
-  it("keeps Restart, directory and the service URL available", () => {
+  it("keeps Stop visible but inert while already stopping", () => {
+    const stopping = availableActions(config(), runtime({ status: "stopping" }));
+    expect(stopping.stop).toBe(true);
+    expect(stopping.stopDisabled).toBe(true);
+    expect(availableActions(config(), runtime()).stopDisabled).toBe(false);
+  });
+
+  it("withholds Restart until the previous run is settled (spec §5 rule 2)", () => {
+    expect(availableActions(config(), runtime()).restart).toBe(true);
+    expect(availableActions(config(), runtime({ status: "stopped" })).restart).toBe(true);
+    expect(availableActions(config(), runtime({ status: "starting" })).restart).toBe(false);
+    expect(availableActions(config(), runtime({ status: "stopping" })).restart).toBe(false);
+  });
+
+  it("keeps directory and the service URL available", () => {
     const actions = availableActions(config(), runtime());
-    expect(actions.restart).toBe(true);
     expect(actions.directory).toBe(true);
     expect(actions.openUrl).toBe("http://127.0.0.1:8000");
     expect(availableActions(config({ url: undefined }), runtime()).openUrl).toBeUndefined();
@@ -150,9 +186,71 @@ describe("availableActions", () => {
     expect(availableActions(terminal, runtime()).openUrl).toBeUndefined();
   });
 
-  it("scopes force stop to live sessions", () => {
+  it("scopes force stop to the live window, including Stopping", () => {
     expect(availableActions(config(), runtime()).forceStop).toBe(true);
+    expect(availableActions(config(), runtime({ status: "stopping" })).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopped" })).forceStop).toBe(false);
+  });
+});
+
+describe("ptyChromeLabel", () => {
+  it("reports the real attachment state, not the session type", () => {
+    expect(
+      ptyChromeLabel(config({ sessionType: "terminal" }), runtime({ ptyAttached: true })),
+    ).toBe("ConPTY · interactive");
+    expect(
+      ptyChromeLabel(config({ sessionType: "terminal" }), runtime({ ptyAttached: false })),
+    ).toBe("ConPTY · 未连接");
+    expect(ptyChromeLabel(config(), runtime({ ptyAttached: true }))).toBe(
+      "PTY attached · stdin 可用",
+    );
+    expect(ptyChromeLabel(config(), runtime({ ptyAttached: false }))).toBe("PTY 未连接 · 只读缓冲");
+  });
+});
+
+describe("bufferDiscardNotice", () => {
+  it("stays silent until output is actually lost, then counts the loss", () => {
+    expect(bufferDiscardNotice(runtime())).toBeNull();
+    expect(
+      bufferDiscardNotice(runtime({ buffer: { bytes: 1, lines: 1, droppedBytes: 2048 } })),
+    ).toBe("更早的输出已被丢弃（2048 B）");
+  });
+});
+
+describe("runOutcomeBadge / logPolicyBadge", () => {
+  const live: RunRecordDto = {
+    runId: "c8aa",
+    sessionId: "comfyui",
+    startedAt: "2026-09-28T05:00:00Z",
+    logMode: "always",
+    logSource: "captured",
+  };
+
+  it("labels a run outcome with its tone", () => {
+    expect(runOutcomeBadge(live)).toEqual({ label: "running", tone: "run" });
+    expect(runOutcomeBadge({ ...live, endedAt: "2026-09-28T06:00:00Z", exitCode: 0 })).toEqual({
+      label: "ok",
+      tone: "idle",
+    });
+    expect(runOutcomeBadge({ ...live, endedAt: "2026-09-28T06:00:00Z", exitCode: 1 })).toEqual({
+      label: "error",
+      tone: "err",
+    });
+  });
+
+  it("says Capturing only while a captured run is actually writing", () => {
+    expect(logPolicyBadge({ mode: "always", source: "captured" }, "running")).toEqual({
+      label: "Capturing",
+      tone: "run",
+    });
+    expect(logPolicyBadge({ mode: "always", source: "captured" }, "stopped")).toEqual({
+      label: "Always",
+      tone: "warn",
+    });
+    expect(logPolicyBadge({ mode: "off", source: "none" }, "running")).toEqual({
+      label: "Off",
+      tone: "idle",
+    });
   });
 });
 
@@ -259,6 +357,19 @@ describe("sidebarRowMeta", () => {
     ).toEqual([{ text: "interactive" }, { text: "tty" }]);
   });
 
+  it("lets the live run override the config once one is running (LOGGING.md §1.4)", () => {
+    expect(
+      sidebarRowMeta(
+        fixture({
+          config: config({ logging: { mode: "off", source: "none" } }),
+          runtime: runtime({
+            logging: { mode: "manual", source: "captured", external_path: undefined },
+          }),
+        }),
+      ),
+    ).toContainEqual({ text: "Manual" });
+  });
+
   it("reports an application-owned log as External when no mode is in effect", () => {
     expect(
       sidebarRowMeta(
@@ -282,6 +393,15 @@ describe("sidebarRowMeta", () => {
       text: "error",
       tone: "err",
     });
+  });
+});
+
+describe("dependenciesOf", () => {
+  it("resolves declared dependencies and ignores unknown ids", () => {
+    const dep = fixture({ config: config({ id: "koboldcpp" }) });
+    const subject = fixture({ dependsOn: ["koboldcpp", "missing"] });
+    expect(dependenciesOf(subject, [subject, dep]).map((s) => s.config.id)).toEqual(["koboldcpp"]);
+    expect(dependenciesOf(fixture(), [])).toEqual([]);
   });
 });
 

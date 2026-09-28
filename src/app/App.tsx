@@ -47,7 +47,7 @@ export default function App() {
       initialSelectedSessionId(
         typeof window === "undefined" ? null : window.location.hash,
         FIXTURE_SESSIONS.map((session) => session.config.id),
-      ) ?? DEFAULT_SELECTED_SESSION_ID,
+      ) || DEFAULT_SELECTED_SESSION_ID,
   );
   const [tab, setTab] = useState<WorkspaceTab>("terminal");
   const [query, setQuery] = useState("");
@@ -127,7 +127,7 @@ export default function App() {
           <div className="workspace__content">
             {tab === "terminal" && <TerminalHost fixture={selected} onAction={onFixtureAction} />}
             {tab === "logs" && <LogsPanel fixture={selected} onAction={onFixtureAction} />}
-            {tab === "details" && <DetailsPanel fixture={selected} now={now} />}
+            {tab === "details" && <DetailsPanel fixture={selected} />}
           </div>
         </section>
       </div>

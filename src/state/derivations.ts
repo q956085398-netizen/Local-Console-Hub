@@ -108,17 +108,28 @@ export function titlebarSummaryText(counts: LiveCounts): string {
   return `${counts.running} 运行${busy}`;
 }
 
-/** Which header actions exist, derived from lifecycle truth (spec §5). */
+/**
+ * Which header actions exist, derived from lifecycle truth (spec §5).
+ *
+ * Components render this verbatim — the lifecycle rules live here, once, so
+ * a button's enablement cannot drift from the state machine.
+ */
 export interface ActionAvailability {
-  /** Start (idle states) — or Stop (live states); never both at once. */
+  /** Start is offered while idle; Stop while live. Never both at once. */
   start: boolean;
   stop: boolean;
+  /** Stop stays visible but inert while the session is already unwinding. */
+  stopDisabled: boolean;
+  /** Restart cannot launch a replacement until the previous run is gone
+   * (spec §5 rule 2), so it is offered only from a settled state. */
   restart: boolean;
   /** Open the configured URL (service with a URL). */
   openUrl?: string;
   /** Open the working directory. */
   directory: boolean;
-  /** Force-kill the managed tree — a separate, explicit action (D-007). */
+  /** Force-kill the managed tree — a separate, explicit action (D-007).
+   * Available for the whole live window, including Stopping: skipping the
+   * grace period is exactly what this action is for. */
   forceStop: boolean;
 }
 
@@ -128,14 +139,73 @@ export function availableActions(
   runtime: SessionRuntimeDto,
 ): ActionAvailability {
   const idle = !isLive(runtime.status);
+  const settled = runtime.status === "running" || idle;
   return {
     start: idle,
     stop: isLive(runtime.status),
-    restart: true,
+    stopDisabled: runtime.status === "stopping",
+    restart: settled,
     openUrl: config.sessionType === "service" ? config.url : undefined,
     directory: true,
     forceStop: isLive(runtime.status),
   };
+}
+
+/**
+ * The terminal panel's connection strip.
+ *
+ * Reads `ptyAttached` rather than the session type: UI_STYLE_GUIDE §7 calls
+ * the terminal "a real PTY view, not a read-only log box", so the surface
+ * must not claim an attachment the snapshot does not report.
+ */
+export function ptyChromeLabel(config: SessionConfigDto, runtime: SessionRuntimeDto): string {
+  if (!runtime.ptyAttached) {
+    return config.sessionType === "terminal" ? "ConPTY · 未连接" : "PTY 未连接 · 只读缓冲";
+  }
+  return config.sessionType === "terminal" ? "ConPTY · interactive" : "PTY attached · stdin 可用";
+}
+
+/**
+ * Scrollback-loss notice, or null when nothing was discarded
+ * (`docs/LOGGING.md` §8: discarded output is counted and surfaced so the UI
+ * can say "older output was dropped" instead of showing a gapped history).
+ */
+export function bufferDiscardNotice(runtime: SessionRuntimeDto): string | null {
+  if (runtime.buffer.droppedBytes <= 0) {
+    return null;
+  }
+  return `更早的输出已被丢弃（${runtime.buffer.droppedBytes} B）`;
+}
+
+/** Sessions this one depends on, resolved from the fixture workspace. */
+export function dependenciesOf(session: FixtureSession, all: FixtureSession[]): FixtureSession[] {
+  return (session.dependsOn ?? [])
+    .map((id) => all.find((candidate) => candidate.config.id === id))
+    .filter((candidate): candidate is FixtureSession => candidate !== undefined);
+}
+
+/** Badge label + tone for a run record's outcome. */
+export function runOutcomeBadge(run: RunRecordDto): { label: string; tone: StatusTone } {
+  const outcome = runOutcome(run);
+  return {
+    label: outcome,
+    tone: outcome === "running" ? "run" : outcome === "error" ? "err" : "idle",
+  };
+}
+
+/** Badge label + tone for the effective logging policy headline. */
+export function logPolicyBadge(
+  logging: RuntimeEffectiveLoggingDto | EffectiveLoggingDto,
+  status: SessionStatusValue,
+): { label: string; tone: StatusTone } {
+  const capturing =
+    status === "running" &&
+    logging.source === "captured" &&
+    (logging.mode === "always" || logging.mode === "manual");
+  if (capturing) {
+    return { label: "Capturing", tone: "run" };
+  }
+  return { label: logModeLabel(logging.mode), tone: logging.mode === "off" ? "idle" : "warn" };
 }
 
 /** The header callout: close impact while live, last error otherwise. */
@@ -246,7 +316,9 @@ export function sidebarRowMeta(session: FixtureSession): RowMetaChip[] {
   if (session.runtime.status === "error") {
     chips.push({ text: "error", tone: "err" });
   }
-  const logging = session.config.logging;
+  // Live state wins once a run exists (LOGGING.md §1.4): a `manual` run that
+  // has started recording must show as such in the rail, not as its config.
+  const logging = session.runtime.logging ?? session.config.logging;
   if (logging.mode !== "off") {
     chips.push({ text: logModeLabel(logging.mode) });
   } else if (logging.source === "external") {
