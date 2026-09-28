@@ -27,6 +27,14 @@
 
 import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue } from "./config";
 
+/**
+ * The event names Session Core publishes (`src-tauri/src/session/event.rs`,
+ * spec §9). Literals, not derived names: a rename on the backend has to break
+ * the listener that reads it rather than silently stop firing it.
+ */
+export const SESSION_STATE_CHANGED = "session-state-changed";
+export const RUN_RECORD_UPDATED = "run-record-updated";
+export const APP_SUMMARY_CHANGED = "app-summary-changed";
 /** Lifecycle states, serialized snake_case by `SessionStatus`. */
 export type SessionStatusValue =
   "stopped" | "starting" | "running" | "stopping" | "exited" | "error";

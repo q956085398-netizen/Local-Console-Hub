@@ -71,6 +71,7 @@ src-tauri/src/
 ├─ pty/                    # PTY abstraction and Windows backend
 ├─ process/                # process supervision / stop / kill tree
 ├─ logging/                # buffer, captured logs, external logs
+├─ shell/                  # handing a resolved path to the OS (T10)
 ├─ health/                 # port/HTTP checks
 ├─ tray/                   # native tray lifecycle
 ├─ ipc/                    # Tauri commands/events/DTO mapping
@@ -301,6 +302,10 @@ get_run_history
 get_log_info
 save_run_log
 set_log_recording
+open_log_file
+open_log_folder
+preview_log_cleanup
+cleanup_logs
 ~~~
 
 `save_run_log` commits an `on_error` run's log on demand and `set_log_recording`
@@ -318,6 +323,12 @@ they belong to. `terminal_write` carries input bytes (base64) and
 `terminal_resize` the view's geometry — which is remembered for a session that
 has not started yet, so a shell begins at the size its view already has.
 Terminal output arrives as events, not as a return value (§6).
+
+`open_log_file` and `open_log_folder` hand one file — or the folder holding it —
+to the OS, and `preview_log_cleanup` / `cleanup_logs` are the two halves of
+retention (LOGGING.md §9, §10). They take a session id and an optional run id,
+never a path: Session Core resolves which file a session owns, and the command
+cannot be used to open anything else (DECISIONS.md D-021).
 
 Do not introduce one generic "execute arbitrary backend action" command.
 

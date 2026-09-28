@@ -7,8 +7,9 @@
 //!
 //! Current surface: the `ping` bootstrap command proving the typed invoke path
 //! end to end (T00), the session lifecycle commands (T04), the logging
-//! read/action commands (T05) and the terminal commands (T07). Commands for
-//! service actions (T08) and the logs view (T10) land in their own tickets.
+//! read/action commands (T05), the terminal commands (T07) and the logs view's
+//! file and retention commands (T10). Commands for service actions (T08) land
+//! in their own ticket.
 
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module

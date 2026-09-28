@@ -79,7 +79,9 @@ pub use error::LogError;
 pub use layout::{session_run_files, RunFile};
 pub use metadata::{read_run, run_history, write_run, RunHistory};
 pub use plan::{policy_state, LogPlan, LogState, LogStatus, Persistence};
-pub use retention::{cleanup_plan, CleanupReport, LogFile, RetentionPolicy, DEFAULT_RETENTION};
+pub use retention::{
+    cleanup_plan, cleanup_preview, CleanupReport, LogFile, RetentionPolicy, DEFAULT_RETENTION,
+};
 pub use run_log::{LogLimits, RunLog, RunLogHandle, RunOutcome, DEFAULT_LOG_LIMITS};
 
 /// The two app-data roots the logging layer writes under.

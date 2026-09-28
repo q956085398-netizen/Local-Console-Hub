@@ -10,10 +10,10 @@
 //! - Tray actions call the same Session Core APIs as the main window;
 //! - Session Core is the single source of lifecycle truth.
 //!
-//! Modules other than `ipc`, `config`, `process`, `pty`, `session` and
-//! `logging` are intentionally empty placeholders: they exist so later tickets
-//! fill the right boundaries instead of inventing parallel subsystems. No fake
-//! process/session/logging behavior lives here (T00 out-of-scope).
+//! Modules other than `ipc`, `config`, `process`, `pty`, `session`, `logging`
+//! and `shell` are intentionally empty placeholders: they exist so later
+//! tickets fill the right boundaries instead of inventing parallel subsystems.
+//! No fake process/session/logging behavior lives here (T00 out-of-scope).
 
 mod app;
 pub mod config;
@@ -23,6 +23,7 @@ pub mod logging;
 pub mod process;
 pub mod pty;
 pub mod session;
+pub mod shell;
 mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -56,6 +57,10 @@ pub fn run() {
             ipc::logs::get_run_history,
             ipc::logs::save_run_log,
             ipc::logs::set_log_recording,
+            ipc::logs::open_log_file,
+            ipc::logs::open_log_folder,
+            ipc::logs::preview_log_cleanup,
+            ipc::logs::cleanup_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Local Console Hub");

@@ -40,6 +40,11 @@ const CLOCK_TICK_MS = 5000;
  * registry when one is answering, the T06 fixture workspace otherwise. Either
  * way the shell renders the same `SessionView` shape, and the lifecycle
  * controls act on Session Core rather than on what the window happens to think.
+ *
+ * The Logs tab is the one surface that reads further than the view model: it
+ * asks Session Core for the session's logging state and run history itself
+ * (`useSessionLogs`), because nothing else renders them, and it labels the
+ * values it had to fall back to the fixture for (T10).
  */
 export default function App() {
   const connection = useBackendPing();
@@ -207,7 +212,11 @@ export default function App() {
                 }
               />
             )}
-            {tab === "logs" && <LogsPanel session={selected} onAction={onPreviewAction} />}
+            {/* Keyed by session so the Logs tab's own state — the pending
+                retention question above all — belongs to one session. */}
+            {tab === "logs" && (
+              <LogsPanel key={selected.config.id} session={selected} onNotice={setNotice} />
+            )}
             {tab === "details" && <DetailsPanel session={selected} sessions={sessions} />}
           </div>
         </section>
