@@ -25,3 +25,15 @@ url = "2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Platform app-data roots (%APPDATA% / %LOCALAPPDATA%).
 dirs = "7"
+
+# T03 process supervisor (SUPERVISION): job-object ownership, tree enumeration
+# and CTRL_BREAK delivery for the safe stop/kill-tree path. Windows-only, and
+# already present in Cargo.lock as a transitive dependency, so this adds no new
+# packages to the build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

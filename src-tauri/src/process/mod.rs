@@ -1,8 +1,836 @@
 //! Process layer — process supervision, graceful stop and safe kill-tree.
 //!
-//! Owned by T03 (#4, process supervisor — SAFETY BLOCKER). Must know exactly
-//! which process belongs to a managed session, distinguish graceful stop
-//! from force kill (`DECISIONS.md` D-007), and never kill unrelated processes
-//! based only on executable name. Default stop path: request graceful stop →
-//! wait configured timeout → confirm exit → explicit force-kill of the
-//! managed tree only.
+//! Owned by T03 (#4, process supervisor — SAFETY BLOCKER). One
+//! [`ManagedProcess`] owns one run: it knows exactly which process belongs to
+//! the run, reclaims the run's descendants, distinguishes a graceful stop from
+//! a force kill (`docs/DECISIONS.md` D-007), and never terminates anything
+//! outside the managed tree (`docs/MVP_IMPLEMENTATION_SPEC.md` §7, §15).
+//!
+//! ## Contract
+//!
+//! ```text
+//! spawn(ProcessSpec) -> ManagedProcess
+//!   .pid() / .is_running() / .exit_status() / .wait_for_exit(timeout) / .tree_pids()
+//!   .stop(timeout) / .force_stop() / .restart(spec, timeout)
+//! StopOutcome { Exited | Forced | AlreadyExited }
+//! ```
+//!
+//! `stop` and `force_stop` are **barriers**: when they return `Ok`, the managed
+//! tree is confirmed gone. That is what makes "a restart cannot leave duplicate
+//! managed instances" a property of this layer instead of something the session
+//! state machine has to defend against later. The barrier covers the case a
+//! launcher script produces — the run's own process exits while a child it
+//! started lives on — because a stop tears down the tree, not the pid
+//! (`docs/DEVELOPMENT.md` §6).
+//!
+//! ## Mechanism (Windows)
+//!
+//! Every run owns a job object created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+//! and the run's process is assigned to it (the `win` backend). Job membership
+//! *is* the ownership boundary, so a force stop cannot reach a process that is
+//! not part of the run — including the case where the managed pid has already
+//! exited and been reused by an unrelated process, which pid-based termination
+//! cannot rule out. A graceful stop is a best-effort `CTRL_BREAK` to the run's
+//! process group; when it cannot be delivered (a process with no console has
+//! nothing to deliver to) the run falls through to the timeout and then to the
+//! force path.
+//!
+//! A [`ManagedProcess`] owns its run completely: dropping the handle terminates
+//! whatever is left of the run, so a session cannot outlive the supervisor that
+//! accounts for it.
+//!
+//! Two environment notes this layer does not hide. A run started from inside a
+//! pre-existing job object — some CI runners wrap each build step in one — can
+//! only be given a job of its own if that job permits nesting; when it does not,
+//! starting the run fails loudly instead of running unsupervised, which is the
+//! intended outcome for a process this layer cannot own. And a `CTRL_BREAK` has
+//! nowhere to go in a process with no console, which is why graceful delivery is
+//! reported (`StopReport::graceful_delivered`) rather than assumed.
+//!
+//! Output plumbing is deliberately absent here: what happens to a run's stdout
+//! is the logging layer's business (T05) and interactive terminals are hosted by
+//! the PTY layer (T02). This layer owns lifecycle only.
+
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+#[cfg(not(windows))]
+mod unsupported;
+#[cfg(windows)]
+mod win;
+
+#[cfg(not(windows))]
+use unsupported as backend;
+#[cfg(windows)]
+use win as backend;
+
+/// Graceful-stop timeout to use when a caller has no configured value. The stop
+/// path is "request gracefully, wait, force" (`docs/PRODUCT_SPEC.md` §4), so
+/// this is the wait between the request and the force kill.
+pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a stop waits for the tree to be observably gone *after* the run's
+/// own process has exited.
+const TREE_GONE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval of the bounded teardown checks. These only run while a stop is
+/// in flight and only against one job object, never as a background scan
+/// (D-009).
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// How long the exit watcher retries `try_wait` after the process object has
+/// signalled before it gives up on the exit code.
+const REAP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// What to start for one run.
+///
+/// Deliberately argv-shaped: turning a configured command string into `program`
+/// + `args` (and choosing the shell that runs it) is the caller's decision, not
+/// a policy this layer should invent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessSpec {
+    /// Executable to start. A full path is preferred; `PATH` lookup is left to
+    /// the platform.
+    pub program: PathBuf,
+    /// Arguments, passed through as-is — no shell interpretation.
+    pub args: Vec<String>,
+    /// Working directory for the run.
+    pub cwd: PathBuf,
+}
+
+impl ProcessSpec {
+    /// A run of `program` in `cwd` with no arguments.
+    pub fn new(program: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+        ProcessSpec {
+            program: program.into(),
+            args: Vec::new(),
+            cwd: cwd.into(),
+        }
+    }
+
+    /// Builder-style: replace the argument list.
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+}
+
+/// How a stop ended the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The run's process exited after a graceful request, within the timeout.
+    Exited,
+    /// The managed tree had to be terminated: either the run outlasted the
+    /// timeout, or its own process had already ended while descendants remained.
+    Forced,
+    /// Nothing of the run was left alive when it was stopped — own process and
+    /// descendants alike.
+    AlreadyExited,
+}
+
+/// Observed result of one run ending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitStatus {
+    /// The platform exit code, when one is known. On Windows this is the raw
+    /// `u32` exit code that `std::process::ExitStatus::code` reports
+    /// sign-extended as `i32`.
+    pub code: Option<u32>,
+}
+
+/// Result of a stop request (`stop` or `force_stop`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopReport {
+    /// Which path ended the run.
+    pub outcome: StopOutcome,
+    /// Exit status observed once the managed tree was confirmed gone.
+    pub exit: ExitStatus,
+    /// Whether the graceful request actually reached the run. Always `false`
+    /// when no request was attempted — a run that had already ended is never
+    /// signalled, so it cannot be a signal sent to a recycled pid.
+    pub graceful_delivered: bool,
+}
+
+/// Structured failure of a supervised operation. Messages name the operation and
+/// the paths involved so a user can act on them (`docs/DEVELOPMENT.md` §9).
+#[derive(Debug)]
+pub enum ProcessError {
+    /// The run could not be started.
+    Spawn {
+        program: PathBuf,
+        cwd: PathBuf,
+        source: std::io::Error,
+    },
+    /// The run started but the supervisor could not take ownership of it, or
+    /// could not confirm a teardown. The run is terminated before this is
+    /// returned.
+    Supervision {
+        operation: &'static str,
+        reason: String,
+    },
+    /// This platform has no supervisor backend (Windows-first MVP, D-001).
+    UnsupportedPlatform { operation: &'static str },
+}
+
+impl std::fmt::Display for ProcessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessError::Spawn {
+                program,
+                cwd,
+                source,
+            } => write!(
+                formatter,
+                "failed to start `{}` in working directory `{}`: {source}",
+                program.display(),
+                cwd.display()
+            ),
+            ProcessError::Supervision { operation, reason } => {
+                write!(formatter, "{operation} failed: {reason}")
+            }
+            ProcessError::UnsupportedPlatform { operation } => write!(
+                formatter,
+                "{operation} is not supported on this platform — Local Console Hub \
+                 supervises processes on Windows only (D-001)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProcessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ProcessError::Spawn { source, .. } => Some(source),
+            ProcessError::Supervision { .. } | ProcessError::UnsupportedPlatform { .. } => None,
+        }
+    }
+}
+
+/// State shared between the handle and its exit watcher thread.
+#[derive(Debug)]
+struct Shared {
+    /// The run's own process. Only ever locked for short, non-blocking calls:
+    /// the exit watcher blocks on the process object, never while holding this.
+    child: Mutex<Child>,
+    /// Tree ownership token; closing it terminates whatever is still alive in
+    /// the run.
+    tree: backend::TreeHandle,
+    pid: u32,
+    /// Filled in by the exit watcher exactly once.
+    exit: Mutex<Option<ExitStatus>>,
+    exited: Condvar,
+}
+
+impl Shared {
+    /// Poll the run's process object until it reports something or `deadline`
+    /// passes. `try_wait` is the only call that reaps, so it is the only way to
+    /// turn a signalled process object into an exit code — and it is done here,
+    /// in one bounded loop, because a thread waiting for an exit must never spin
+    /// without end (D-009).
+    fn poll_child(&self, deadline: Instant) -> Option<std::process::ExitStatus> {
+        loop {
+            if let Ok(Some(status)) = lock(&self.child).try_wait() {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+}
+
+/// One supervised run.
+///
+/// `ManagedProcess` is `Send + Sync` and its observation and stop methods take
+/// `&self`, so a session registry can share one handle across IPC, tray and
+/// watcher threads without wrapping it in another lock.
+#[derive(Debug)]
+pub struct ManagedProcess {
+    shared: Arc<Shared>,
+}
+
+impl ManagedProcess {
+    /// Start a run and take ownership of its process tree.
+    pub fn spawn(spec: ProcessSpec) -> Result<Self, ProcessError> {
+        backend::require_backend("starting a supervised process")?;
+
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args).current_dir(&spec.cwd);
+        backend::prepare(&mut command);
+        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
+            program: spec.program.clone(),
+            cwd: spec.cwd.clone(),
+            source,
+        })?;
+
+        let tree = match backend::attach(&child) {
+            Ok(tree) => tree,
+            Err(reason) => {
+                // A run the supervisor cannot own must not be left alive: the
+                // ownership boundary failed, so nothing may rely on it.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ProcessError::Supervision {
+                    operation: "attaching the run to its job object",
+                    reason,
+                });
+            }
+        };
+
+        let pid = child.id();
+        let shared = Arc::new(Shared {
+            child: Mutex::new(child),
+            tree,
+            pid,
+            exit: Mutex::new(None),
+            exited: Condvar::new(),
+        });
+        if let Err(source) = watch_exit(&shared) {
+            let _ = backend::terminate_tree(&shared.tree);
+            return Err(ProcessError::Supervision {
+                operation: "starting the exit watcher",
+                reason: source.to_string(),
+            });
+        }
+        Ok(ManagedProcess { shared })
+    }
+
+    /// The run's own process id.
+    pub fn pid(&self) -> u32 {
+        self.shared.pid
+    }
+
+    /// Whether the run's own process is still alive.
+    pub fn is_running(&self) -> bool {
+        self.exit_status().is_none()
+    }
+
+    /// The exit status once the run has ended, without blocking.
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        if let Some(exit) = *lock(&self.shared.exit) {
+            return Some(exit);
+        }
+        // The watcher owns the record, but asking the process object directly
+        // keeps the answer correct in the moment before it is written — and
+        // correct even if the watcher thread never got to write it.
+        match lock(&self.shared.child).try_wait() {
+            Ok(Some(status)) => Some(observe_exit(status)),
+            _ => None,
+        }
+    }
+
+    /// Wait up to `timeout` for the run to end. `None` means it was still
+    /// running when the timeout expired.
+    pub fn wait_for_exit(&self, timeout: Duration) -> Option<ExitStatus> {
+        let exit = lock(&self.shared.exit);
+        if let Some(recorded) = *exit {
+            return Some(recorded);
+        }
+        let (exit, _) = self
+            .shared
+            .exited
+            .wait_timeout_while(exit, timeout, |recorded| recorded.is_none())
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(recorded) = *exit {
+            return Some(recorded);
+        }
+        drop(exit);
+        self.exit_status()
+    }
+
+    /// Ids of every process currently assigned to the run, including the run's
+    /// own process. An empty list means nothing of the run is left.
+    pub fn tree_pids(&self) -> Result<Vec<u32>, ProcessError> {
+        backend::tree_pids(&self.shared.tree).map_err(|reason| ProcessError::Supervision {
+            operation: "enumerating the managed process tree",
+            reason,
+        })
+    }
+
+    /// Ask the run to finish, then force its tree if it outlasts `timeout`.
+    ///
+    /// On return with `Ok`, the managed tree is gone.
+    pub fn stop(&self, timeout: Duration) -> Result<StopReport, ProcessError> {
+        if !self.is_running() {
+            // The run's own process is gone — its descendants may not be. A
+            // launcher that hands a child off and exits leaves exactly that, and
+            // the run is not over while any of it is alive: "the parent exited"
+            // is not evidence that its children did (`docs/DEVELOPMENT.md` §6).
+            // So this is a teardown, not a no-op, and only the force path can
+            // confirm it.
+            return self.force_stop();
+        }
+
+        // Best effort: a run that can finish on its own terms should be allowed
+        // to (D-007). The force path below covers every case where it cannot.
+        let graceful_delivered = backend::request_graceful_stop(self.shared.pid);
+        if let Some(exit) = self.wait_for_exit(timeout) {
+            self.confirm_tree_gone()?;
+            return Ok(StopReport {
+                outcome: StopOutcome::Exited,
+                exit,
+                graceful_delivered,
+            });
+        }
+
+        let forced = self.force_stop()?;
+        Ok(StopReport {
+            graceful_delivered,
+            ..forced
+        })
+    }
+
+    /// Terminate the managed tree without a graceful request.
+    ///
+    /// On return with `Ok`, the managed tree is gone. Calling it on a run that
+    /// has completely ended — own process and descendants — is a no-op that
+    /// reports [`StopOutcome::AlreadyExited`].
+    pub fn force_stop(&self) -> Result<StopReport, ProcessError> {
+        let already = self.exit_status();
+        // An empty tree is the supervisor's definition of "already gone": the
+        // run's own process is assigned to the job for as long as it exists, so
+        // whatever remains here is what a stop still has to reclaim. Reading it
+        // before the termination is what lets the report say which of the two
+        // happened instead of always claiming the run had already finished.
+        let remaining = self.tree_pids()?;
+        backend::terminate_tree(&self.shared.tree).map_err(|reason| ProcessError::Supervision {
+            operation: "terminating the managed process tree",
+            reason,
+        })?;
+
+        let exit = match already.or_else(|| self.wait_for_exit(TREE_GONE_TIMEOUT)) {
+            Some(exit) => exit,
+            None => {
+                return Err(ProcessError::Supervision {
+                    operation: "confirming the managed process exited",
+                    reason: format!(
+                        "no exit status for pid {} after terminating its tree",
+                        self.shared.pid
+                    ),
+                });
+            }
+        };
+        self.confirm_tree_gone()?;
+
+        Ok(StopReport {
+            outcome: if remaining.is_empty() {
+                StopOutcome::AlreadyExited
+            } else {
+                StopOutcome::Forced
+            },
+            exit,
+            graceful_delivered: false,
+        })
+    }
+
+    /// Stop this run, then start `spec` as its replacement.
+    ///
+    /// The stop is a barrier, so the replacement can never overlap the previous
+    /// run. On `Err`, the previous run is already gone and no new run exists.
+    pub fn restart(&mut self, spec: ProcessSpec, timeout: Duration) -> Result<(), ProcessError> {
+        self.stop(timeout)?;
+        let replacement = ManagedProcess::spawn(spec)?;
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Barrier behind `stop`/`force_stop`: nothing may remain assigned to the
+    /// run before a stop reports success.
+    fn confirm_tree_gone(&self) -> Result<(), ProcessError> {
+        let deadline = Instant::now() + TREE_GONE_TIMEOUT;
+        loop {
+            let remaining = self.tree_pids()?;
+            if remaining.is_empty() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(ProcessError::Supervision {
+                    operation: "confirming the managed process tree is gone",
+                    reason: format!("processes still assigned to the run: {remaining:?}"),
+                });
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+}
+
+impl Drop for ManagedProcess {
+    fn drop(&mut self) {
+        // Ownership is RAII: a handle that goes away must not leave a process
+        // the Hub can no longer account for. Closing the job handle would end
+        // the run either way (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`); stopping it
+        // explicitly is what makes the teardown complete before the handle is
+        // gone. A run that has completely ended takes the no-op path.
+        let _ = self.force_stop();
+    }
+}
+
+/// Lock a mutex while tolerating poisoning: a panic on one path must not turn
+/// every later stop into a second panic.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Turn a platform exit status into the supervisor's own record.
+fn observe_exit(status: std::process::ExitStatus) -> ExitStatus {
+    let code = status.code().map(|code| code as u32);
+    ExitStatus { code }
+}
+
+/// Watch one run to its end in a thread of its own, so a tray-resident Hub holds
+/// no polling timer per session (D-009).
+fn watch_exit(shared: &Arc<Shared>) -> std::io::Result<()> {
+    let shared = Arc::clone(shared);
+    std::thread::Builder::new()
+        .name(format!("lch-process-{}", shared.pid))
+        .spawn(move || {
+            block_until_exit(&shared);
+            if let Some(exit) = reap(&shared) {
+                *lock(&shared.exit) = Some(exit);
+                shared.exited.notify_all();
+            }
+        })
+        .map(|_watcher| ())
+}
+
+/// Block until the run's process object is signalled.
+fn block_until_exit(shared: &Shared) {
+    let handle = {
+        let child = lock(&shared.child);
+        backend::process_handle(&child)
+    };
+    // The wait must not hold the child lock: `is_running`, `tree_pids` and the
+    // stop path stay answerable while a run is alive.
+    if backend::wait_for_handle(handle).is_ok() {
+        return;
+    }
+    // Waiting on our own child's process object cannot fail in practice. If it
+    // somehow does, fall back to a bounded poll rather than one that never ends:
+    // an unrecorded exit is recoverable (`exit_status` reads the process object
+    // itself), a spinning thread is not.
+    let _ = shared.poll_child(Instant::now() + REAP_TIMEOUT);
+}
+
+/// Read the exit status once the run's process object has signalled. `None` means
+/// the status could not be read, which keeps the watcher from recording an exit
+/// that never happened.
+fn reap(shared: &Shared) -> Option<ExitStatus> {
+    let status = shared.poll_child(Instant::now() + REAP_TIMEOUT);
+    status.map(observe_exit)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+    use std::thread;
+
+    /// A run that stays alive far longer than any test needs, and that writes no
+    /// noise into the test log. `ping` is a real child of `cmd`, so the run has
+    /// a tree rather than a single process.
+    fn long_running() -> ProcessSpec {
+        ProcessSpec::new("cmd.exe", std::env::temp_dir())
+            .with_args(vec!["/c".to_owned(), "ping -n 60 127.0.0.1 > NUL".to_owned()])
+    }
+
+    /// Stop/restart timeout for tests: long enough for a graceful request to land,
+    /// short enough to keep the suite quick.
+    const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// Start a long-running run, failing the test if it cannot start.
+    fn start() -> ManagedProcess {
+        let spawn = ManagedProcess::spawn(long_running());
+        spawn.expect("the run starts")
+    }
+
+    /// Restart `run` with another long run, failing the test if it cannot.
+    fn restart(run: &mut ManagedProcess) {
+        let restarted = run.restart(long_running(), STOP_TIMEOUT);
+        restarted.expect("the run restarts");
+    }
+
+    /// A run that ends on its own while leaving a descendant behind: the shell
+    /// hands a child off and exits, so the run's own process is gone while part
+    /// of the run is not.
+    fn launcher() -> ProcessSpec {
+        // `start` returns as soon as the child exists and the child inherits the
+        // shell's job object, which is the shape a launcher script has when it
+        // detaches a service and ends.
+        let args = vec!["/c".to_owned(), "start /b ping -n 60 127.0.0.1".to_owned()];
+        ProcessSpec::new("cmd.exe", std::env::temp_dir())
+            .with_args(args)
+    }
+
+    /// A process with the same executable name that the supervisor never sees.
+    fn start_unrelated() -> Child {
+        std::process::Command::new("cmd.exe")
+            .args(["/c", "ping -n 60 127.0.0.1 > NUL"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the unrelated process starts")
+    }
+
+    /// Whether a process the supervisor never started is still running.
+    fn still_running(child: &mut Child) -> bool {
+        let state = child.try_wait().expect("the process is waitable");
+        state.is_none()
+    }
+
+    /// Best-effort teardown for processes a test started outside the supervisor,
+    /// so a failing test cannot leave a pinger behind.
+    fn kill_tree(child: &mut Child) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = child.wait();
+    }
+
+    /// The run's tree, which is the thing every safety assertion here is about:
+    /// what a stop promises is that this comes back empty.
+    fn managed_tree(run: &ManagedProcess) -> Vec<u32> {
+        run.tree_pids().expect("the tree is observable")
+    }
+
+    /// Poll the run's tree until it holds at least `count` processes: the shell
+    /// starts its own child a moment after the run itself appears.
+    fn tree_with_at_least(run: &ManagedProcess, count: usize) -> Vec<u32> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let pids = managed_tree(run);
+            if pids.len() >= count || Instant::now() >= deadline {
+                return pids;
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    #[test]
+    fn handle_is_shareable_across_threads() {
+        // The contract the session registry relies on: one handle can be shared
+        // between IPC, tray and watcher threads without another lock around it.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ManagedProcess>();
+    }
+
+    #[test]
+    fn spawn_reports_a_pid_and_owns_the_run() {
+        let run = start();
+        assert_ne!(run.pid(), 0);
+        assert!(run.is_running());
+        assert!(run.exit_status().is_none());
+
+        let tree = tree_with_at_least(&run, 1);
+        assert!(
+            tree.contains(&run.pid()),
+            "the run must own its own process, saw {tree:?}"
+        );
+
+        // The timeout contract: a run that is still alive yields no status.
+        assert!(run.wait_for_exit(Duration::from_millis(50)).is_none());
+
+        run.force_stop().expect("cleanup");
+    }
+
+    #[test]
+    fn missing_program_is_an_actionable_error() {
+        let missing = "C:/definitely/not/here/lch-t03/missing.exe";
+        let spec = ProcessSpec::new(missing, std::env::temp_dir());
+        let spawn = ManagedProcess::spawn(spec);
+        let error = spawn.expect_err("a missing program cannot start");
+        let message = error.to_string();
+        assert!(message.contains("missing.exe"), "{message}");
+        assert!(message.contains("lch-t03"), "{message}");
+    }
+
+    #[test]
+    fn natural_exit_reports_the_exit_code() {
+        // `cmd /c exit 3` is a literal in the Windows shell: the run must report
+        // exactly 3, observed without the supervisor asking it to stop.
+        let spec = ProcessSpec::new("cmd.exe", std::env::temp_dir())
+            .with_args(vec!["/c".to_owned(), "exit 3".to_owned()]);
+        let run = ManagedProcess::spawn(spec).expect("the run starts");
+
+        let exit = run
+            .wait_for_exit(Duration::from_secs(30))
+            .expect("a run that exits on its own is observed");
+
+        assert_eq!(exit.code, Some(3));
+        assert_eq!(run.exit_status(), Some(exit));
+        assert!(!run.is_running());
+    }
+
+    #[test]
+    fn stop_ends_a_live_run_and_leaves_nothing_in_the_tree() {
+        let run = start();
+        let tree_before = tree_with_at_least(&run, 1);
+        assert!(!tree_before.is_empty());
+
+        let report = run.stop(STOP_TIMEOUT).expect("the run stops");
+
+        assert_ne!(report.outcome, StopOutcome::AlreadyExited);
+        assert!(
+            report.exit.code.is_some(),
+            "the exit code must be observable, saw {report:?}"
+        );
+        // Whether the request can be delivered depends on the console the Hub
+        // itself runs with, which a CI runner may not have — in that case the
+        // run is force-stopped after the timeout. When it *is* delivered, the run
+        // must end without the force path: a delivered request followed by a
+        // force kill would mean the CTRL_BREAK never reached the run.
+        if report.graceful_delivered {
+            assert_eq!(report.outcome, StopOutcome::Exited, "saw {report:?}");
+        }
+
+        assert!(!run.is_running());
+        assert!(
+            managed_tree(&run).is_empty(),
+            "the managed tree must be gone after a stop"
+        );
+        for pid in tree_before {
+            assert!(
+                !super::win::is_process_alive(pid),
+                "pid {pid} survived the stop of its run"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_reclaims_a_descendant_left_behind_by_an_exited_run() {
+        // A run whose own process ends can still have live descendants, and a
+        // stop that reported success here would let a restart start a second
+        // instance of a service that never stopped (`docs/DEVELOPMENT.md` §6:
+        // a parent exiting is not evidence that its children ended).
+        let spawn = ManagedProcess::spawn(launcher());
+        let run = spawn.expect("the run starts");
+        let exited = run.wait_for_exit(Duration::from_secs(30));
+        exited.expect("the launcher shell exits on its own");
+
+        let leftover = tree_with_at_least(&run, 1);
+        assert!(
+            !leftover.is_empty(),
+            "the run should have left a descendant behind"
+        );
+
+        let report = run.stop(STOP_TIMEOUT).expect("the run stops");
+        assert_eq!(report.outcome, StopOutcome::Forced, "saw {report:?}");
+        assert!(
+            managed_tree(&run).is_empty(),
+            "the managed tree must be gone after a stop"
+        );
+        for pid in leftover {
+            assert!(
+                !super::win::is_process_alive(pid),
+                "pid {pid} survived the stop of its run"
+            );
+        }
+    }
+
+    #[test]
+    fn force_stop_removes_the_managed_tree_but_not_an_unrelated_process() {
+        let run = start();
+        let mut unrelated = start_unrelated();
+
+        let managed_tree = tree_with_at_least(&run, 2);
+        assert!(
+            managed_tree.len() >= 2,
+            "the run should own its shell and the shell's child, saw {managed_tree:?}"
+        );
+
+        run.force_stop().expect("the run is force-stopped");
+
+        assert!(
+            managed_tree(&run).is_empty(),
+            "the managed tree must be gone after a force stop"
+        );
+        for pid in managed_tree {
+            assert!(
+                !super::win::is_process_alive(pid),
+                "pid {pid} of the managed tree survived the force stop"
+            );
+        }
+        assert!(
+            still_running(&mut unrelated),
+            "a process the supervisor never owned must survive, even with the same \
+             executable name"
+        );
+
+        kill_tree(&mut unrelated);
+    }
+
+    #[test]
+    fn repeated_stop_is_safe() {
+        let run = start();
+        let mut unrelated = start_unrelated();
+
+        let first = run.stop(STOP_TIMEOUT).expect("the first stop");
+        assert_ne!(first.outcome, StopOutcome::AlreadyExited);
+
+        let second = run.stop(STOP_TIMEOUT).expect("the second stop");
+        assert_eq!(second.outcome, StopOutcome::AlreadyExited);
+        assert_eq!(second.exit, first.exit, "the exit must not change");
+
+        assert!(
+            still_running(&mut unrelated),
+            "repeating a stop must not signal anything else"
+        );
+
+        kill_tree(&mut unrelated);
+    }
+
+    #[test]
+    fn concurrent_stops_do_not_race() {
+        let run = start();
+
+        let reports = thread::scope(|scope| {
+            let first = scope.spawn(|| run.stop(STOP_TIMEOUT));
+            let second = scope.spawn(|| run.stop(STOP_TIMEOUT));
+            [first.join(), second.join()]
+        });
+
+        let reports: Vec<StopReport> = reports
+            .into_iter()
+            .map(|joined| joined.expect("no panic under a concurrent stop"))
+            .map(|stop| stop.expect("both stops succeed"))
+            .collect();
+
+        assert!(
+            reports
+                .iter()
+                .any(|report| report.outcome != StopOutcome::AlreadyExited),
+            "at least one of the concurrent stops ended the run, saw {reports:?}"
+        );
+        assert!(!run.is_running());
+        assert!(managed_tree(&run).is_empty());
+    }
+
+    #[test]
+    fn restart_leaves_exactly_one_run_alive() {
+        let mut run = start();
+        let mut pids = vec![run.pid()];
+
+        for _ in 0..3 {
+            restart(&mut run);
+            pids.push(run.pid());
+        }
+
+        assert!(run.is_running());
+        let tree = tree_with_at_least(&run, 1);
+        assert!(
+            tree.contains(&run.pid()),
+            "the replacement run owns its own process"
+        );
+        for stale in pids.iter().filter(|pid| **pid != run.pid()) {
+            assert!(
+                !super::win::is_process_alive(*stale),
+                "restart left a duplicate instance behind: {pids:?}"
+            );
+        }
+
+        run.force_stop().expect("cleanup");
+    }
+}

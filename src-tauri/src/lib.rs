@@ -10,7 +10,7 @@
 //! - Tray actions call the same Session Core APIs as the main window;
 //! - Session Core is the single source of lifecycle truth.
 //!
-//! Modules other than `ipc` and `config` are intentionally empty
+//! Modules other than `ipc`, `config` and `process` are intentionally empty
 //! placeholders: they exist so later tickets (T02–T09) fill the right
 //! boundaries instead of inventing parallel subsystems. No fake
 //! process/session/PTY/logging behavior lives here (T00 out-of-scope).
@@ -20,7 +20,7 @@ pub mod config;
 mod health;
 mod ipc;
 mod logging;
-mod process;
+pub mod process;
 mod pty;
 mod session;
 mod tray;
