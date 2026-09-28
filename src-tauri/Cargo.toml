@@ -17,3 +17,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# T01 config schema: YAML is the user-facing config format (D-010).
+serde_yaml = "0.9"
+# Service URL validation (http/https only).
+url = "2"
+# Config/log path timestamps: pure UTC math + explicit offsets, no clock.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Platform app-data roots (%APPDATA% / %LOCALAPPDATA%).
+dirs = "7"

@@ -1,0 +1,45 @@
+# Local Console Hub — development fixture config (T01).
+#
+# A realistic, always-loadable sample: `cwd` values use "." so the file
+# validates on any machine. Copy to %APPDATA%\LocalConsoleHub\config.yaml
+# and adjust paths/commands to try the app, or use it as a template.
+# Shape follows docs/MVP_IMPLEMENTATION_SPEC.md §4 and docs/LOGGING.md.
+
+sessions:
+  # Long-running local service, Hub captures output (auto -> on_error).
+  - id: sillytavern
+    name: SillyTavern
+    type: service
+    cwd: .
+    command: node server.js
+    url: http://127.0.0.1:8000
+    port: 8000
+    purpose: 聊天前端
+    close_impact: 可停止；网页会失联
+    logging:
+      mode: auto
+      source: captured
+
+  # Service that only leaves evidence when it fails (LOGGING.md 场景 C).
+  - id: comfyui
+    name: ComfyUI
+    type: service
+    cwd: .
+    command: python main.py
+    port: 8188
+    purpose: 图像生成
+    close_impact: 可停止；中断当前生成任务
+    logging:
+      mode: on_error
+      source: captured
+
+  # Interactive terminal: real shell, no persistence by default.
+  - id: devshell
+    name: PowerShell
+    type: terminal
+    shell: powershell
+    cwd: .
+    initial_command: Get-ChildItem
+    logging:
+      mode: off
+      source: none
