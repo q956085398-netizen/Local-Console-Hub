@@ -12,13 +12,13 @@ import {
   runsNewestFirst,
   showsSourceBadge,
 } from "../../state/logs";
-import type { FixtureSession } from "../../state/fixtures";
-import type { RunRecordDto } from "../../types/runtime";
+import type { SessionView } from "../../state/session-view";
+import { isPresent, type RunRecordDto } from "../../types/runtime";
 import { useSessionLogs } from "../../app/useSessionLogs";
 import "./LogsPanel.css";
 
 export interface LogsPanelProps {
-  session: FixtureSession;
+  session: SessionView;
   /** Status-bar notice: what an action did, or why it could not. */
   onNotice: (message: string) => void;
 }
@@ -92,7 +92,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
             当前运行的日志已达到单文件上限并停止写入 · 之后的输出只留在内存缓冲里
           </p>
         )}
-        {status.lastError != null && (
+        {isPresent(status.lastError) && (
           <p className="logs-panel__warning">
             {status.lastError.operation} · {status.lastError.message}
           </p>
@@ -273,7 +273,7 @@ function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
                 className="btn btn--ghost btn--icon-sm"
                 title="复制路径"
                 aria-label={`复制 run-${run.runId} 的日志路径`}
-                onClick={() => file != null && onCopy(file)}
+                onClick={() => isPresent(file) && onCopy(file)}
               >
                 <Copy size={14} />
               </button>
@@ -283,8 +283,8 @@ function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
       </div>
       <p className="logs-panel__run-detail">
         {file ?? "未落盘"}
-        {run.pid != null ? ` · PID ${run.pid}` : ""}
-        {run.exitCode != null && run.endedAt != null ? ` · exit ${run.exitCode}` : ""}
+        {isPresent(run.pid) ? ` · PID ${run.pid}` : ""}
+        {isPresent(run.exitCode) && isPresent(run.endedAt) ? ` · exit ${run.exitCode}` : ""}
       </p>
     </li>
   );

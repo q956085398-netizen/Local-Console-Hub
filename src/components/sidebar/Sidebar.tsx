@@ -6,7 +6,8 @@ import {
   statusTone,
   type SessionGroup,
 } from "../../state/derivations";
-import type { FixtureSession } from "../../state/fixtures";
+import type { SessionView } from "../../state/session-view";
+import { isPresent } from "../../types/runtime";
 import "./Sidebar.css";
 
 export interface SidebarProps {
@@ -86,7 +87,7 @@ export default function Sidebar({
 }
 
 interface SessionRowProps {
-  item: FixtureSession;
+  item: SessionView;
   selected: boolean;
   now: Date;
   onSelect: (sessionId: string) => void;
@@ -102,7 +103,7 @@ function SessionRow({ item, selected, now, onSelect }: SessionRowProps) {
     runtime.status === "stopping" ||
     (runtime.status === "running" && (item.busy ?? false));
   const tail =
-    live && runtime.startedAt != null
+    live && isPresent(runtime.startedAt)
       ? formatDuration(runtime.startedAt, now)
       : statusLabel(runtime.status, item.busy ?? false, item.ready ?? false);
   const meta = sidebarRowMeta(item);

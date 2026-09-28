@@ -40,7 +40,7 @@ import {
   SESSION_STATE_CHANGED,
   type RunRecordDto,
 } from "../types/runtime";
-import type { FixtureSession } from "../state/fixtures";
+import type { SessionView } from "../state/session-view";
 import { cleanupOutcome, previewLogStatus } from "../state/logs";
 
 /** Where the tab's values came from: Session Core, or the fixture record. */
@@ -87,7 +87,7 @@ export interface CleanupState {
 }
 
 export function useSessionLogs(
-  session: FixtureSession,
+  session: SessionView,
   onNotice: (message: string) => void,
 ): SessionLogs {
   const sessionId = session.config.id;

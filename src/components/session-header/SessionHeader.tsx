@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, FolderOpen, MoreHorizontal, Play, RotateCw, Square } from "lucide-react";
 import type { SessionConfigDto } from "../../types/config";
 import type { SessionRuntimeDto } from "../../types/runtime";
+import type { SessionAction } from "../../state/actions";
 import {
   availableActions,
   headerCallout,
@@ -18,8 +19,8 @@ export interface SessionHeaderProps {
   busy: boolean;
   ready: boolean;
   now: Date;
-  /** Fixture mode: actions are visible but wired to a notice (T07/T08). */
-  onAction: (label: string) => void;
+  /** What the control was asked for; the caller decides what it means. */
+  onAction: (action: SessionAction) => void;
   onFocusTerminal: () => void;
   onOpenLogs: () => void;
 }
@@ -72,7 +73,7 @@ export default function SessionHeader({
             <button
               type="button"
               className="btn btn--primary btn--sm"
-              onClick={() => onAction("启动")}
+              onClick={() => onAction("start")}
             >
               <Play size={14} />
               启动
@@ -82,7 +83,7 @@ export default function SessionHeader({
               type="button"
               className="btn btn--secondary btn--sm"
               disabled={actions.stopDisabled}
-              onClick={() => onAction("停止")}
+              onClick={() => onAction("stop")}
             >
               <Square size={14} />
               停止
@@ -93,7 +94,7 @@ export default function SessionHeader({
             className="btn btn--secondary btn--sm"
             disabled={!actions.restart}
             title={actions.restart ? undefined : "需等待上一次运行结束"}
-            onClick={() => onAction("重启")}
+            onClick={() => onAction("restart")}
           >
             <RotateCw size={14} />
             重启
@@ -103,7 +104,7 @@ export default function SessionHeader({
               type="button"
               className="btn btn--secondary btn--sm"
               title={actions.openUrl}
-              onClick={() => onAction(`打开网页 ${actions.openUrl}`)}
+              onClick={() => onAction("open-url")}
             >
               <ExternalLink size={14} />
               打开网页
@@ -114,7 +115,7 @@ export default function SessionHeader({
               type="button"
               className="btn btn--secondary btn--sm"
               title={config.cwd}
-              onClick={() => onAction("打开目录")}
+              onClick={() => onAction("open-directory")}
             >
               <FolderOpen size={14} />
               目录
@@ -137,7 +138,7 @@ export default function SessionHeader({
                   <MenuItem
                     onSelect={() => {
                       setMenuOpen(false);
-                      onAction(`打开网页 ${actions.openUrl}`);
+                      onAction("open-url");
                     }}
                   >
                     打开网页
@@ -146,7 +147,7 @@ export default function SessionHeader({
                 <MenuItem
                   onSelect={() => {
                     setMenuOpen(false);
-                    onAction("打开目录");
+                    onAction("open-directory");
                   }}
                 >
                   打开目录
@@ -170,7 +171,7 @@ export default function SessionHeader({
                 <MenuItem
                   onSelect={() => {
                     setMenuOpen(false);
-                    onAction("复制路径");
+                    onAction("copy-path");
                   }}
                 >
                   复制路径
@@ -182,7 +183,7 @@ export default function SessionHeader({
                   title={actions.forceStop ? "只作用于本会话的受管进程树" : "仅运行中的会话可用"}
                   onSelect={() => {
                     setMenuOpen(false);
-                    onAction("强制结束进程树");
+                    onAction("force-stop");
                   }}
                 >
                   强制结束进程树

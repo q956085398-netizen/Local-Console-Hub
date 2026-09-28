@@ -15,6 +15,7 @@
 
 use tauri::State;
 
+use crate::config::SessionConfigDto;
 use crate::session::core::{SessionCore, SessionError};
 use crate::session::runtime::SessionRuntime;
 
@@ -22,6 +23,20 @@ use crate::session::runtime::SessionRuntime;
 #[tauri::command]
 pub fn list_sessions(core: State<'_, SessionCore>) -> Vec<SessionRuntime> {
     core.snapshots()
+}
+
+/// Every registered session's validated configuration, in id order.
+///
+/// The window renders a session from two halves: what it *is* — name, type,
+/// purpose, close impact, port, cwd, shell — and what it is *doing* (the
+/// snapshot above). This is the first half.
+///
+/// It answers from the same registry the snapshots come from, which is what
+/// keeps the two halves describing one set of sessions: a row the window can
+/// render is a session Session Core can start, stop and hand a terminal to.
+#[tauri::command]
+pub fn list_session_configs(core: State<'_, SessionCore>) -> Vec<SessionConfigDto> {
+    core.configs().iter().map(SessionConfigDto::from).collect()
 }
 
 /// One session's snapshot.

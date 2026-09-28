@@ -15,17 +15,14 @@
  * backend unifies the casing (a one-line serde change), update this mirror
  * together with it.
  *
- * ## `null` is a value here, and the types say so
- *
- * The two halves of the backend spell "nothing here" differently and neither is
- * wrong: the config DTOs skip absent fields (`skip_serializing_if`), while the
- * domain structs — a snapshot, a run record — carry `Option` fields serde
- * serializes as `null` by default. Both spellings arrive, so every optional
- * field below is typed `| null` as well as optional, and read sites must
- * compare with `!= null` rather than `!== undefined`. Typing them honestly is
- * what makes the compiler catch the difference: `record.endedAt === undefined`
- * is true for nothing when the wire sent `null`, and a live run would be
- * rendered as a failed one.
+ * Wire note 2: a session-layer `Option<T>` is serialized as **`null`**, not as
+ * an absent key — those structs have no `skip_serializing_if`, and the Rust
+ * tests assert exactly that (`value["pid"].is_null()`). So an optional field
+ * here is `T | null`, and a site that reads one asks `isPresent(...)` rather
+ * than comparing against `undefined`. The *config* DTOs are the other way
+ * round (they do skip absent fields), which is why `types/config.ts` keeps
+ * `undefined`-only optionals: the two layers differ, and each mirror says what
+ * its own layer does.
  */
 
 import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue } from "./config";
@@ -38,14 +35,9 @@ import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue
 export const SESSION_STATE_CHANGED = "session-state-changed";
 export const RUN_RECORD_UPDATED = "run-record-updated";
 export const APP_SUMMARY_CHANGED = "app-summary-changed";
-
 /** Lifecycle states, serialized snake_case by `SessionStatus`. */
 export type SessionStatusValue =
   "stopped" | "starting" | "running" | "stopping" | "exited" | "error";
-
-/** Why a session command was refused (`SessionErrorKind`). */
-export type SessionErrorKindValue =
-  "unknown_session" | "already_registered" | "invalid_transition" | "unsupported" | "failed";
 
 const SESSION_STATUSES: readonly SessionStatusValue[] = [
   "stopped",
@@ -62,7 +54,7 @@ export interface RuntimeEffectiveLoggingDto {
   source: LogSourceValue;
   /** Application-owned log path; snake_case on this nested block (see the
    * file note above — config DTOs use `externalPath`, runtime embeds the
-   * config-layer struct verbatim). */
+   * config-layer struct verbatim). `null` when the session has none. */
   external_path?: string | null;
 }
 
@@ -79,61 +71,15 @@ export interface SessionErrorInfoDto {
   message: string;
 }
 
-/**
- * Why a command was refused or failed, as `SessionError` crosses the wire
- * (MVP_IMPLEMENTATION_SPEC.md §9; `src-tauri/src/session/core.rs`).
- *
- * Distinct from the snapshot's `lastError`: that is a note the session carries
- * about a run, this is the answer to a command the user just asked for. Every
- * command that can refuse returns it, so the UI has one shape to render and
- * never has to parse a transport error.
- */
-export interface SessionErrorDto {
-  kind: SessionErrorKindValue;
-  sessionId: string;
-  operation: string;
-  message: string;
-  /** The lifecycle state the session was in when the move was refused. */
-  from?: SessionStatusValue | null;
-}
-
-const SESSION_ERROR_KINDS: readonly SessionErrorKindValue[] = [
-  "unknown_session",
-  "already_registered",
-  "invalid_transition",
-  "unsupported",
-  "failed",
-];
-
-/** Runtime guard for a structured command refusal. */
-export function isSessionErrorDto(value: unknown): value is SessionErrorDto {
-  if (!isObject(value)) {
-    return false;
-  }
-  const candidate = value as Record<string, unknown>;
-  if (
-    !SESSION_ERROR_KINDS.includes(candidate.kind as SessionErrorKindValue) ||
-    typeof candidate.sessionId !== "string" ||
-    typeof candidate.operation !== "string" ||
-    typeof candidate.message !== "string"
-  ) {
-    return false;
-  }
-  const from = candidate.from;
-  return (
-    from === undefined || from === null || SESSION_STATUSES.includes(from as SessionStatusValue)
-  );
-}
-
 /** Everything the UI needs to render one session right now. */
 export interface SessionRuntimeDto {
   sessionId: string;
   status: SessionStatusValue;
-  /** Set while a run is starting or running. */
+  /** Set while a run is starting or running; `null` when it is not. */
   pid?: number | null;
-  /** The run this snapshot describes; absent before the first start. */
+  /** The run this snapshot describes; `null` before the first start. */
   runId?: string | null;
-  /** RFC 3339 UTC timestamp of the current run's start. */
+  /** RFC 3339 UTC timestamp of the current run's start; `null` before it. */
   startedAt?: string | null;
   /** Known once a run has ended, including an unexpected exit. */
   exitCode?: number | null;
@@ -150,16 +96,53 @@ export interface AppSummaryDto {
   error: number;
 }
 
+/** Payload of the `session-state-changed` event (§9). */
+export interface SessionStateChangedDto {
+  sessionId: string;
+  /** The full post-transition snapshot, so a listener never applies a delta. */
+  runtime: SessionRuntimeDto;
+}
+
+/** Why a lifecycle command was refused or failed (`session::core::SessionErrorKind`). */
+export type SessionErrorValue =
+  "unknown_session" | "already_registered" | "invalid_transition" | "unsupported" | "failed";
+
+const SESSION_ERROR_KINDS: readonly SessionErrorValue[] = [
+  "unknown_session",
+  "already_registered",
+  "invalid_transition",
+  "unsupported",
+  "failed",
+];
+
+/**
+ * A refused or failed command, as every session command reports it.
+ *
+ * The message is actionable by contract (`docs/DEVELOPMENT.md` §9: it names
+ * the operation), so the UI shows it as it arrives rather than re-wording it.
+ */
+export interface SessionErrorDto {
+  kind: SessionErrorValue;
+  sessionId: string;
+  operation: string;
+  message: string;
+  /** The state the session was in when the move was refused; `null` when the
+   * refusal was not about a state (an unknown session, a bad payload). */
+  from?: SessionStatusValue | null;
+}
+
 /** One managed start, live (`endedAt` absent) or finished. */
 export interface RunRecordDto {
   runId: string;
   sessionId: string;
   startedAt: string;
+  /** `null` while the run is live. */
   endedAt?: string | null;
   exitCode?: number | null;
   pid?: number | null;
   logMode: EffectiveLogModeValue;
   logSource: LogSourceValue;
+  /** `null` for the modes that only learn their file when the run ends. */
   logFile?: string | null;
 }
 
@@ -167,31 +150,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/**
- * `null` counts as absent here, not as a wrong type.
- *
- * The two halves of the backend answer differently and neither is wrong: the
- * config DTOs skip absent fields (`skip_serializing_if`), while the domain
- * types embedded in a runtime snapshot — `pid`, `runId`, `endedAt`, `logFile`,
- * `external_path` — serialize them as `null`, which is serde's default for an
- * `Option`. A guard that accepted only `undefined` would reject every real
- * record the moment one of those fields was empty, so "missing" covers both
- * spellings.
- */
 function optionalInteger(source: Record<string, unknown>, key: string): boolean {
   const value = source[key];
-  if (value === undefined || value === null) {
-    return true;
-  }
-  return typeof value === "number" && Number.isInteger(value);
+  return (
+    value === undefined || value === null || (typeof value === "number" && Number.isInteger(value))
+  );
 }
 
 function optionalString(source: Record<string, unknown>, key: string): boolean {
   const value = source[key];
-  if (value === undefined || value === null) {
-    return true;
-  }
-  return typeof value === "string";
+  return value === undefined || value === null || typeof value === "string";
 }
 
 /** Runtime guard for the nested effective-logging block. */
@@ -250,7 +218,7 @@ export function isSessionRuntimeDto(value: unknown): value is SessionRuntimeDto 
 }
 
 function isSessionErrorInfoDtoOrAbsent(value: unknown): boolean {
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return true;
   }
   if (!isObject(value)) {
@@ -274,6 +242,64 @@ export function isAppSummaryDto(value: unknown): value is AppSummaryDto {
     typeof candidate.error === "number" &&
     Number.isInteger(candidate.error)
   );
+}
+
+/** Runtime guard for a `session-state-changed` payload. */
+export function isSessionStateChangedDto(value: unknown): value is SessionStateChangedDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.sessionId === "string" && isSessionRuntimeDto(candidate.runtime);
+}
+
+/** Runtime guard for the structured failure a session command reports. */
+export function isSessionErrorDto(value: unknown): value is SessionErrorDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.kind === "string" &&
+    SESSION_ERROR_KINDS.includes(candidate.kind as SessionErrorValue) &&
+    typeof candidate.sessionId === "string" &&
+    typeof candidate.operation === "string" &&
+    typeof candidate.message === "string" &&
+    (candidate.from === undefined ||
+      candidate.from === null ||
+      (typeof candidate.from === "string" &&
+        SESSION_STATUSES.includes(candidate.from as SessionStatusValue)))
+  );
+}
+
+/**
+ * Whether a wire optional carries a value.
+ *
+ * The one way to read an optional on these DTOs: `null` is what the backend
+ * writes for "nothing", `undefined` is what a JavaScript object literal may
+ * have, and a check for only one of them is a bug that renders `PID null` or
+ * `run-undefined` — or throws, where the value is dereferenced.
+ */
+export function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
+/**
+ * The message to show for a rejected command.
+ *
+ * A session command's rejection is the structured `SessionErrorDto`, whose
+ * message already names the operation and the reason; anything else (a
+ * transport failure, a broken payload) falls back to its own text so a real
+ * problem is never rendered as an empty notice.
+ */
+export function sessionErrorMessage(cause: unknown): string {
+  if (isSessionErrorDto(cause)) {
+    return cause.message;
+  }
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  return String(cause);
 }
 
 /** Runtime guard for one run record. */

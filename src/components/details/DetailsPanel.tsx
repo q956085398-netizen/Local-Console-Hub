@@ -6,11 +6,16 @@ import {
   statusTone,
   typeLabel,
 } from "../../state/derivations";
-import { FIXTURE_SESSIONS, type FixtureSession } from "../../state/fixtures";
+import type { SessionView } from "../../state/session-view";
+import { isPresent } from "../../types/runtime";
 import "./DetailsPanel.css";
 
 export interface DetailsPanelProps {
-  fixture: FixtureSession;
+  session: SessionView;
+  /** Every rendered session, for the dependency lookup — the same list the
+   * rail is showing, so "depends on X" can never name a session the user
+   * cannot see. */
+  sessions: readonly SessionView[];
 }
 
 /**
@@ -23,16 +28,16 @@ export interface DetailsPanelProps {
  * does not carry: the launch command, run identity, run outcome, PTY state
  * and the scrollback summary.
  */
-export default function DetailsPanel({ fixture }: DetailsPanelProps) {
-  const { config, runtime } = fixture;
-  const deps = dependenciesOf(fixture, FIXTURE_SESSIONS);
+export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
+  const { config, runtime } = session;
+  const deps = dependenciesOf(session, sessions);
 
   const rows: Array<[string, string]> = [
     ["类型", typeLabel(config.sessionType)],
-    ["状态", statusLabel(runtime.status, fixture.busy ?? false, fixture.ready ?? false)],
+    ["状态", statusLabel(runtime.status, session.busy ?? false, session.ready ?? false)],
     ["启动命令", config.command ?? config.shell ?? "—"],
-    ["Run", runtime.runId != null ? `run-${runtime.runId}` : "—"],
-    ["退出码", runtime.exitCode != null ? String(runtime.exitCode) : "—"],
+    ["Run", isPresent(runtime.runId) ? `run-${runtime.runId}` : "—"],
+    ["退出码", isPresent(runtime.exitCode) ? String(runtime.exitCode) : "—"],
     ["PTY", runtime.ptyAttached ? "attached" : "未附加"],
     [
       "日志模式",
@@ -44,7 +49,7 @@ export default function DetailsPanel({ fixture }: DetailsPanelProps) {
         runtime.buffer.droppedBytes > 0 ? ` · 已丢弃 ${runtime.buffer.droppedBytes} B` : ""
       }`,
     ],
-    ...(runtime.lastError != null
+    ...(isPresent(runtime.lastError)
       ? ([[`最近错误（${runtime.lastError.operation}）`, runtime.lastError.message]] as Array<
           [string, string]
         >)

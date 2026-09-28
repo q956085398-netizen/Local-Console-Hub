@@ -25,6 +25,11 @@ url = "2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Platform app-data roots (%APPDATA% / %LOCALAPPDATA%).
 dirs = "7"
+# T07 terminal output transport: a terminal's bytes are not text (a chunk
+# boundary can fall inside a multi-byte character), so they cross the IPC
+# boundary base64-encoded rather than decoded per chunk. Already in Cargo.lock
+# as a transitive dependency of tauri, so this adds no new packages.
+base64 = "0.22"
 
 # windows-sys backs both Windows layers: T03 process supervision
 # (SUPERVISION: job-object ownership, tree enumeration and CTRL_BREAK delivery
