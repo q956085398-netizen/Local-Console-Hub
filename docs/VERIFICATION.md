@@ -244,6 +244,7 @@ node scripts/capture-ui-states.mjs
 | M-3 | 停止 `svc-listening` | 两个终端仍在跑，PID 不变 |
 | M-4 | 在 `term-pwsh` 按 Ctrl+C 停掉刷屏 | 窗口恢复正常，滚动缓冲上限被遵守（详情页可见「已丢弃」字节数） |
 | M-5 | 反复切换三个会话并观察 | 输出不重复、不丢失；每个终端的滚动内容互不串台 |
+| M-6 | 给某个会话一个很长的 `name`（例如把 `term-manual` 改成 `PowerShell (recording on demand)`），重起应用，看侧栏那一行 | 行**不会**压到右侧工作区：名字省略成 `PowerShell (recording on …`，右边状态/时长完整可见，侧栏宽度仍是 280。这一条没有自动守卫——仓库的前端测试环境是 node，没有 DOM（#25 明确不引入），CSS 布局断言不了，所以清单就是它的守卫。曾经长名字会把 `.sidebar` 撑到 316px 并盖住终端
 
 ### 托盘
 
