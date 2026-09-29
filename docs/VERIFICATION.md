@@ -172,11 +172,18 @@ node scripts/capture-ui-states.mjs
    `src-tauri/src/config/mod.rs` 的 `verification_fixture_loads_cleanly_and_covers_the_matrix`
    会因此变红）。
 
-2. 建一个空的「应用自带日志」，给 `svc-external` 用：
+2. 给 `svc-external` 一个真实存在的「应用自带日志」。fixture 里写的是
+   `C:\Tools\demo-app\access.log`——一个占位路径，换成你机器上任意一个文件即可，
+   或者先把那个文件建出来：
 
    ```text
-   copy nul %LOCALAPPDATA%\LocalConsoleHub\external-demo.log
+   if not exist C:\Tools\demo-app md C:\Tools\demo-app
+   copy nul C:\Tools\demo-app\access.log
    ```
+
+   **路径是字面量**：配置不做环境变量展开（`src-tauri/src/config/validate.rs`），
+   相对路径也只会相对**应用进程**的工作目录（`npm run tauri dev` 时是仓库根），
+   所以要写完整路径。
 
 3. 确认端口 **28900 / 28901 / 28902** 空闲。开发服务器用 **24120**，不要用 1420
    （Windows 保留端口段，`CLAUDE.md`）。
@@ -228,8 +235,8 @@ node scripts/capture-ui-states.mjs
 | L-6 | 手动删掉当前 run 的文件，再看「当前运行」卡片 | 消失的是「打开日志」和「复制路径」；「打开目录」仍在，并说明文件不在磁盘上（D-022，措辞只陈述事实不猜原因） |
 | L-7 | 选中 `term-pwsh`，看「日志」页 | `Off`；「交互终端默认不产生磁盘日志」，历史里没有伪造的空记录 |
 | L-8 | 选中 `svc-fails` 启动，等它自己以退出码 3 结束 | 历史里这一行是 `error`；日志文件**此时才出现**，且包含 `progress 1..10` 与 `about to fail`（错误前上下文） |
-| L-9 | 选中 `svc-external`，看「日志」页 | 徽标 `External`；只有一个入口指向 `external-demo.log`，Hub **没有**复制一份 |
-| L-10 | 往 `external-demo.log` 里写点东西，再按打开 | 打开的就是那个文件本身 |
+| L-9 | 选中 `svc-external`，看「日志」页 | 徽标 `External`；只有一个入口指向第 2 步那个文件，Hub **没有**复制一份 |
+| L-10 | 往那个文件里写点东西，再按打开 | 打开的就是那个文件本身 |
 | L-11 | 选中 `term-manual`，在「日志」页按「开始记录」，敲几条命令，再按「保存本次日志」 | 保存前徽标是 `Off`（策略允许不等于正在记录，LOGGING §3）；保存后出现本次 run 的文件 |
 | L-12 | 在任意终端里敲命令，事后在日志文件 / 元数据里搜这些输入 | **搜不到**：stdin 不落盘（LOGGING §4、spec §15） |
 | L-13 | 「日志」页右上「清理日志」 | 两步确认；执行后历史的运行记录**仍在**，只是文件动作被禁用 |

@@ -63,9 +63,20 @@ sessions:
   # "the UI shows External and opens the application's own file".
   #
   # The Hub writes nothing here and does not read the app's stdout: the only
-  # thing it can offer is the file below. Create it before running the row:
+  # thing it can offer is the file below.
   #
-  #   copy nul %LOCALAPPDATA%\LocalConsoleHub\external-demo.log
+  # This is the one entry that is NOT repeatable as written, and it cannot be:
+  # the path names a log some *other* application owns, so no value is right on
+  # every machine. Point it at any file that exists and create a dummy if you
+  # have none — `docs/VERIFICATION.md` §4 step 2 says how. Two traps worth
+  # knowing before you edit it:
+  #
+  # - The path is taken literally. Configuration does no environment-variable
+  #   expansion (`src-tauri/src/config/validate.rs`), so `%LOCALAPPDATA%` here
+  #   would be eleven characters of directory name, not the user's profile.
+  # - A relative path resolves against the *app's* working directory, which for
+  #   `npm run tauri dev` is the repository root — not the session's `cwd`.
+  #   Write the file's full path out.
   - id: svc-external
     name: Service With Its Own Log
     type: service
@@ -80,7 +91,7 @@ sessions:
     logging:
       mode: always
       source: external
-      path: '%LOCALAPPDATA%\LocalConsoleHub\external-demo.log'
+      path: 'C:\Tools\demo-app\access.log'
 
   # ---- Interactive terminals --------------------------------------------
   # Rows: "PowerShell starts", "commands can be typed", "Unicode works",

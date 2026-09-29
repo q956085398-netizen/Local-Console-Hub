@@ -138,7 +138,7 @@ pub fn load_from_file(path: &Path) -> std::io::Result<LoadedConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Unique existing directory for `cwd` validation tests; created under
     /// the system temp dir and best-effort removed on drop.
@@ -576,13 +576,28 @@ mod tests {
         // external source only means anything together with its path.
         let external = by_id("svc-external");
         assert_eq!(external.logging.source, LogSource::External);
+        let external_path = external
+            .logging
+            .external_path
+            .as_deref()
+            .expect("an `external` session names the file it points at");
         assert!(
-            external
-                .logging
-                .external_path
-                .as_deref()
-                .is_some_and(|path| !path.is_empty()),
+            !external_path.is_empty(),
             "an `external` session with no path has nothing to point at"
+        );
+        // Both of these were real defects in the first version of this fixture,
+        // and neither is visible by reading it: `%LOCALAPPDATA%\...` looks like
+        // a path and is eleven characters of directory name, and `access.log`
+        // looks relative and resolves against the app's working directory.
+        assert!(
+            !external_path.contains('%'),
+            "`{external_path}` is not expanded: the path is taken literally \
+             (`resolve_logging`), so this names a directory called `%LOCALAPPDATA%`"
+        );
+        assert!(
+            Path::new(external_path).is_absolute(),
+            "`{external_path}` must be absolute: a relative path resolves against the \
+             app's working directory, which is not the session's `cwd`"
         );
 
         // "a plain interactive terminal creates no log file" (LOGGING.md
