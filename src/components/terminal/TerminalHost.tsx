@@ -3,7 +3,12 @@ import { Play } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { acceptsTerminalInput, bufferDiscardNotice, ptyChromeLabel } from "../../state/derivations";
+import {
+  acceptsTerminalInput,
+  bufferDiscardNotice,
+  ptyChromeLabel,
+  stoppedHint,
+} from "../../state/derivations";
 import type { SessionView } from "../../state/session-view";
 import { decodeBase64 } from "../../types/terminal";
 import { useTerminalStream } from "../../app/useTerminalStream";
@@ -139,6 +144,21 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
       lineHeight: 1.55,
       cursorBlink: true,
       theme: THEME,
+      // One pane, two very different byte sources, and only one of them has a
+      // line discipline. An interactive terminal is hosted on a ConPTY, which
+      // translates the shell's `\n` to `\r\n` on the way out — the same thing a
+      // console does — so its output already returns to column 0. A supervised
+      // service's stdout is a plain pipe, where nothing performs that
+      // translation: PowerShell's `Write-Host` arrives as a bare `\n`, and the
+      // terminal rule for a bare `\n` is "down one line, same column", which
+      // renders a service's log as a staircase.
+      //
+      // The conversion belongs here rather than in the buffer: the captured log
+      // is evidence of what the process actually wrote, and rewriting it would
+      // make the file disagree with the process that produced it. This is a
+      // rendering convention, so it is set on the renderer. It is a no-op on
+      // the ConPTY path, which has no bare `\n` left to convert.
+      convertEol: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -227,9 +247,7 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
         <div className="terminal-host__overlay">
           <div className="terminal-host__overlay-card">
             <p className="terminal-host__overlay-title">会话未运行</p>
-            <p className="terminal-host__overlay-hint">
-              交互终端必须先启动进程。这不是只读日志面板。
-            </p>
+            <p className="terminal-host__overlay-hint">{stoppedHint(session)}</p>
             <button
               type="button"
               className="btn btn--primary btn--sm terminal-host__overlay-button"
