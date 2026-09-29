@@ -194,6 +194,15 @@ node scripts/capture-ui-states.mjs
    npm run tauri dev
    ```
 
+5. 两条**预期之内、不是缺陷**的观感，先说在前面，免得当成 bug 去追：
+
+   - 详情页「它是谁」那张卡片在这个 fixture 下只显示一个 `.`。那是 `cwd: .`
+     被如实显示——这张卡显示的是**配置里的值**，而 fixture 为了在任何机器上都能加载
+     才写了 `.`（见文件头）。换成绝对路径就会显示绝对路径。
+   - 服务会话的终端面板顶部写 `PTY 未连接 · 只读缓冲`，而服务参考图写
+     `PTY attached · stdin 可用`。受管服务没有可输入的 stdin，参考图那一处是上游
+     原型的示意值（`docs/DESIGN_SPEC_EXTRACTED.md` §5 第 7 条）。
+
 ### 交互终端（`term-pwsh`）
 
 | # | 步骤 | 期望 |
