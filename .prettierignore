@@ -13,3 +13,7 @@ package-lock.json
 docs/
 README.md
 CLAUDE.md
+
+# Archived prototypes: kept byte-for-byte, so reformatting them would defeat
+# the archive. Same reason they are outside the lint scope in eslint.config.js.
+design/

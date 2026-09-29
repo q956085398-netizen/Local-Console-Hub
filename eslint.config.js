@@ -13,6 +13,10 @@ export default tseslint.config(
       "src-tauri/target/",
       "src-tauri/gen/",
       ".claude/worktrees/",
+      // `design/` holds archived prototypes, not project sources. They are kept
+      // as-is for their history, so linting them would mean editing the very
+      // artifact the archive exists to preserve.
+      "design/",
     ],
   },
   js.configs.recommended,
