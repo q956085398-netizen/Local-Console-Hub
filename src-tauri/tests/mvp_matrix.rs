@@ -35,7 +35,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use local_console_hub_lib::config::{load_from_file, AppPaths, SessionConfig};
+use local_console_hub_lib::config::{load_from_file, AppPaths, SessionConfig, SessionConfigDto};
 use local_console_hub_lib::logging::{session_run_files, BufferSummary, LogRoots, LogState};
 use local_console_hub_lib::session::core::SessionCore;
 use local_console_hub_lib::session::state::SessionStatus;
@@ -253,10 +253,12 @@ impl Identity {
 /// `command` is a parameter so a test can choose a quiet service or a noisy
 /// one without a second fixture.
 ///
-/// The terminals carry no `purpose` or `close_impact`: the spec's field
-/// ownership table (§4) makes both service-only, and validation rejects them
-/// on a terminal rather than dropping them quietly. The service keeps both, so
-/// the test can still assert that close-impact text is the session's own.
+/// `term-a` carries a `purpose` and a `close_impact` and `term-b` carries
+/// neither: both are free-text fields either type may own (D-027), so one
+/// terminal exercises "the configured words survive the whole path" and the
+/// other "omitting them leaves them absent" rather than each asserting only
+/// half the rule. The service keeps both, so the test can still assert that
+/// close-impact text is the session's own.
 fn config_yaml(service_command: &str) -> String {
     let shell = format!("{POWERSHELL} -NoLogo -NoProfile");
     format!(
@@ -267,6 +269,8 @@ sessions:
     type: terminal
     shell: '{shell}'
     cwd: .
+    purpose: an interactive terminal
+    close_impact: ends this shell only; other managed sessions keep running
     logging:
       mode: off
       source: none
@@ -376,6 +380,38 @@ fn the_bootstrap_path_turns_a_config_file_into_stopped_sessions() {
         svc.close_impact.as_deref(),
         Some("stops the service its callers depend on"),
         "close impact is the session's own text, not filler"
+    );
+
+    // A running terminal states the same two things, and they reach the
+    // window unchanged (D-027). The header callout and the Details card read
+    // `close_impact` without consulting the session type, so a terminal whose
+    // config could not carry it rendered `关闭影响 —` in the live window while
+    // the fixture workspace rendered the reference's sentence (#38).
+    let term = fixture.config("term-a");
+    assert_eq!(term.purpose.as_deref(), Some("an interactive terminal"));
+    assert_eq!(
+        term.close_impact.as_deref(),
+        Some("ends this shell only; other managed sessions keep running"),
+        "a terminal's close impact is its own text too"
+    );
+
+    let plain = fixture.config("term-b");
+    assert_eq!(plain.purpose, None, "an omitted purpose stays absent");
+    assert_eq!(
+        plain.close_impact, None,
+        "an omitted close impact stays absent"
+    );
+
+    // The window never sees `SessionConfig`: `list_session_configs` maps it
+    // through `SessionConfigDto`, and that payload is what the header reads
+    // (D-020). A field the model keeps but the DTO drops would render as `—`
+    // in the live window, so the hop is asserted rather than assumed.
+    let wire =
+        serde_json::to_value(SessionConfigDto::from(&term)).expect("the config DTO serializes");
+    assert_eq!(wire["purpose"], "an interactive terminal");
+    assert_eq!(
+        wire["closeImpact"],
+        "ends this shell only; other managed sessions keep running"
     );
 }
 
