@@ -1,0 +1,107 @@
+# Local Console Hub — end-to-end verification fixture (T11, #12).
+#
+# This file exists for one job: to let a person walk
+# `docs/VERIFICATION.md`'s manual checklist without editing YAML first. Each
+# session below is the subject of a named row in that checklist, so a row that
+# cannot be exercised means a session was removed here.
+#
+# It is deliberately NOT `dev-config.yaml`. That one is the template a new user
+# copies to try the app, so its commands are placeholders (`node server.js`)
+# that a person is expected to point at their own tools. These commands are the
+# opposite: they run on any Windows machine with nothing installed, so the
+# checklist is repeatable as written.
+#
+# Copy it into place before starting the app:
+#
+#   copy fixtures\verification-config.yaml %APPDATA%\LocalConsoleHub\config.yaml
+#
+# `cwd: .` keeps every entry valid wherever the file is copied from; the
+# working directory is not what any of these rows is about.
+
+sessions:
+  # ---- Services ----------------------------------------------------------
+  # Rows: "a long-running service starts", "stdout is visible", "the configured
+  # port and URL are shown", "the readiness badge reflects the port", "restart
+  # waits for the previous process to exit", "graceful stop works".
+  #
+  # It holds a real TCP port, so the header can be watched moving from Running
+  # to Ready (D-023) once the listener is up — which is also how the row "port
+  # and URL are not lifecycle truth" is checked: the session is Running before
+  # the port answers, and would still be Running if it never did.
+  - id: svc-listening
+    name: Listening Service
+    type: service
+    cwd: .
+    command: 'powershell -NoLogo -NoProfile -Command "$l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 28900); $l.Start(); $n = 0; while ($true) { $n++; Write-Host (''serving '' + $n); Start-Sleep -Seconds 2 }"'
+    url: http://127.0.0.1:28900
+    port: 28900
+    purpose: 一个真正监听端口的本地服务，用于验证就绪状态
+    close_impact: 可停止；正在等待该端口的调用方会失联
+    logging:
+      mode: always
+      source: captured
+
+  # Rows: "on_error preserves pre-error context" (LOGGING.md 场景 C), "an
+  # abnormal exit is reported as an abnormal run", "the log file appears only
+  # once the run has failed".
+  #
+  # It prints for a while and then exits non-zero, so there is something to
+  # preserve and a reason to preserve it.
+  - id: svc-fails
+    name: Service That Fails
+    type: service
+    cwd: .
+    command: 'powershell -NoLogo -NoProfile -Command "1..10 | ForEach-Object { Write-Host (''progress '' + $_); Start-Sleep -Seconds 1 }; Write-Host ''about to fail''; exit 3"'
+    port: 28901
+    purpose: 跑一会就异常退出，用于验证 on_error 会保留错误前的上下文
+    close_impact: 可停止；这是唯一一次不会异常的退出方式
+    logging:
+      mode: on_error
+      source: captured
+
+  # Rows: "an external log is linked, not duplicated" (LOGGING.md 场景 D),
+  # "the UI shows External and opens the application's own file".
+  #
+  # The Hub writes nothing here and does not read the app's stdout: the only
+  # thing it can offer is the file below. Create it before running the row:
+  #
+  #   copy nul %LOCALAPPDATA%\LocalConsoleHub\external-demo.log
+  - id: svc-external
+    name: Service With Its Own Log
+    type: service
+    cwd: .
+    command: 'powershell -NoLogo -NoProfile -Command "while ($true) { Write-Host ''this output is not captured''; Start-Sleep -Seconds 3 }"'
+    port: 28902
+    purpose: 自带日志文件的应用，Hub 只做链接不做复制
+    close_impact: 可停止；不会删除应用自己的日志
+    # `mode: always` is the only mode that pairs with `source: external`: any
+    # other one either persists nothing or asks the Hub to capture output,
+    # and both contradict "the application already owns this log".
+    logging:
+      mode: always
+      source: external
+      path: '%LOCALAPPDATA%\LocalConsoleHub\external-demo.log'
+
+  # ---- Interactive terminals --------------------------------------------
+  # Rows: "PowerShell starts", "commands can be typed", "Unicode works",
+  # "Ctrl+C interrupts a long-running command", "resize works", "a terminal
+  # creates no log file" (LOGGING.md 场景 A), "stdin is not persisted".
+  - id: term-pwsh
+    name: PowerShell
+    type: terminal
+    shell: powershell
+    cwd: .
+    logging:
+      mode: off
+      source: none
+
+  # Rows: the Logs tab's "开始记录" / "保存本次日志" controls (LOGGING.md §3
+  # `manual`), and "a manual run shows Off until the user asks".
+  - id: term-manual
+    name: PowerShell (recording on demand)
+    type: terminal
+    shell: powershell
+    cwd: .
+    logging:
+      mode: manual
+      source: captured

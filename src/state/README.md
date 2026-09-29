@@ -25,7 +25,23 @@ and lifecycle changes originate in Session Core.
 - `terminal-attach.ts` — the attachment protocol (subscribe, replay, input,
   resize) against an injected `TerminalBackend`, so it is testable without a
   DOM or a Tauri host.
+- `backend-connection.ts` — is a host answering the typed ping? Transport
+  liveness only: the three readings (`pending` / `connected` / `unavailable`),
+  the bounded backoff that keeps `unavailable` from being permanent, and the
+  stop-on-first-answer rule. The ping is injected, the same way
+  `terminal-attach.ts` injects a backend. It is deliberately **not** a runtime
+  model — see the note below.
 - `view.ts` — UI-only vocabulary (workspace tabs).
+
+## Transport liveness is not session runtime truth
+
+`backend-connection.ts` answers one question: is the Hub's own host answering
+its typed ping? A host that stops answering says nothing about any session —
+the sessions keep running whether or not the window can reach the backend —
+and the module therefore holds no per-session state and never reports a
+session or terminal failure. A failed ping is "no host is answering", which is
+what puts the shell in the preview workspace; the runtime model stays where
+this file's first paragraph puts it.
 
 ## Where the sessions come from (T07 #8)
 

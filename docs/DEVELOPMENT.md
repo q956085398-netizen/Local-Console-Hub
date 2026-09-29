@@ -298,6 +298,9 @@ PR 至少说明：
 
 ## 14. 测试策略
 
+> 具体命令、每条矩阵行的自动覆盖情况、可照着做的清单与历次运行结果，见
+> [端到端验证与回归清单](VERIFICATION.md)。本节只规定「该覆盖哪些面」。
+
 ### 单元测试
 
 优先覆盖：
@@ -332,6 +335,11 @@ PR 至少说明：
 - 长输出命令；
 - 需要输入的测试程序；
 - 异常退出程序。
+
+这些场景在 [VERIFICATION.md](VERIFICATION.md) 里有对应的会话与逐步清单：
+`fixtures/verification-config.yaml` 提供「在任何 Windows 机器上都跑得起来」的等价会话
+（服务、`on_error`、`external`、`off` 终端、`manual` 终端），清单逐条给出步骤与期望，
+§6 记录历次运行的实际结果。
 
 ## 15. Definition of Done
 
