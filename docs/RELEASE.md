@@ -176,9 +176,13 @@ I-16 / I-17 中「窗口里能敲命令」这一半只能在桌面上做：agent
 
 ### 2026-09-29 — T12 首次打包与安装验收
 
-环境：Windows 11 Pro（10.0.26200），主检出（非 worktree），二进制基于 `25e9e03`
-（`main` 的 HEAD，也是本分支的 merge-base）加本分支的改动；
+环境：Windows 11 Pro（10.0.26200），主检出（非 worktree）。二进制由本分支
+`feat/t12-windows-packaging` 的 `1b29e89` 打出（merge-base `main` @ `25e9e03`）。
 Rust 1.98.1 / Node 25.2.1；WiX 3.14 与 NSIS 用的是既有缓存（`%LOCALAPPDATA%\tauri`）。
+
+§4.1–§4.3 这四步**跑了两遍**：一遍是首次打包（`d77d6fa`），一遍是 review 修复之后的
+`1b29e89`；两遍的输出逐字相同。之所以要跑第二遍，是因为修复动了 `config/mod.rs` 与
+`lib.rs`——虽然只是 `#[cfg(test)]` 下的东西，但「只是测试代码」是要验的说法，不是假设。
 
 **构建（§3）。** `npm run tauri build` 退出码 0，release profile 编译 2m50s，两个包都出：
 
@@ -194,7 +198,7 @@ bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe    3.27 MiB
 | I-1 | 哨兵：roaming 1 个文件（`config.yaml`，2740 B）；local 28 个文件（`logs\` 与 `metadata\` 的历史 run，外加一个 `external` 日志）。两份清单按路径 + 字节数排序后取哈希留档 |
 | I-2 | `…-setup.exe /S` 退出码 0，无 UAC |
 | I-3 | 安装目录只有 `local-console-hub.exe`（11 192 320 B）与 `uninstall.exe`（79 331 B） |
-| I-4 | 启动后 10 s 仍存活；`MainWindowTitle = Local Console Hub`、`Responding = True`、工作集 57 MB；只有一个进程 |
+| I-4 | 启动后 10 s 仍存活；`MainWindowTitle = Local Console Hub`、`Responding = True`、工作集 57.5 MB；只有一个进程 |
 | I-5 | 两个数据目录与 I-1 **逐字节一致**（`diff` 无输出） |
 | I-6 | 安装后的 exe：产品名 `Local Console Hub`、文件版本 `0.1.0`、公司 `Local Console Hub contributors`、版权字符是 `U+00A9` |
 | I-7 / I-8 | 未跑，见下 |
