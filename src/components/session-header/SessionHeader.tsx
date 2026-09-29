@@ -144,14 +144,16 @@ export default function SessionHeader({
                     打开网页
                   </MenuItem>
                 )}
-                <MenuItem
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onAction("open-directory");
-                  }}
-                >
-                  打开目录
-                </MenuItem>
+                {actions.directory && (
+                  <MenuItem
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("open-directory");
+                    }}
+                  >
+                    打开目录
+                  </MenuItem>
+                )}
                 <MenuItem
                   onSelect={() => {
                     setMenuOpen(false);

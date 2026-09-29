@@ -6,10 +6,9 @@
 //! event includes the session id.
 //!
 //! Current surface: the `ping` bootstrap command proving the typed invoke path
-//! end to end (T00), the session lifecycle commands (T04), the logging
-//! read/action commands (T05), the terminal commands (T07) and the logs view's
-//! file and retention commands (T10). Commands for service actions (T08) land
-//! in their own ticket.
+//! end to end (T00), the session lifecycle and service-action commands (T04,
+//! T08), the logging read/action commands (T05), the terminal commands (T07)
+//! and the logs view's file and retention commands (T10).
 
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module
@@ -19,6 +18,29 @@ pub mod session;
 pub mod terminal;
 
 use serde::Serialize;
+
+use crate::session::core::SessionError;
+use crate::shell;
+
+/// Report a failed shell handoff as the session operation it was.
+///
+/// The shell layer knows the target and the OS's answer; the frontend knows one
+/// structured error shape per session operation, so the two are joined here
+/// rather than by teaching the window about a second error type. Shared by every
+/// command whose action ends in the OS opening something for a session — a log
+/// file, a log folder, a URL, a working directory.
+pub fn hand_over_failed(
+    session_id: &str,
+    operation: &str,
+    error: shell::ShellError,
+) -> SessionError {
+    SessionError::failed(
+        session_id,
+        operation,
+        format!("{} ({})", error.message, error.target),
+        None,
+    )
+}
 
 /// Version of the ping IPC contract.
 ///

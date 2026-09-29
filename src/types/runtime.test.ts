@@ -4,10 +4,12 @@ import {
   isAppSummaryDto,
   isBufferSummaryDto,
   isRunRecordDto,
+  isServiceHealthDto,
   isSessionRuntimeDto,
   type AppSummaryDto,
   type BufferSummaryDto,
   type RunRecordDto,
+  type ServiceHealthDto,
   type SessionRuntimeDto,
 } from "./runtime";
 
@@ -53,6 +55,7 @@ function wireSnapshot(overrides: Record<string, unknown> = {}): Record<string, u
     ptyAttached: false,
     logging: { mode: "off", source: "none", external_path: null },
     buffer: { bytes: 0, lines: 0, droppedBytes: 0 },
+    health: null,
     lastError: null,
     ...overrides,
   };
@@ -95,6 +98,39 @@ describe("the wire's nulls", () => {
 
   it("accepts a run record whose optionals are null", () => {
     expect(isRunRecordDto(wireRun())).toBe(true);
+  });
+
+  it("accepts a health reading under the wire's camelCase keys", () => {
+    expect(
+      isSessionRuntimeDto(wireSnapshot({ health: { processAlive: true, portOpen: false } })),
+    ).toBe(true);
+  });
+});
+
+describe("isServiceHealthDto", () => {
+  it("accepts a reading with both facts", () => {
+    const reading: ServiceHealthDto = { processAlive: true, portOpen: true };
+    expect(isServiceHealthDto(reading)).toBe(true);
+  });
+
+  it("rejects a half-written reading", () => {
+    expect(isServiceHealthDto({ processAlive: true })).toBe(false);
+    expect(isServiceHealthDto({ portOpen: false })).toBe(false);
+    expect(isServiceHealthDto({ processAlive: "yes", portOpen: false })).toBe(false);
+    expect(isServiceHealthDto(null)).toBe(false);
+  });
+
+  it("lets a snapshot carry no reading at all", () => {
+    // Both spellings: the backend writes `null`, a fixture may omit the key.
+    // Dropping either would discard a snapshot the UI could have rendered.
+    const absent = wireSnapshot();
+    delete absent.health;
+    expect(isSessionRuntimeDto(absent)).toBe(true);
+    expect(isSessionRuntimeDto(wireSnapshot({ health: null }))).toBe(true);
+  });
+
+  it("rejects a snapshot whose reading is malformed", () => {
+    expect(isSessionRuntimeDto(wireSnapshot({ health: { portOpen: true } }))).toBe(false);
   });
 });
 

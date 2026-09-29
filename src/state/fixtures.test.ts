@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { isSessionConfigDto } from "../types/config";
 import { isRunRecordDto, isSessionRuntimeDto } from "../types/runtime";
-import { liveCounts, runOutcome, sidebarRowMeta } from "./derivations";
+import { isReady, liveCounts, runOutcome, sidebarRowMeta } from "./derivations";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "./fixtures";
 
 describe("FIXTURE_SESSIONS", () => {
@@ -38,6 +38,23 @@ describe("FIXTURE_SESSIONS", () => {
   it("never claims a PTY for a supervised service", () => {
     for (const fixture of FIXTURE_SESSIONS.filter((s) => s.config.sessionType === "service")) {
       expect(fixture.runtime.ptyAttached).toBe(false);
+    }
+  });
+
+  /// Readiness is derived from the snapshot (T08 #9), so the preview and the
+  /// live app cannot disagree about the same session. This pins which of the
+  /// reference's rows claim it: the four running ones, exactly as the approved
+  /// V2 screens show them — and no stopped row, and no service without a port
+  /// reading standing behind the claim.
+  it("shows the reference's running rows as Ready, and nothing else", () => {
+    expect(FIXTURE_SESSIONS.filter((s) => isReady(s.runtime)).map((s) => s.config.id)).toEqual([
+      "sillytavern",
+      "comfyui",
+      "koboldcpp",
+      "pwsh",
+    ]);
+    for (const fixture of FIXTURE_SESSIONS.filter((s) => isReady(s.runtime))) {
+      expect(fixture.runtime.status).toBe("running");
     }
   });
 

@@ -17,7 +17,17 @@ use super::ShellError;
 pub fn open_path(path: &Path, operation: &str) -> Result<(), ShellError> {
     Err(ShellError::new(
         operation,
-        path,
+        &path.display().to_string(),
         "opening paths is implemented on Windows only; this build has no shell to hand it to",
+    ))
+}
+
+/// Never reached: [`super::open_url`]'s scheme check runs first, and this is
+/// the handoff that follows it.
+pub fn open_url(url: &str, operation: &str) -> Result<(), ShellError> {
+    Err(ShellError::new(
+        operation,
+        url,
+        "opening URLs is implemented on Windows only; this build has no shell to hand it to",
     ))
 }
