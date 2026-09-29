@@ -27,8 +27,11 @@ export default tseslint.config(
     },
   },
   {
-    // Standalone Node scripts (icon generator) need Node/browser-standard
-    // globals that no-undef otherwise flags.
+    // Standalone Node scripts (icon generator, UI-state capture) need
+    // Node/browser-standard globals that no-undef otherwise flags. `document`
+    // and `setTimeout` are here rather than under `src/` because they are used
+    // inside `page.evaluate` callbacks — code that runs in the captured
+    // browser, not in the script.
     files: ["scripts/**/*.mjs"],
     languageOptions: {
       globals: {
@@ -36,6 +39,9 @@ export default tseslint.config(
         process: "readonly",
         fetch: "readonly",
         AbortSignal: "readonly",
+        URL: "readonly",
+        document: "readonly",
+        setTimeout: "readonly",
       },
     },
   },

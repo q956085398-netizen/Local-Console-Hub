@@ -518,4 +518,100 @@ mod tests {
         assert_eq!(shell.shell.as_deref(), Some("powershell"));
         assert_eq!(shell.logging.mode, EffectiveLogMode::Off);
     }
+
+    /// The T11 verification fixture loads cleanly, and still covers the
+    /// policies the manual checklist walks.
+    ///
+    /// The point is not that the file parses — it is that a checklist row
+    /// cannot quietly lose its subject. Every assertion below names a row of
+    /// `docs/VERIFICATION.md`; deleting the session, or changing its logging
+    /// policy to something already covered, fails here rather than being
+    /// discovered by whoever runs the checklist next.
+    #[test]
+    fn verification_fixture_loads_cleanly_and_covers_the_matrix() {
+        let fixture = include_str!("../../../fixtures/verification-config.yaml");
+        let loaded = load_from_str(fixture);
+        assert!(
+            loaded.errors.is_empty(),
+            "verification fixture must load without errors: {:?}",
+            loaded.errors
+        );
+
+        let ids: Vec<&str> = loaded.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "svc-listening",
+                "svc-fails",
+                "svc-external",
+                "term-pwsh",
+                "term-manual",
+            ]
+        );
+
+        let by_id = |id: &str| {
+            loaded
+                .sessions
+                .iter()
+                .find(|session| session.id == id)
+                .unwrap_or_else(|| panic!("`{id}` is in the fixture"))
+        };
+
+        // "a captured service writes one file per run" — `always` is the only
+        // policy that writes as output arrives, so at least one service must
+        // carry it (LOGGING.md §3).
+        let always = by_id("svc-listening");
+        assert_eq!(always.logging.mode, EffectiveLogMode::Always);
+        assert_eq!(always.logging.source, LogSource::Captured);
+        assert_eq!(
+            always.port,
+            Some(28900),
+            "the readiness row needs a service that really listens"
+        );
+
+        // "on_error preserves pre-error context" (LOGGING.md 场景 C).
+        assert_eq!(by_id("svc-fails").logging.mode, EffectiveLogMode::OnError);
+
+        // "an external log is linked, not duplicated" (LOGGING.md §11): the
+        // external source only means anything together with its path.
+        let external = by_id("svc-external");
+        assert_eq!(external.logging.source, LogSource::External);
+        assert!(
+            external
+                .logging
+                .external_path
+                .as_deref()
+                .is_some_and(|path| !path.is_empty()),
+            "an `external` session with no path has nothing to point at"
+        );
+
+        // "a plain interactive terminal creates no log file" (LOGGING.md
+        // 场景 A) and the `manual` policy the Logs tab's controls act on.
+        assert_eq!(by_id("term-pwsh").logging.mode, EffectiveLogMode::Off);
+        assert_eq!(by_id("term-manual").logging.mode, EffectiveLogMode::Manual);
+
+        // Every command and shell must run on a machine with nothing
+        // installed, or the checklist stops being repeatable. `powershell` is
+        // the one tool this repo may assume (D-001: Windows-first).
+        for session in &loaded.sessions {
+            match session.session_type {
+                SessionType::Service => {
+                    let command = session.command.as_deref().expect("a service has a command");
+                    assert!(
+                        command.starts_with("powershell "),
+                        "`{}` needs something besides Windows itself: {command}",
+                        session.id
+                    );
+                }
+                SessionType::Terminal => {
+                    assert_eq!(
+                        session.shell.as_deref(),
+                        Some("powershell"),
+                        "`{}` must use the shell every Windows has",
+                        session.id
+                    );
+                }
+            }
+        }
+    }
 }

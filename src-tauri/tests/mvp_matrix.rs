@@ -1,0 +1,770 @@
+//! The automated half of the T11 end-to-end MVP matrix (#12).
+//!
+//! Everything below drives the *public* Session Core API the way the running
+//! app does, against real processes: a config file on disk is loaded through
+//! the same `config::load_from_file` the app's bootstrap uses, the registry is
+//! given the same `LogRoots` layout, and the sessions are real PowerShell
+//! shells on ConPTY and a real supervised service.
+//!
+//! It lives in `tests/` rather than beside a module because the properties it
+//! asserts are cross-module by nature — they are about what several sessions
+//! do to *each other*, and about the path from a config file to a running
+//! process. The unit suites next to each module already cover that module's
+//! own behaviour; this is the composition.
+//!
+//! ## What it deliberately does not repeat
+//!
+//! The process-safety ladder (job-object tree kill, graceful-then-force,
+//! restart barrier, "an unrelated same-named process is untouched") is
+//! asserted in `process::tests`, and the PTY contract (Unicode, ANSI,
+//! Ctrl+C, resize, high-volume output) in `pty::tests` and
+//! `session::core::terminal_tests`. Re-asserting them here would only make
+//! the matrix slower, not stronger. What this file adds is the part none of
+//! those can reach: **several sessions at once**, through the bootstrap path,
+//! with the app-data layout attached.
+//!
+//! ## Windows
+//!
+//! Gated to Windows the way `pty::tests` is: ConPTY, `cmd.exe` and the
+//! PowerShell path below are all Windows facts, and a suite that cannot pass
+//! elsewhere should say so by not compiling, not by failing. CI runs
+//! `cargo test` on `windows-latest`, so it is always exercised where it
+//! matters.
+#![cfg(windows)]
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use local_console_hub_lib::config::{load_from_file, AppPaths, SessionConfig};
+use local_console_hub_lib::logging::{session_run_files, BufferSummary, LogRoots, LogState};
+use local_console_hub_lib::session::core::SessionCore;
+use local_console_hub_lib::session::state::SessionStatus;
+
+/// The absolute path `pty::tests` uses, so these do not depend on how `PATH`
+/// happens to be set in the environment the suite runs in.
+const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe";
+
+/// A service that stays alive until it is stopped, so a test can observe it
+/// while it is genuinely `Running`. The same long-running console child the
+/// T03 smoke test and `core::tests` use.
+const LONG_RUNNING: &str = "cmd.exe /c ping -n 120 127.0.0.1";
+
+/// Cold shells on a busy machine take a while to render a first prompt.
+const STARTUP: Duration = Duration::from_secs(40);
+
+/// A scratch app-data layout that removes itself.
+///
+/// Repeated here rather than shared: `logging::test_support::TempDir` is
+/// `#[cfg(test)]`, and an integration test links the library *without* that
+/// cfg, so it cannot see it. The name is unique by construction (process id,
+/// a monotonic counter, the clock) for the reason `app::tests::TempConfig`
+/// documents — two of these tests run at once, and a name derived from the
+/// clock alone can collide on a runner with coarse time resolution.
+struct Fixture {
+    root: PathBuf,
+    paths: AppPaths,
+    core: SessionCore,
+}
+
+impl Fixture {
+    /// Write `config` as the app's `config.yaml`, then load and register it
+    /// exactly the way the app's bootstrap does.
+    ///
+    /// This is the seam the ticket is about: nothing here reaches into Session
+    /// Core's internals, and nothing calls a test-only constructor. If the app
+    /// could not get from this file to these sessions, neither could this.
+    fn new(config: &str) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_nanos();
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lch-t11-{}-{unique}-{sequence}",
+            std::process::id()
+        ));
+
+        let paths = AppPaths::new(&root, &root);
+        std::fs::create_dir_all(
+            paths
+                .config_file
+                .parent()
+                .expect("the config file has a folder"),
+        )
+        .expect("the app-data layout is creatable");
+        std::fs::write(&paths.config_file, config).expect("the config file is writable");
+
+        let loaded = load_from_file(&paths.config_file).expect("the config file is readable");
+        let core = SessionCore::without_listener().with_log_roots(LogRoots::from_app_paths(&paths));
+        for session in loaded.sessions {
+            core.register(session).expect("the config registers");
+        }
+
+        Fixture { root, paths, core }
+    }
+
+    /// The config this fixture was built from, as a map id → config.
+    fn config(&self, id: &str) -> SessionConfig {
+        self.core
+            .configs()
+            .into_iter()
+            .find(|config| config.id == id)
+            .unwrap_or_else(|| panic!("`{id}` is a registered session"))
+    }
+
+    fn status(&self, id: &str) -> SessionStatus {
+        self.core
+            .snapshot(id)
+            .unwrap_or_else(|| panic!("`{id}` has a snapshot"))
+            .status
+    }
+
+    fn pid(&self, id: &str) -> u32 {
+        self.core
+            .snapshot(id)
+            .and_then(|runtime| runtime.pid)
+            .unwrap_or_else(|| panic!("`{id}` is running, so it has a pid"))
+    }
+
+    fn run_id(&self, id: &str) -> String {
+        self.core
+            .snapshot(id)
+            .and_then(|runtime| runtime.run_id)
+            .map(|run_id| run_id.to_string())
+            .unwrap_or_else(|| panic!("`{id}` is running, so it has a run id"))
+    }
+
+    /// Every `.log` file the Hub has written for `id`.
+    fn log_files(&self, id: &str) -> Vec<PathBuf> {
+        session_run_files(&self.paths.logs_dir, "log", Some(id))
+            .into_iter()
+            .map(|file| file.path)
+            .collect()
+    }
+
+    /// Everything `id`'s terminal has taken from its shell so far.
+    fn scrollback(&self, id: &str) -> String {
+        self.core
+            .terminal_buffer(id)
+            .unwrap_or_default()
+            .iter()
+            .map(|chunk| chunk.text())
+            .collect()
+    }
+
+    /// The scrollback summary — what a view reads to say "was any of this
+    /// lost?" without holding the scrollback itself (spec §4).
+    fn buffer_summary(&self, id: &str) -> BufferSummary {
+        self.core
+            .snapshot(id)
+            .unwrap_or_else(|| panic!("`{id}` has a snapshot"))
+            .buffer
+    }
+
+    /// Send one line the way a terminal sends Enter.
+    fn send(&self, id: &str, line: &str) {
+        self.core
+            .terminal_write(id, format!("{line}\r").as_bytes())
+            .unwrap_or_else(|error| panic!("input reaches `{id}`: {error}"));
+    }
+
+    /// Wait for `marker` to be rendered by `id`'s shell.
+    fn expect_in_scrollback(&self, id: &str, marker: &str) {
+        let deadline = Instant::now() + STARTUP;
+        while Instant::now() < deadline {
+            if self.scrollback(id).contains(marker) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // The transcript, so a failure says what the shell did instead of only
+        // what was expected of it.
+        panic!(
+            "`{id}` never showed `{marker}`, saw: {:?}",
+            self.scrollback(id)
+        );
+    }
+
+    /// Wait until `check` holds, so an assertion is about what happened rather
+    /// than about how long it took.
+    fn wait_until(&self, what: &str, mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + STARTUP;
+        while !check() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // Best effort: a leaked temp folder is untidy, not a failure.
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Two interactive terminals and one supervised service, with the logging
+/// modes the MVP defaults call for: terminals persist nothing
+/// (`docs/LOGGING.md` §1.2), a captured service persists while it runs.
+///
+/// `command` is a parameter so a test can choose a quiet service or a noisy
+/// one without a second fixture.
+///
+/// The terminals carry no `purpose` or `close_impact`: the spec's field
+/// ownership table (§4) makes both service-only, and validation rejects them
+/// on a terminal rather than dropping them quietly. The service keeps both, so
+/// the test can still assert that close-impact text is the session's own.
+fn config_yaml(service_command: &str) -> String {
+    let shell = format!("{POWERSHELL} -NoLogo -NoProfile");
+    format!(
+        "\
+sessions:
+  - id: term-a
+    name: Terminal A
+    type: terminal
+    shell: '{shell}'
+    cwd: .
+    logging:
+      mode: off
+      source: none
+
+  - id: term-b
+    name: Terminal B
+    type: terminal
+    shell: '{shell}'
+    cwd: .
+    logging:
+      mode: off
+      source: none
+
+  - id: svc
+    name: Service
+    type: service
+    cwd: .
+    command: '{service_command}'
+    port: 8000
+    url: http://127.0.0.1:8000
+    purpose: supervised service
+    close_impact: stops the service its callers depend on
+    logging:
+      mode: always
+      source: captured
+"
+    )
+}
+
+/// A marker that only the *executed* command can produce.
+///
+/// The shell echoes the command line as it is typed, so a literal marker in
+/// the command text would be satisfied by the echo before the command ever
+/// ran. Assembling it inside the shell means the typed text never contains it.
+fn marker(prefix: &str, suffix: &str) -> String {
+    format!(r#"Write-Host ("{prefix}-" + "{suffix}")"#)
+}
+
+/// The text a replay carries.
+///
+/// An attachment's chunks hold *bytes*, base64-encoded, because a chunk
+/// boundary can fall inside a multi-byte character and decoding per chunk
+/// would render the seam as a replacement character (D-019). A test that only
+/// looks for ASCII markers can afford to decode each chunk on its own; the
+/// view, which cannot, hands the bytes to the terminal instead.
+fn replay_text(chunks: &[local_console_hub_lib::session::terminal::RetainedChunk]) -> String {
+    use base64::Engine;
+
+    let mut text = String::new();
+    for chunk in chunks {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&chunk.data)
+            .expect("a retained chunk carries base64");
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    text
+}
+
+// ---------------------------------------------------------------------------
+// The bootstrap path
+// ---------------------------------------------------------------------------
+
+/// A config file becomes a set of registered, *stopped* sessions.
+///
+/// The registration half of the app's startup, driven through the same
+/// `AppPaths` → `load_from_file` → `register` path `app::bootstrap` uses.
+/// Nothing is started: registering a session is not a lifecycle operation
+/// (spec §3).
+#[test]
+fn the_bootstrap_path_turns_a_config_file_into_stopped_sessions() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+
+    let ids: Vec<String> = fixture
+        .core
+        .configs()
+        .into_iter()
+        .map(|config| config.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["svc", "term-a", "term-b"],
+        "every configured session is registered, in id order"
+    );
+
+    for id in ["term-a", "term-b", "svc"] {
+        assert_eq!(
+            fixture.status(id),
+            SessionStatus::Stopped,
+            "`{id}` is registered but not started"
+        );
+        assert!(
+            fixture.core.snapshot(id).is_some_and(|r| r.pid.is_none()),
+            "`{id}` has no process before anything asked for one"
+        );
+    }
+
+    let summary = fixture.core.summary();
+    assert_eq!(summary.total, 3);
+    assert_eq!(summary.running, 0, "startup runs nothing");
+
+    // The config half of a session reaches the UI from the same registry the
+    // snapshots come from (D-020), so a row the window can render is one
+    // Session Core can act on.
+    let svc = fixture.config("svc");
+    assert_eq!(svc.port, Some(8000));
+    assert_eq!(
+        svc.close_impact.as_deref(),
+        Some("stops the service its callers depend on"),
+        "close impact is the session's own text, not filler"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-session
+// ---------------------------------------------------------------------------
+
+/// Three sessions run at once, each with its own run and its own process.
+///
+/// The matrix row "at least three concurrent sessions" (spec §16), with the
+/// identities that make "independent" checkable rather than merely stated.
+#[test]
+fn three_concurrent_sessions_hold_distinct_runs_and_processes() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+
+    for id in ["term-a", "term-b", "svc"] {
+        fixture.core.start(id).expect("start succeeds");
+    }
+
+    for id in ["term-a", "term-b", "svc"] {
+        assert_eq!(fixture.status(id), SessionStatus::Running, "`{id}` runs");
+    }
+
+    let run_ids: Vec<String> = ["term-a", "term-b", "svc"]
+        .map(|id| fixture.run_id(id))
+        .into_iter()
+        .collect();
+    let mut distinct = run_ids.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 3, "three runs, three run ids: {run_ids:?}");
+
+    let pids: Vec<u32> = ["term-a", "term-b", "svc"].map(|id| fixture.pid(id)).into();
+    let mut distinct = pids.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "three sessions, three processes: {pids:?}"
+    );
+
+    assert_eq!(fixture.core.summary().running, 3, "the summary counts them");
+}
+
+/// Each terminal answers its own input, and only its own.
+///
+/// Two shells reading from one process's stdin would show up here as one
+/// terminal rendering the other's command — the failure that makes
+/// "multi-session" worth testing at all.
+#[test]
+fn each_terminal_answers_only_its_own_input() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.core.start("term-b").expect("start succeeds");
+
+    fixture.send("term-a", &marker("LCH-A", "ONLYA"));
+    fixture.send("term-b", &marker("LCH-B", "ONLYB"));
+
+    fixture.expect_in_scrollback("term-a", "LCH-A-ONLYA");
+    fixture.expect_in_scrollback("term-b", "LCH-B-ONLYB");
+
+    assert!(
+        !fixture.scrollback("term-a").contains("LCH-B-ONLYB"),
+        "term-a rendered the other terminal's output"
+    );
+    assert!(
+        !fixture.scrollback("term-b").contains("LCH-A-ONLYA"),
+        "term-b rendered the other terminal's output"
+    );
+}
+
+/// Stopping one session leaves the others running, with the *same* process.
+///
+/// The matrix row "stopping one leaves others alive" (spec §16). The second
+/// half matters as much as the first: a stop that reached a sibling would
+/// show as a changed pid or a dead run even while the status still read
+/// `Running`.
+#[test]
+fn stopping_one_session_leaves_the_others_untouched() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    for id in ["term-a", "term-b", "svc"] {
+        fixture.core.start(id).expect("start succeeds");
+    }
+    let before: Vec<(String, String, u32)> = ["term-a", "term-b", "svc"]
+        .map(|id| (id.to_owned(), fixture.run_id(id), fixture.pid(id)))
+        .into();
+
+    fixture.core.stop("term-b").expect("stop succeeds");
+
+    assert!(
+        matches!(
+            fixture.status("term-b"),
+            SessionStatus::Stopped | SessionStatus::Exited
+        ),
+        "the stopped session ends, saw {:?}",
+        fixture.status("term-b")
+    );
+    assert!(
+        fixture
+            .core
+            .snapshot("term-b")
+            .is_some_and(|r| r.pid.is_none()),
+        "the stopped session has no process"
+    );
+
+    for id in ["term-a", "svc"] {
+        assert_eq!(
+            fixture.status(id),
+            SessionStatus::Running,
+            "`{id}` survives"
+        );
+        let (_, run_id, pid) = before
+            .iter()
+            .find(|(before_id, _, _)| before_id == id)
+            .expect("the surviving session was running before the stop");
+        assert_eq!(
+            (fixture.run_id(id), fixture.pid(id)),
+            (run_id.clone(), *pid),
+            "`{id}` kept its run and its process"
+        );
+    }
+    assert_eq!(fixture.core.summary().running, 2);
+
+    // The survivors are not merely still listed — they still work.
+    fixture.send("term-a", &marker("LCH-STILL", "ALIVE"));
+    fixture.expect_in_scrollback("term-a", "LCH-STILL-ALIVE");
+}
+
+/// A session that floods its terminal does not make another unusable.
+///
+/// The matrix row "noisy output in one does not make another unusable"
+/// (spec §16, §14 "one high-output session must not freeze the whole UI").
+/// The noisy session is the one that *stops answering* if its output is
+/// mishandled, and the quiet one is what proves the noise stayed in its own
+/// session's buffer.
+#[test]
+fn a_noisy_session_does_not_disturb_the_quiet_one() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.core.start("term-b").expect("start succeeds");
+
+    fixture.expect_in_scrollback("term-a", "PS");
+    fixture.expect_in_scrollback("term-b", "PS");
+
+    // 4000 lines is far more than one batch and more than a quiet session
+    // will ever hold; it is not enough to reach the 256 KiB ceiling, which is
+    // the stress example's job, not this suite's.
+    fixture.send(
+        "term-a",
+        r#"for ($i = 0; $i -lt 4000; $i++) { Write-Host "LCH-NOISE-$i" }; Write-Host ("LCH-NOISE-" + "DONE")"#,
+    );
+
+    // The quiet terminal answers while the loud one is still writing.
+    fixture.send("term-b", &marker("LCH-QUIET", "WORKS"));
+    fixture.expect_in_scrollback("term-b", "LCH-QUIET-WORKS");
+
+    // And the loud one finishes rather than being wedged by its own output.
+    fixture.expect_in_scrollback("term-a", "LCH-NOISE-DONE");
+
+    assert_eq!(fixture.status("term-a"), SessionStatus::Running);
+    assert_eq!(fixture.status("term-b"), SessionStatus::Running);
+}
+
+// ---------------------------------------------------------------------------
+// Terminal retention
+// ---------------------------------------------------------------------------
+
+/// A terminal keeps its run while nothing is watching, and a view that
+/// arrives later is shown what it missed.
+///
+/// This is what "switching sessions does not destroy the PTY" and "hide to
+/// the tray and restore keeps the PTY alive" mean at the layer that owns the
+/// session: no view is attached for the whole quiet stretch, the shell keeps
+/// running, and the attachment replays the bytes that accumulated (D-019).
+///
+/// The window being hidden is not the same thing as no view being attached —
+/// hiding is the tray's, and it never touches Session Core — but a session
+/// that could not survive having no reader would fail the tray case too, and
+/// this is the half a test can drive.
+#[test]
+fn a_terminal_keeps_running_with_no_view_attached_and_replays_on_attach() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.expect_in_scrollback("term-a", "PS");
+    let run_id = fixture.run_id("term-a");
+
+    // Work done while nobody is attached.
+    fixture.send("term-a", &marker("LCH-UNSEEN", "WORK"));
+    fixture.expect_in_scrollback("term-a", "LCH-UNSEEN-WORK");
+
+    // A view appears. What it gets back is the retained scrollback, not just
+    // what happens from now on.
+    let attached = fixture
+        .core
+        .terminal_attachment("term-a")
+        .expect("the session attaches");
+    let replayed = replay_text(&attached.chunks);
+
+    assert!(attached.pty_attached, "the PTY is still there");
+    assert!(
+        replayed.contains("LCH-UNSEEN-WORK"),
+        "the replay covers what happened before the view arrived, saw: {replayed:?}"
+    );
+    assert!(
+        attached.emitted > 0,
+        "the attachment names an offset it reaches"
+    );
+    assert_eq!(
+        fixture.run_id("term-a"),
+        run_id,
+        "the run was never replaced"
+    );
+    assert_eq!(fixture.status("term-a"), SessionStatus::Running);
+}
+
+// ---------------------------------------------------------------------------
+// Logging defaults
+// ---------------------------------------------------------------------------
+
+/// The MVP logging defaults, end to end on the app-data layout: a terminal
+/// persists nothing, a captured service writes one file per run, and the
+/// status surface says which is which.
+///
+/// `docs/LOGGING.md` §1.2 ("交互会话默认…不生成日志文件"), §3 (`always` ⇒
+/// everything the run writes goes to a file as it arrives) and §1.4 ("不能
+/// 出现「用户以为没记录，但实际上后台一直在写」的情况" — asked in both
+/// directions here: nothing is written for the terminal, and the service's
+/// status says it is capturing rather than claiming it is off).
+#[test]
+fn a_terminal_persists_nothing_and_a_captured_service_writes_one_file_per_run() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.expect_in_scrollback("term-a", "PS");
+    fixture.send("term-a", &marker("LCH-LOG", "TERM"));
+    fixture.expect_in_scrollback("term-a", "LCH-LOG-TERM");
+
+    let terminal_status = fixture
+        .core
+        .log_status("term-a")
+        .expect("a registered session has a log status");
+    assert_eq!(
+        terminal_status.state,
+        LogState::Off,
+        "an interactive terminal is not being persisted"
+    );
+    assert!(terminal_status.log_file.is_none());
+    assert!(
+        fixture.log_files("term-a").is_empty(),
+        "an `off` terminal wrote a file anyway: {:?}",
+        fixture.log_files("term-a")
+    );
+
+    // The service, started and then stopped, leaves exactly one file.
+    fixture.core.start("svc").expect("start succeeds");
+    fixture.wait_until("the service to be capturing", || {
+        fixture
+            .core
+            .log_status("svc")
+            .is_some_and(|status| status.state == LogState::Capturing)
+    });
+
+    fixture.core.stop("svc").expect("stop succeeds");
+    fixture.wait_until("the run's log to be filed", || {
+        !fixture.log_files("svc").is_empty()
+    });
+
+    let files = fixture.log_files("svc");
+    assert_eq!(files.len(), 1, "one run is one file, saw: {files:?}");
+    assert!(
+        files[0].starts_with(&fixture.paths.logs_dir),
+        "the log lives under the app-data logs root, not beside the executable: {:?}",
+        files[0]
+    );
+    assert!(
+        files[0]
+            .iter()
+            .any(|part| part.to_string_lossy().starts_with("20")),
+        "the layout keeps the month directory a human browses by (D-011): {:?}",
+        files[0]
+    );
+}
+
+/// A restart moves a session onto a new run, and the scrollback survives it.
+///
+/// `docs/LOGGING.md` §8 keeps the buffer across a restart, and D-019 counts
+/// the attachment's offset from the *current* run, so a view that attaches
+/// after a restart sees the earlier run's bytes and a fresh offset without
+/// either being wrong. This is the pairing the two rules describe; the
+/// process layer's own restart barrier is asserted in `process::tests`.
+#[test]
+fn a_restart_starts_a_new_run_and_keeps_the_scrollback() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.expect_in_scrollback("term-a", "PS");
+    fixture.send("term-a", &marker("LCH-BEFORE", "RESTART"));
+    fixture.expect_in_scrollback("term-a", "LCH-BEFORE-RESTART");
+
+    let old_run = fixture.run_id("term-a");
+    let old_pid = fixture.pid("term-a");
+
+    fixture.core.restart("term-a").expect("restart succeeds");
+
+    assert_ne!(fixture.run_id("term-a"), old_run, "a restart is a new run");
+    assert_ne!(fixture.pid("term-a"), old_pid, "and a new process");
+    assert_eq!(fixture.status("term-a"), SessionStatus::Running);
+
+    fixture.expect_in_scrollback("term-a", "LCH-BEFORE-RESTART");
+    let attached = fixture
+        .core
+        .terminal_attachment("term-a")
+        .expect("the session attaches");
+    let replayed = replay_text(&attached.chunks);
+    assert!(
+        replayed.contains("LCH-BEFORE-RESTART"),
+        "the scrollback is the session's, not the run's (LOGGING §8)"
+    );
+
+    // The new run answers, and its buffer is the same bounded one.
+    fixture.send("term-a", &marker("LCH-AFTER", "RESTART"));
+    fixture.expect_in_scrollback("term-a", "LCH-AFTER-RESTART");
+}
+
+/// The buffer summary answers "was any of this lost?" from a snapshot, and
+/// says no while the output fits.
+///
+/// Spec §4: the snapshot carries a *summary*, not the scrollback, so a window
+/// that only needs "is there anything to show, and did we drop any of it?"
+/// never asks for the bytes. The positive case — that the ceiling is real and
+/// reports itself — is the stress example's, because reaching it means
+/// megabytes of process output.
+#[test]
+fn a_snapshot_reports_an_intact_buffer_without_carrying_it() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("term-a").expect("start succeeds");
+    fixture.expect_in_scrollback("term-a", "PS");
+    fixture.send("term-a", &marker("LCH-BUFFER", "SMALL"));
+    fixture.expect_in_scrollback("term-a", "LCH-BUFFER-SMALL");
+
+    let summary = fixture.buffer_summary("term-a");
+    assert!(summary.bytes > 0, "the session has taken some output");
+    assert!(summary.lines > 0);
+    assert_eq!(
+        summary.dropped_bytes, 0,
+        "nothing was discarded, so a view is not looking at a truncated history"
+    );
+
+    // The summary is not the scrollback: the snapshot itself is small and
+    // holds no chunk bytes.
+    let serialized = serde_json::to_string(
+        &fixture
+            .core
+            .snapshot("term-a")
+            .expect("the session has a snapshot"),
+    )
+    .expect("a snapshot serializes");
+    assert!(
+        serialized.len() < 4 * 1024,
+        "a snapshot stays a summary, saw {} bytes",
+        serialized.len()
+    );
+    assert!(serialized.contains("droppedBytes"));
+}
+
+/// The paths a session hands the Logs tab are its own, and a path that does
+/// not exist is reported rather than offered.
+///
+/// The MVP matrix's "user can locate a persisted run" (spec §1), and the rule
+/// D-022 added: presence is a read-time fact, so a log removed by hand is
+/// answered exactly like one retention swept.
+#[test]
+fn a_sessions_log_path_is_resolved_from_the_session_not_from_a_caller() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    fixture.core.start("svc").expect("start succeeds");
+    fixture.wait_until("the service to be capturing", || {
+        fixture
+            .core
+            .log_status("svc")
+            .is_some_and(|status| status.state == LogState::Capturing)
+    });
+    fixture.core.stop("svc").expect("stop succeeds");
+    fixture.wait_until("the run's log to be filed", || {
+        !fixture.log_files("svc").is_empty()
+    });
+
+    let folder = fixture
+        .core
+        .log_folder_path("svc", None)
+        .expect("the session resolves its own folder");
+    assert!(
+        folder.starts_with(&fixture.paths.logs_dir),
+        "the folder is under this app-data root: {folder:?}"
+    );
+
+    let status = fixture
+        .core
+        .log_status("svc")
+        .expect("a registered session has a log status");
+    assert_eq!(status.state, LogState::Capturing);
+    assert!(
+        status.log_file_present,
+        "the file this status names is on disk right now"
+    );
+
+    // Remove it out from under the Hub: the same question now answers no,
+    // because it is asked of the filesystem and not remembered (D-022).
+    let file = PathBuf::from(
+        status
+            .log_file
+            .as_deref()
+            .expect("a capturing run names its file"),
+    );
+    assert!(file.exists(), "the named file is the one that was written");
+    std::fs::remove_file(&file).expect("the log file is removable");
+
+    let after = fixture
+        .core
+        .log_status("svc")
+        .expect("the status is still answerable");
+    assert!(
+        !after.log_file_present,
+        "a file removed by hand is answered like one retention swept"
+    );
+    assert_eq!(
+        after.log_file.as_deref(),
+        status.log_file.as_deref(),
+        "the run still names where its log would be"
+    );
+    let _: &Path = &folder;
+}

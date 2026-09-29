@@ -224,6 +224,7 @@ sessions:
 - [日志规范](docs/LOGGING.md)
 - [Roadmap](docs/ROADMAP.md)
 - [开发与贡献规范](docs/DEVELOPMENT.md)
+- [端到端验证与回归清单](docs/VERIFICATION.md)
 - [关键设计决策](docs/DECISIONS.md)
 
 ## 开发

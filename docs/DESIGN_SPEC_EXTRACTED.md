@@ -163,3 +163,10 @@
    `log on_error` 会带着下划线出现在界面上（参考图未出现该会话，故无图可证）。实现改为
    小写模式词 `on error`，与同行手写值 `buffer only`、`external` 同级，不泄漏线上枚举值。
    其余模式（`off` / `always` / `manual`）两种写法本就一致。
+7. **服务终端的连接条拼作 `PTY 未连接 · 只读缓冲`**（T07 #8 引入，T11 #12 记录）：
+   服务参考图（`assets/ui/ui-v2-service.png`）的终端面板顶部写着 `PTY attached · stdin 可用`，
+   但一个受管服务按定义没有可输入的 stdin（`session::core` 的 `terminal_write` 对服务直接
+   拒绝），而 UI_STYLE_GUIDE §7 要求这个面「不得声称快照没有报告的连接」。`ptyChromeLabel`
+   因此读运行快照的 `ptyAttached` 而不是会话类型：服务运行中显示 `PTY 未连接 · 只读缓冲`，
+   交互终端显示 `ConPTY · interactive`（终端参考图即此文案，逐字一致）。
+   参考图这一处是上游原型的示意值，不是可实现状态。
