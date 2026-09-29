@@ -640,13 +640,15 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
 
 一处例外值得知道：内嵌 WebView2 把用户数据目录放在 `%LOCALAPPDATA%\<identifier>`，
 也就是 `com.localconsolehub.hub`——**不是** `LocalConsoleHub`（这是 Tauri 与 WebView2
-的行为，不是本决策的结果）。它因此落在 NSIS 卸载器「删除应用数据」复选框的删除范围内，
-而用户的配置与日志不在。方向安全但不直观，记在 `docs/RELEASE.md` §2.2 与 #47。
+的行为，不是本决策的结果）。它因此落在 NSIS 卸载器那个复选框的删除范围内，而用户的
+配置与日志不在。方向安全但不直观；那个复选框的文案原本写成「删除应用数据」，说的和做的
+不一致，已经在 #47 里改成它实际删的东西（`docs/RELEASE.md` §2.2）。
 
 运维：发布相关的静态事实集中在 `src-tauri/src/release.rs`（test-only 模块，`cargo test`
 即跑）：三份 manifest 的版本号一致、`productName` 与 `ipc::APP_NAME` 同字、
-`identifier` 未变、两个安装目标仍在、WebView2 安装模式未变。改了其中任何一条，
-测试先红，再改这里与 `docs/RELEASE.md`。
+`identifier` 未变、两个安装目标仍在、WebView2 安装模式未变、卸载器复选框的文案接的是
+我们自己的语言文件且不再宣称删除应用数据。改了其中任何一条，测试先红，再改这里与
+`docs/RELEASE.md`。
 
 ---
 

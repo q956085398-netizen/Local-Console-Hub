@@ -1,13 +1,15 @@
-//! Release-manifest guards for the Windows packaging (T12, #13).
+//! Release-manifest guards for the Windows packaging (T12, #13; #47).
 //!
 //! Everything here is a guard rather than a test of behaviour. The release
-//! candidate is described by four surfaces that nothing compares with each
-//! other: `tauri.conf.json` (what the installer is built from), `Cargo.toml`
-//! (the version `ipc::ping` reports to the window), `package.json` (the
-//! frontend's version), and the app-data layout constants in `config::paths`.
-//! A drift between them stays silent until the worst moment — the bundle
-//! builds, the app launches, and only then does the release disagree with
-//! itself about which version, name or directory it is.
+//! candidate is described by five surfaces that nothing else compares with
+//! each other: `tauri.conf.json` (what the installer is built from),
+//! `Cargo.toml` (the version `ipc::ping` reports to the window),
+//! `package.json` (the frontend's version), the app-data layout constants in
+//! `config::paths`, and the NSIS language file the uninstaller's checkbox is
+//! labelled from. A drift between them stays silent until the worst moment —
+//! the bundle builds, the app launches, and only then does the release
+//! disagree with itself about which version, name or directory it is, or
+//! promise a user something it does not do.
 //!
 //! ## Why a test-only module
 //!
@@ -119,6 +121,21 @@ fn the_identifier_that_upgrades_are_keyed_on_is_frozen() {
     );
 }
 
+/// A JSON array of strings, read as `&str`s.
+///
+/// A missing array is a failure of the guard itself, not a passing test; an
+/// entry that is not a string is dropped, because every list these guards read
+/// is one the bundler writes itself and the strings in it are what is under
+/// test.
+fn string_list<'a>(value: &'a Value, what: &str) -> Vec<&'a str> {
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("{what} is a list: {value}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
 /// T12 delivers an installer, not only an executable: both Windows formats are
 /// produced so a fresh machine has something to run.
 #[test]
@@ -126,12 +143,7 @@ fn the_bundle_still_produces_both_windows_installers() {
     let bundle = manifest("tauri.conf.json")["bundle"].clone();
     assert_eq!(bundle["active"], true, "bundling is switched on");
 
-    let targets = bundle["targets"]
-        .as_array()
-        .expect("bundle.targets is a list")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
+    let targets = string_list(&bundle["targets"], "bundle.targets");
 
     for expected in ["msi", "nsis"] {
         assert!(
@@ -155,4 +167,170 @@ fn the_installer_downloads_webview2_rather_than_bundling_it() {
 
     assert_eq!(mode["type"], "downloadBootstrapper");
     assert_eq!(mode["silent"], true);
+}
+
+/// The sentence the uninstaller's checkbox has to show.
+///
+/// It describes what the checkbox actually removes — the WebView2 user-data
+/// directory under `%LOCALAPPDATA%\<identifier>` — and says nothing about the
+/// app's own data, which the checkbox does not touch. `docs/RELEASE.md` §2.2
+/// is the long form.
+const NSIS_CHECKBOX_LABEL: &str = "Delete WebView2 browser profile (not your config or logs)";
+
+/// How many `LangString`s the bundler's own `English.nsh` declares, for the
+/// bundler version `installer/languages/English.nsh` was copied from.
+const NSIS_EXPECTED_LANGSTRINGS: usize = 27;
+
+/// The NSIS language file `tauri.conf.json` points at, and its text.
+fn nsis_language_file() -> (PathBuf, String) {
+    let value = manifest("tauri.conf.json")["bundle"]["windows"]["nsis"]["customLanguageFiles"]
+        ["English"]
+        .clone();
+    let name = value.as_str().unwrap_or_else(|| {
+        panic!("bundle.windows.nsis.customLanguageFiles.English is a path: {value}")
+    });
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} is readable: {error}", path.display()));
+
+    (path, text)
+}
+
+/// The `LangString deleteAppData` our NSIS language file declares.
+///
+/// That string is the label Tauri puts on the checkbox `un.ConfirmShow` adds
+/// to the uninstaller's confirm page (the generated installer carries it as
+/// `w "$(deleteAppData)"`). Reading it from the file rather than restating it
+/// keeps the guard about the wording that will actually be bundled.
+fn uninstaller_checkbox_label() -> String {
+    let (path, text) = nsis_language_file();
+
+    let declaration = text
+        .lines()
+        .find_map(|line| line.strip_prefix("LangString deleteAppData "))
+        .unwrap_or_else(|| panic!("{} defines no `LangString deleteAppData`", path.display()));
+
+    // `LANG_ENGLISH} "the label"` — the label is the first quoted run.
+    let mut quoted = declaration.split('"').skip(1);
+    let label = quoted.next().unwrap_or_else(|| {
+        panic!(
+            "{}: the `LangString deleteAppData` value is not quoted",
+            path.display()
+        )
+    });
+
+    label.to_owned()
+}
+
+/// The uninstaller's checkbox is labelled from our own language file.
+///
+/// Two halves of the wiring, and one honest caveat about the first:
+///
+/// `bundle.windows.nsis.customLanguageFiles` mounts the file, and Tauri's
+/// config schema says such a key "must be added to the `languages` array".
+/// On the bundler version in use the file is mounted **whether or not** the
+/// language is listed — measured 2026-09-29 by removing `languages` and
+/// building: the label from our file still landed in the generated
+/// `English.nsh`, exit code 0. So this assertion is conformance to the
+/// documented contract, not a check on a measured dependency; it is here
+/// because a future bundler that enforces the schema would otherwise fall
+/// back to upstream's wording in silence.
+///
+/// The second half is the read itself, through `customLanguageFiles.English`:
+/// `uninstaller_checkbox_label` panics when that path is unreadable or
+/// declares no `deleteAppData`.
+#[test]
+fn the_uninstaller_checkbox_is_labelled_from_our_language_file() {
+    let nsis = manifest("tauri.conf.json")["bundle"]["windows"]["nsis"].clone();
+
+    let languages = string_list(&nsis["languages"], "bundle.windows.nsis.languages");
+    assert!(
+        languages.contains(&"English"),
+        "bundle.windows.nsis.customLanguageFiles is documented as requiring its language to be \
+         listed in bundle.windows.nsis.languages too; this bundler mounts it either way, but a \
+         later one may not: {languages:?}"
+    );
+
+    // Absent or unquoted panics inside the helper; what is left for this test
+    // is the file declaring a *blank* label, which the wording guard would
+    // report as a mismatch rather than as the broken wiring it is.
+    let label = uninstaller_checkbox_label();
+    assert!(
+        !label.is_empty(),
+        "{} declares an empty deleteAppData: the installer would draw a blank checkbox",
+        nsis["customLanguageFiles"]["English"]
+    );
+}
+
+/// Every `LangString` the bundler ships is still declared in our copy.
+///
+/// `customLanguageFiles` REPLACES the bundler's `English.nsh` rather than
+/// merging with it, so this file has to stay complete. A string the installer
+/// template asks for and this file does not declare is **not** a build
+/// failure: `makensis` prints one warning — `LangString "deleteAppData" is not
+/// set in language table of language English` — and exits 0, verified on
+/// 2026-09-29 by removing the string from the generated script and compiling
+/// it again. The installer would ship with a blank label, and CI would not
+/// notice, because the build job stops at a debug `cargo build` and never runs
+/// the bundler. This count is what stands between a bundler upgrade and a
+/// silently empty control.
+///
+/// It is a count and not a comparison: the guard has no copy of Tauri's own
+/// file to compare against, so what it can say is that the file has neither
+/// lost a string nor gained one since it was copied. The number is upstream's
+/// for the version this copy came from; when Tauri's file changes shape,
+/// re-copy it and re-apply the wording — the failure is the reminder, not a
+/// defect in itself.
+#[test]
+fn the_uninstaller_language_file_declares_the_expected_string_count() {
+    let (path, text) = nsis_language_file();
+
+    let declared = text
+        .lines()
+        .filter(|line| line.starts_with("LangString "))
+        .count();
+
+    assert_eq!(
+        declared,
+        NSIS_EXPECTED_LANGSTRINGS,
+        "{} declares {declared} LangStrings, not the {NSIS_EXPECTED_LANGSTRINGS} the bundler's \
+         own English.nsh declares for the version this was copied from — re-copy that file and \
+         re-apply the deleteAppData wording (`src-tauri/installer/languages/English.nsh`), or a \
+         label in the installer goes blank without failing the build",
+        path.display()
+    );
+}
+
+/// The checkbox's label describes what the uninstaller removes with it.
+///
+/// The defect behind #47 was a control that said "Delete the application data"
+/// and removed the WebView2 user-data directory instead, leaving `config.yaml`
+/// and `logs\` in place — a user who ticked it believed their run history was
+/// gone. The sentence may be reworded, but it must keep describing the
+/// *browser* data the uninstaller actually deletes, and it must not call
+/// itself the app's data again. The equality pins the wording that was
+/// reviewed (and the run recorded in `docs/RELEASE.md` §5); the loop states
+/// the rule a reword has to keep satisfying.
+///
+/// See `docs/DECISIONS.md` D-026 for the layout this protects: the app's own
+/// data lives in `%APPDATA%\LocalConsoleHub` and
+/// `%LOCALAPPDATA%\LocalConsoleHub`, outside the installer's reach by design.
+#[test]
+fn the_uninstaller_checkbox_label_describes_what_it_deletes() {
+    let label = uninstaller_checkbox_label();
+    let lower = label.to_ascii_lowercase();
+
+    for claim in ["application data", "app data", "user data"] {
+        assert!(
+            !lower.contains(claim),
+            "the uninstaller's checkbox removes the WebView2 user-data directory, not the app's \
+             config and logs, so its label must not claim \"{claim}\": {lower:?}"
+        );
+    }
+
+    assert_eq!(
+        label, NSIS_CHECKBOX_LABEL,
+        "the uninstaller's checkbox label and the wording this guard was written for disagree"
+    );
 }

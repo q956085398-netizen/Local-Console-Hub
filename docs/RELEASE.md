@@ -82,20 +82,42 @@ CI 也不产出安装包。后果是第一次运行时 Windows SmartScreen 会�
 它是运行时的浏览器配置文件（缓存、着色器缓存、Crashpad、`Local State` 等），实测约
 **126 MB / 612 个文件**，由 WebView2 自己建立与维护，删掉只是让首次启动慢一点。
 
-它和 NSIS 卸载器上那个「删除应用数据」复选框是同一件事的两面：卸载器的
-`RmDir /r "$LOCALAPPDATA\${BUNDLEID}"`（以及 `%APPDATA%` 下同名的那个，实际不存在）
-删的正是这个目录——**不是** `LocalConsoleHub`。于是：
+卸载器确认页上那个复选框删的就是这个目录。Tauri 模板里相应的两句是
+`RmDir /r "$APPDATA\${BUNDLEID}"`（`%APPDATA%` 下同名的那个实际不存在）与
+`RmDir /r "$LOCALAPPDATA\${BUNDLEID}"`，其中 `BUNDLEID` 是 `identifier`，**不是**
+`LocalConsoleHub`。于是：
 
-- 勾选复选框 → WebView2 的 126 MB 没了，用户的 `config.yaml` 与 `logs\` **还在**；
+- 勾选复选框 → WebView2 的 126 MB，连同安装器自己的两个注册表值（安装位置、安装语言）没了；
+  用户的 `config.yaml` 与 `logs\` **还在**；
 - 不勾选复选框 → 一切都还在。
 
-两种结果都不满足「卸载把应用数据删干净」的直觉，但**方向是安全的那一边**（T12 的验收项
-是「卸载不会意外销毁用户日志 / 配置」）。要真正清干净，得手动删
-`%APPDATA%\LocalConsoleHub` 与 `%LOCALAPPDATA%\LocalConsoleHub`——`RELEASE_NOTES_v0.1.0.md`
-的卸载那一节就是这么写给用户的。既然复选框的承诺与实际删除的位置不一致，这件事记在
-[#47](https://github.com/q956085398-netizen/Local-Console-Hub/issues/47) 里，不在 T12 内改：
-改它要么动 WebView2 的落盘位置（影响磁盘占用与首次启动），要么写一个删用户数据的
-`installerHooks` 钩子（一条新的破坏性路径，需要自己的一轮验证）。
+这个行为是刻意的：T12 的验收项是「卸载不会意外销毁用户日志 / 配置」，§2.1 那条不变量守着
+它。想彻底清干净，得手动删 `%APPDATA%\LocalConsoleHub` 与 `%LOCALAPPDATA%\LocalConsoleHub`——
+`RELEASE_NOTES_v0.1.0.md` §5 就是这么写给用户的。
+
+**但复选框的文案一度不是这样。** 上游模板把它写成 `Delete the application data`，而它删的是
+上面那份浏览器数据：勾选它的用户会以为自己的运行历史没了，其实还在。[#47](https://github.com/q956085398-netizen/Local-Console-Hub/issues/47)
+修的就是这个「说的和做的不一致」，选的方向是**让文案说实话**，而不是新增一条删用户数据的路径：
+
+- 文案来自语言文件。`src-tauri/installer/languages/English.nsh` 是 Tauri 自带 `English.nsh`
+  的逐字副本，只改了 `LangString deleteAppData` 一句；`tauri.conf.json` 用
+  `bundle.windows.nsis.customLanguageFiles` 把它接上，并显式写了 `languages: ["English"]`。
+  **但要清楚这一句是可选的**：Tauri 的 config schema 说 `customLanguageFiles` 的 key
+  「必须同时加进 `languages` 数组」，而 2.12.0 的**实际行为不是这样**——§5 实测：去掉
+  `languages` 之后，我们文件里的文案照样被挂上（构建仍退出 0，生成的 `English.nsh` 里就是我们
+  那一句）。所以 `languages: ["English"]` 是在满足写下来的契约，不是在满足一个量出来的依赖；
+  留着它是因为将来某个 bundler 版本真按 schema 收紧了，缺了它就会悄悄退回上游文案。
+- 这一句现在是 `Delete WebView2 browser profile (not your config or logs)`：说的是它确实会删的
+  浏览器数据，并且点明配置与日志不受影响。它 56 个字符，而卸载器那个控件的宽度是
+  模板写死的 `400 * DPI / 96`——**再改这句话时留意长度**，超了不会报错，只会被裁掉。
+- `customLanguageFiles` 是**替换**而不是合并，所以这份文件必须保持完整；bundler 版本新增
+  `LangString` 时要重新抄一份上游文件、再把这一句改回来。缺字符串是**静默**的：`makensis`
+  只打一条 `LangString "x" is not set in language table of language English` 的 warning 然后
+  退出 0（§5 实测），而 CI 只做 debug `cargo build`、根本不跑打包——所以 `cargo test` 里
+  有三个守卫（`src-tauri/src/release.rs`）：接上了没有、这份文件是否仍与上游同样多字符串、
+  以及这一句有没有重新变回 application data。
+- 这份文件里**不要**加 UTF-8 BOM：bundler 抄写时会自己加一个，两个 BOM 会让 `makensis`
+  在 `Invalid command: ";"` 上直接失败（§5 实测）。
 
 ## 3. 构建
 
@@ -139,10 +161,16 @@ npm run tauri build
 
 | # | 步骤 | 期望 |
 | --- | --- | --- |
-| I-9 | 静默卸载（`Uninstall *.exe /S`，或「应用和功能」里卸载） | 退出码 0 |
+| I-9 | 静默卸载（`Uninstall *.exe /S`，或「应用和功能」里卸载） | 退出码 0。**静默卸载等价于复选框没被勾选**：`un.ConfirmLeave` 不会跑，`$DeleteAppDataCheckboxState` 保持 0，所以它什么都不删（§5 的 V-3 实测） |
 | I-10 | 看 `%LOCALAPPDATA%\Local Console Hub` | 目录与其中的程序文件都没了；开始菜单项没了；「应用和功能」里没有残留项 |
 | I-11 | 重看 I-1 的两个数据目录 | **逐字节一致**——卸载没有动用户的配置与运行历史（验收项「卸载不会意外销毁用户日志 / 配置」）。这条是 §2.1 那条不变量的可观察面：如果安装目录压在数据目录上，这里就会看到 `config.yaml` 消失 |
 | I-12 | 应用开着时卸载 | 卸载器的进程检查会先结束正在运行的应用，再删程序文件，卸载仍然完整收尾（实测：应用被结束、安装目录与注册表项都清掉、脚本没有卡住）。交互式卸载时这一步是弹窗提示，不是静默结束——**未实测**，归人眼 |
+
+§4.2 的十一条都走静默路径，而**复选框只在图形界面里存在**：它由确认页在运行时创建
+（`un.ConfirmShow` 的 `CreateWindowEx`），静默 `/S` 根本到不了那一页，`$DeleteAppDataCheckboxState`
+也就永远是 0。要验「勾选之后发生什么」，只能把真实的确认页叫起来、把控件勾上再让它跑完；
+怎么做的、结果如何，见 §5 的 V-1–V-4。外观（字号、与上一行说明文字的对齐）也一并截了图，
+但换 DPI 或换主题仍归人眼。
 
 ### 4.3 升级
 
@@ -230,3 +258,55 @@ bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe    3.27 MiB
 [#47](https://github.com/q956085398-netizen/Local-Console-Hub/issues/47) 跟踪——
 修它要选一条路（写 `installerHooks`、或把 WebView2 的落盘位置并进 `AppPaths` 的 cache），
 不是 T12 里顺手能定的。
+
+### 2026-09-29 — #47：让卸载器的复选框说到做到
+
+环境：Windows 11 Pro（10.0.26200），主检出（非 worktree），分支 `fix/47-uninstaller-checkbox`。
+WiX 3.14 与 NSIS 用既有缓存。这一轮只验一件事：确认页上那个复选框**说的**和它**做的**
+是不是同一件事，以及改动有没有碰到用户的配置与日志。
+
+**构建（§3）。** `npm run tauri build -- --bundles nsis` 退出码 0，产物
+`Local Console Hub_0.1.0_x64-setup.exe`（3 426 561 B）。
+
+- 第一次打包**失败**，原因值得记下来。`makensis` 报
+  `Invalid command: ";"`，`!include: error in script: "...\English.nsh" on line 1`：
+  `customLanguageFiles` 指的文件被 bundler 抄进 `target/release/nsis/x64/` 时会自己写一个
+  UTF-8 BOM，而仓库里那份副本也带着一个，两个 BOM 叠在行首，`makensis` 把第二个当成了命令。
+  仓库里那份从此**不带 BOM**（写在这份文件的头注释里）。
+- 另一件事是给 §2.2 的维护说明找依据：把 `English.nsh` 里的 `LangString deleteAppData`
+  注释掉再单独编译生成的 `installer.nsi`，`makensis` **不报错**，只打一条
+  `warning: 6040: LangString "deleteAppData" is not set in language table of language English`，
+  退出码 0。缺字符串因此是**静默**的，而 CI 只做 debug `cargo build`、不跑打包——这就是
+  `cargo test` 里那条字符串计数守卫存在的理由。
+
+- 第三件是 `tauri.conf.json` 里 `languages: ["English"]` 到底是不是必需的。Tauri 的 schema
+  写着 `customLanguageFiles` 的 key「必须同时加进 `languages` 数组」，而实测**不是**：
+  把 `languages` 整条删掉、再把我们那份文件的文案改成 `EXPERIMENT MARKER WITHOUT LANGUAGES`
+  重新打包，构建仍退出 0，生成的 `target/release/nsis/x64/English.nsh` 里就是 marker 那一句。
+  所以 2.12.0 会无条件挂载这份文件，`languages` 是在满足**写下来的契约**而不是一个量出来的
+  依赖；它留着，§2.2 也照这个说法写。
+
+**复选框的文案。** 装完之后从外部读那个控件：`un.ConfirmShow` 在运行时用
+`CreateWindowEx(..., w "$(deleteAppData)", ...)` 创建它，所以只有把真实对话框叫起来才看得到。
+读法：`EnumWindows` + `EnumChildWindows` 取 `Button` 的 `GetWindowTextW`
+（UIAutomation 这条路读不到这个控件，只返回空名），顺带把对话框本身截图留档。结果：
+
+| # | 结果 |
+| --- | --- |
+| V-1 | 确认页上的复选框文案 = `Delete WebView2 browser profile (not your config or logs)` |
+| V-2 | 首次显示时 `BM_GETCHECK` = 0——**未勾选**。这一点是量出来的：截图在那个 DPI/主题下看着像勾上了，读状态才知道不是 |
+| V-3 | 静默 `/S` 卸载（等价于不勾选）：`%LOCALAPPDATA%\com.localconsolehub.hub` 原封不动，163 个文件 / 10.0 MiB |
+| V-4 | 勾选后卸载：该目录**整个消失**（消失前 163 个文件 / 10.0 MiB），安装目录与卸载注册表项同时清掉 |
+| V-5 | 全程 `%APPDATA%\LocalConsoleHub`（2 个文件）与 `%LOCALAPPDATA%\LocalConsoleHub`（28 个文件）按路径 + 字节数排序后取哈希，**逐字节不变** |
+| V-6 | 重新安装并启动：该目录被 WebView2 自己重建；最后一次静默卸载后两个数据目录仍与开始时逐字节一致 |
+
+勾选那一步是脚本驱动的：找到复选框、`BM_SETCHECK` 置 1、再对 `&Uninstall` 按钮 `BM_CLICK`。
+静默 `/S` 不走 `un.ConfirmLeave`，勾选态没有别的办法验。
+
+**守卫。** `src-tauri/src/release.rs` 新增三条，`cargo test` 即跑：接没接上我们自己的语言文件、
+这份文件是否仍与上游同样多字符串、以及那句文案有没有重新变回 application data。
+三条都做了反向验证，随后还原：把上游文案放回去 → 文案守卫红；从文件里删一条、加一条
+`LangString` → 计数守卫红（26 与 28 各自报出）；把 `English` 从 `languages` 里去掉 → 接线守卫红。
+
+**没跑 / 归人眼。** 复选框文字会不会在高 DPI 下被裁掉是**外观**问题：`GetWindowTextW`
+拿到的永远是完整句子，量不出裁没裁。本机 100% DPI、浅色主题下截图看过一次，其余归人眼。
