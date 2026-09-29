@@ -32,6 +32,9 @@
  */
 
 import { isPingResponse } from "../types/ipc";
+import { retryDelayMs } from "./retry-schedule";
+
+export { RETRY_DELAYS_MS, retryDelayMs } from "./retry-schedule";
 
 /** What the status bar can say about the backend connection. */
 export type BackendConnection =
@@ -49,23 +52,6 @@ export const INITIAL_CONNECTION: BackendConnection = { state: "pending" };
  * with that shape.
  */
 export type BackendPing = () => Promise<unknown>;
-
-/**
- * How long to wait before asking again, by consecutive failed attempt.
- *
- * Bounded by construction: the last entry is a ceiling, not a step, so the
- * cadence settles at one request every 30 s and cannot degenerate into a hot
- * loop no matter how long the app stays hostless. The early entries are short
- * because the common case this exists for — a host that is a second or two
- * behind the window — should not cost the user a visible wait.
- */
-export const RETRY_DELAYS_MS: readonly number[] = [500, 1_000, 2_000, 5_000, 10_000, 30_000];
-
-/** The gap before the attempt after `failedAttempts` consecutive failures. */
-export function retryDelayMs(failedAttempts: number): number {
-  const last = RETRY_DELAYS_MS.length - 1;
-  return RETRY_DELAYS_MS[Math.min(Math.max(failedAttempts, 0), last)];
-}
 
 /**
  * Whether two readings say the same thing, so a report can be skipped.

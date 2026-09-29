@@ -122,6 +122,9 @@ export default function App() {
   const selected = sessions.find((session) => session.config.id === selectedId) ?? sessions[0];
   const counts = useMemo(() => liveCounts(sessions), [sessions]);
   const diagnosticSessionCount = registry.configReport?.sessions.length ?? sessions.length;
+  const statusNotice =
+    registry.error ??
+    (registry.loading && !registry.initializationError ? "正在同步会话…" : notice);
 
   /** Preview mode: actions render from the real lifecycle rules but perform
    * nothing, because there is no run behind them to act on. */
@@ -182,9 +185,9 @@ export default function App() {
   };
 
   if (selected === undefined) {
-    // Nothing to render yet: the backend has not answered and the fixture
-    // workspace is the only other source, so a shell with no sessions means a
-    // config with no sessions in it.
+    // There is no selected session while the live registry is initializing,
+    // or when the validated workspace is empty. Initialization has its own
+    // status so this is not mistaken for an empty config.
     return (
       <div className="app-shell">
         <TitleBar
@@ -196,15 +199,37 @@ export default function App() {
         />
         <div className="app-main">
           <section className="workspace workspace--empty">
+            {registry.loading && (
+              <div
+                className={`workspace__registry-status${registry.initializationError ? " workspace__registry-status--error" : ""}`}
+                role={registry.initializationError ? "alert" : "status"}
+                aria-label="会话同步状态"
+              >
+                <div className="workspace__registry-status-heading">
+                  <span
+                    className={`pip ${registry.initializationError ? "pip--err" : "pip--warn"}`}
+                    aria-hidden="true"
+                  />
+                  <strong>
+                    {registry.initializationError ? "暂时无法读取会话状态" : "正在同步会话…"}
+                  </strong>
+                </div>
+                <p>
+                  {registry.initializationError
+                    ? `${registry.initializationError} · 正在自动重试。`
+                    : "正在连接到后台并读取已配置会话。"}
+                </p>
+              </div>
+            )}
             <ConfigDiagnostics
               report={registry.configReport}
               error={registry.configReportError}
               sessionCount={diagnosticSessionCount}
-              empty
+              empty={!registry.loading}
             />
           </section>
         </div>
-        <StatusBar counts={counts} connection={connection} notice={registry.error ?? notice} />
+        <StatusBar counts={counts} connection={connection} notice={statusNotice} />
       </div>
     );
   }
@@ -279,7 +304,7 @@ export default function App() {
           </div>
         </section>
       </div>
-      <StatusBar counts={counts} connection={connection} notice={registry.error ?? notice} />
+      <StatusBar counts={counts} connection={connection} notice={statusNotice} />
     </div>
   );
 }

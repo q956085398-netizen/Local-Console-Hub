@@ -1,35 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { isConfigReportDto, isSessionConfigDto, type ConfigReportDto } from "../types/config";
-import {
-  isSessionRuntimeDto,
-  isSessionStateChangedDto,
-  sessionErrorMessage,
-  type SessionRuntimeDto,
-} from "../types/runtime";
+import type { ConfigReportDto } from "../types/config";
+import { SESSION_STATE_CHANGED, sessionErrorMessage } from "../types/runtime";
 import { FIXTURE_SESSIONS } from "../state/fixtures";
-import { sessionsFromLive, type SessionView } from "../state/session-view";
+import type { SessionView } from "../state/session-view";
 import type { BackendConnection } from "../state/backend-connection";
+import { watchSessionRegistry, type SessionRegistrySnapshot } from "../state/session-registry";
 
 /** The workspace the shell renders, and the actions its controls call. */
 export interface SessionRegistry {
   /** The sessions to render, in the registry's order. */
   sessions: SessionView[];
-  /**
-   * Where `sessions` came from. `"preview"` is the T06 fixture workspace: no
-   * backend is answering yet, or none ever will (the browser).
-   */
+  /** The list source, including the period before the first live snapshot. */
   source: SessionSource;
-  /**
-   * Whether a backend is answering at all — a different question from where
-   * the list came from, and both are asked. The terminal attaches to whatever
-   * session is selected as soon as there is a backend, while the rail only
-   * calls itself the backend's once the listing has landed.
-   */
+  /** The backend is connected, but its session list has not loaded yet. */
+  loading: boolean;
+  /** Whether a backend is answering; this is separate from session lifecycle. */
   live: boolean;
   /** The most recent failed action, for the status bar. */
   error: string | null;
+  /** A failed session initialization; the registry retries with capped delay. */
+  initializationError: string | null;
   /** Startup config report, including file-level and per-entry problems. */
   configReport: ConfigReportDto | null;
   /** Failure to retrieve the report IPC payload itself. */
@@ -39,135 +31,94 @@ export interface SessionRegistry {
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
   /**
-   * Hand this session's configured URL — or its working directory — to the OS
-   * (T08 #9).
-   *
-   * A session id, never a URL or a path: Session Core resolves both from the
-   * session's own configuration, so the window cannot ask the machine to open
-   * something the user did not configure (`docs/DECISIONS.md` D-021).
+   * Hand this session's configured URL or working directory to the OS (T08
+   * #9). A session id, never a URL or path, keeps resolution inside Session
+   * Core (`docs/DECISIONS.md` D-021).
    */
   openUrl(sessionId: string): void;
   openDirectory(sessionId: string): void;
 }
 
 /** Where the rendered sessions came from. */
-export type SessionSource = "preview" | "backend";
+export type SessionSource = "preview" | "loading" | "backend";
+
+const EMPTY_LIVE_SNAPSHOT: SessionRegistrySnapshot = {
+  phase: "loading",
+  sessions: [],
+  error: null,
+  sessionRevision: 0,
+  configReport: null,
+  configReportError: null,
+};
+const EMPTY_SESSIONS: SessionView[] = [];
 
 /**
- * The session workspace, from Session Core when there is one to ask (T07 #8).
+ * Session Core remains the lifecycle source of truth. The registry
+ * coordinator subscribes before reading `list_session_configs` and
+ * `list_sessions`, then follows full state events. It reconciles those events
+ * with the initial snapshot and only renders rows with validated config.
  *
- * Session Core is the single source of lifecycle truth (spec §3), so the window
- * does not keep its own copy of it: this reads the registry once
- * (`list_session_configs` + `list_sessions`) and then follows the
- * `session-state-changed` events it publishes, replacing the snapshot for the
- * session each event names. Nothing here decides what a state *is* — an action
- * sends a command and the next event is what the window renders.
- *
- * Before the backend answers — and in the browser preview, where there is none
- * — the workspace is the T06 fixture data. That is a data source, not a second
- * model: `SessionView` is one shape either way, and the shell renders both.
- *
- * Actions on a fixture workspace do nothing: a fixture session has no run to
- * start, and inventing one would be exactly the fake the ticket forbids. The
- * caller surfaces the preview notice instead (`App.tsx`).
+ * The hook supplies typed Tauri operations to that injected backend boundary.
+ * It renders an empty loading state until the first live snapshot is ready;
+ * preview fixtures are used only when no backend has answered.
  */
 export function useSessionRegistry(connection: BackendConnection): SessionRegistry {
   const live = connection.state === "connected";
-  const [sessions, setSessions] = useState<SessionView[]>(() => FIXTURE_SESSIONS);
-  const [source, setSource] = useState<SessionSource>("preview");
+  const [registryForConnection, setRegistryForConnection] = useState<{
+    connection: BackendConnection;
+    snapshot: SessionRegistrySnapshot;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [configReport, setConfigReport] = useState<ConfigReportDto | null>(null);
-  const [configReportError, setConfigReportError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!live) {
-      return;
-    }
-    let cancelled = false;
+    if (!live) return;
+    const activeConnection = connection;
+    let lastSessionRevision = 0;
+    return watchSessionRegistry(
+      {
+        subscribe: (receive) =>
+          listen<unknown>(SESSION_STATE_CHANGED, (event) => receive(event.payload)),
+        listConfigs: () => invoke<unknown>("list_session_configs"),
+        listSessions: () => invoke<unknown>("list_sessions"),
+        getConfigReport: () => invoke<unknown>("get_config_report"),
+      },
+      (snapshot) => {
+        setRegistryForConnection({ connection: activeConnection, snapshot });
+        if (snapshot.sessionRevision > lastSessionRevision) {
+          lastSessionRevision = snapshot.sessionRevision;
+          setError(null);
+        }
+      },
+    );
+  }, [connection, live]);
 
-    const applySnapshot = (runtime: SessionRuntimeDto) => {
-      // The session moved, so whatever went wrong with it has been answered by
-      // something newer than the message. Leaving it up would have the status
-      // bar report a failure the app has already moved past.
-      setError(null);
-      setSessions((current) => {
-        const index = current.findIndex((view) => view.config.id === runtime.sessionId);
-        if (index < 0) {
-          // An event for a session the configuration list did not carry. It
-          // cannot be rendered, and inventing a row for it would show a session
-          // with no name or purpose; the next `list_session_configs` is what
-          // would explain it.
-          return current;
-        }
-        const next = current.slice();
-        next[index] = { ...current[index], runtime };
-        return next;
-      });
-    };
-
-    const subscription = listen<unknown>("session-state-changed", (event) => {
-      if (isSessionStateChangedDto(event.payload)) {
-        applySnapshot(event.payload.runtime);
-      }
-    });
-
-    void (async () => {
-      try {
-        const [configs, runtimes] = await Promise.all([
-          invoke<unknown>("list_session_configs"),
-          invoke<unknown>("list_sessions"),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        if (!Array.isArray(configs) || !configs.every(isSessionConfigDto)) {
-          throw new Error("list_session_configs 返回了无法识别的载荷");
-        }
-        if (!Array.isArray(runtimes) || !runtimes.every(isSessionRuntimeDto)) {
-          throw new Error("list_sessions 返回了无法识别的载荷");
-        }
-        setSource("backend");
-        setSessions(sessionsFromLive(configs, runtimes));
-      } catch (cause) {
-        if (!cancelled) {
-          setError(sessionErrorMessage(cause));
-        }
-      }
-    })();
-
-    // Report retrieval is independent from the session list: a problem with
-    // diagnostics must not prevent valid registered sessions from rendering.
-    void (async () => {
-      try {
-        const rawReport = await invoke<unknown>("get_config_report");
-        if (cancelled) return;
-        if (!isConfigReportDto(rawReport)) {
-          throw new Error("get_config_report 返回了无法识别的载荷");
-        }
-        setConfigReport(rawReport);
-        setConfigReportError(null);
-      } catch (cause) {
-        if (!cancelled) {
-          setConfigReport(null);
-          setConfigReportError(sessionErrorMessage(cause));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      void subscription.then((unlisten) => unlisten());
-    };
-  }, [live]);
+  // A new connection starts empty immediately, without briefly showing fixture
+  // rows or a snapshot from an earlier connection. If the transport later
+  // goes away, keep its last known session snapshot; transport availability
+  // does not rewrite lifecycle truth.
+  const snapshot = live
+    ? registryForConnection?.connection === connection
+      ? registryForConnection.snapshot
+      : EMPTY_LIVE_SNAPSHOT
+    : registryForConnection?.snapshot.phase === "ready"
+      ? registryForConnection.snapshot
+      : null;
+  const source: SessionSource =
+    snapshot === null ? "preview" : snapshot.phase === "ready" ? "backend" : "loading";
+  const sessions: SessionView[] =
+    source === "preview" ? FIXTURE_SESSIONS : (snapshot?.sessions ?? EMPTY_SESSIONS);
+  const loading = source === "loading";
+  const initializationError = loading ? (snapshot?.error ?? null) : null;
+  const configReport = snapshot?.configReport ?? null;
+  const configReportError = snapshot?.configReportError ?? null;
 
   const run = useCallback((command: string, sessionId: string) => {
-    // The result is deliberately ignored: a lifecycle command answers with the
-    // post-operation snapshot, and the event that follows publishes the same
-    // state to everyone (the window, the tray, a future scheduler). Rendering
-    // from the event alone is what keeps them from disagreeing. The two
-    // "open" actions (T08 #9) answer with nothing at all — what they produce
-    // is outside the Hub — so they share this path and its error handling
-    // rather than growing a second one.
+    // The result is deliberately ignored: a lifecycle command answers with
+    // the post-operation snapshot, and the event that follows publishes the
+    // same state to everyone (the window, the tray, a future scheduler).
+    // Rendering from the event alone is what keeps them from disagreeing. The
+    // two "open" actions return no state, so they share this path and its
+    // error handling instead of growing another one.
     invoke(command, { sessionId }).catch((cause) => setError(sessionErrorMessage(cause)));
   }, []);
 
@@ -175,8 +126,10 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     () => ({
       sessions,
       source,
+      loading,
       live,
       error,
+      initializationError,
       configReport,
       configReportError,
       start: (sessionId) => run("start_session", sessionId),
@@ -186,6 +139,16 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       openUrl: (sessionId) => run("open_session_url", sessionId),
       openDirectory: (sessionId) => run("open_session_cwd", sessionId),
     }),
-    [sessions, source, live, error, configReport, configReportError, run],
+    [
+      sessions,
+      source,
+      loading,
+      live,
+      error,
+      initializationError,
+      configReport,
+      configReportError,
+      run,
+    ],
   );
 }

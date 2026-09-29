@@ -27,10 +27,17 @@ and lifecycle changes originate in Session Core.
   DOM or a Tauri host.
 - `backend-connection.ts` — is a host answering the typed ping? Transport
   liveness only: the three readings (`pending` / `connected` / `unavailable`),
-  the bounded backoff that keeps `unavailable` from being permanent, and the
-  stop-on-first-answer rule. The ping is injected, the same way
+  the shared bounded backoff that keeps `unavailable` from being permanent,
+  and the stop-on-first-answer rule. The ping is injected, the same way
   `terminal-attach.ts` injects a backend. It is deliberately **not** a runtime
   model — see the note below.
+- `retry-schedule.ts` — the shared capped retry cadence used by transport and
+  session startup watchers.
+- `session-registry.ts` — coordinates the initial configured-session snapshot
+  with full `session-state-changed` events through an injected backend. It
+  buffers a bounded set of latest events until configs arrive, resynchronizes
+  if that bound is exceeded, retries failed reads on the shared capped
+  cadence, and emits `SessionView[]`; it does not decide lifecycle state.
 - `view.ts` — UI-only vocabulary (workspace tabs).
 
 ## Transport liveness is not session runtime truth
@@ -47,9 +54,11 @@ this file's first paragraph puts it.
 
 `src/app/useSessionRegistry.ts` reads Session Core when a backend is answering
 (`list_session_configs` + `list_sessions`, then the `session-state-changed`
-events) and falls back to `FIXTURE_SESSIONS` when none is — the browser
-preview, and the moment before the first listing returns. The two sources fill
-the *same* `SessionView`, so the shell renders one model, not two.
+events) and falls back to `FIXTURE_SESSIONS` only when none is. While a live
+backend's first snapshot is loading or retrying, the shell renders no session
+rows until it has validated config; it does not show fixture sessions as if
+they belonged to that backend. The two populated sources fill the *same*
+`SessionView`, so the shell renders one model, not two.
 
 `SessionView`'s extras beyond the landed DTOs are documented per field on the
 type and are not a second runtime model:
