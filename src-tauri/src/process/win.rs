@@ -50,12 +50,32 @@ pub struct TreeHandle(usize);
 
 #[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_RESUME_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+    static FAIL_START_STEP_FOR_TEST: Cell<Option<StartFailurePointForTest>> = const { Cell::new(None) };
 }
 
 #[cfg(test)]
-pub fn fail_next_resume_for_test() {
-    FAIL_NEXT_RESUME_FOR_TEST.with(|fail| fail.set(true));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartFailurePointForTest {
+    JobCreation,
+    JobAssignment,
+    Resume,
+}
+
+#[cfg(test)]
+pub fn fail_start_step_for_test(point: StartFailurePointForTest) {
+    FAIL_START_STEP_FOR_TEST.with(|fail| fail.set(Some(point)));
+}
+
+#[cfg(test)]
+fn fail_start_step(point: StartFailurePointForTest) -> bool {
+    FAIL_START_STEP_FOR_TEST.with(|fail| {
+        if fail.get() == Some(point) {
+            fail.set(None);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 impl Drop for TreeHandle {
@@ -84,6 +104,11 @@ pub fn prepare(command: &mut Command) {
 /// If assignment or resumption fails, dropping `job` terminates any assigned
 /// process and the caller kills/reaps the child handle.
 pub fn attach(child: &Child) -> Result<TreeHandle, String> {
+    #[cfg(test)]
+    if fail_start_step(StartFailurePointForTest::JobCreation) {
+        return Err("test-injected CreateJobObjectW failure".to_owned());
+    }
+
     let created = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as usize;
     if created == 0 {
         return Err(last_error("CreateJobObjectW"));
@@ -103,6 +128,11 @@ pub fn attach(child: &Child) -> Result<TreeHandle, String> {
     };
     if configured == 0 {
         return Err(last_error("SetInformationJobObject"));
+    }
+
+    #[cfg(test)]
+    if fail_start_step(StartFailurePointForTest::JobAssignment) {
+        return Err("test-injected AssignProcessToJobObject failure".to_owned());
     }
 
     let assigned = unsafe { AssignProcessToJobObject(job.0 as _, child.as_raw_handle() as _) };
@@ -142,7 +172,7 @@ fn resume_initial_thread(process_id: u32) -> Result<(), String> {
             // count means another actor changed the thread; fail closed so the
             // job's kill-on-close limit tears the process down.
             #[cfg(test)]
-            if FAIL_NEXT_RESUME_FOR_TEST.with(|fail| fail.replace(false)) {
+            if fail_start_step(StartFailurePointForTest::Resume) {
                 return Err("test-injected ResumeThread failure".to_owned());
             }
 

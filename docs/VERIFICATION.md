@@ -101,7 +101,7 @@ node scripts/capture-ui-states.mjs
 | 配置的端口 / URL 可见 | `a_running_service_reads_its_configured_port`、`a_running_service_whose_port_is_closed_reports_both_facts`、`a_service_with_no_port_is_never_probed`、`a_session_url_comes_from_the_session_that_owns_it` |
 | 重启会等前一个进程退出 | `process::tests::restart_leaves_exactly_one_run_alive`、`terminal_tests::restarting_a_terminal_replaces_the_run_and_leaves_one_shell`、集成 `a_restart_starts_a_new_run_and_keeps_the_scrollback` |
 | 启动器快速退出时，启动期间创建的子进程仍属于受管 Job | `process::tests::an_early_descendant_stays_in_the_run_after_its_launcher_exits`（真实 Windows 进程；子进程 PID 握手，并检查无关哨兵存活） |
-| 启动恢复失败时不遗留挂起进程 | `process::tests::a_resume_failure_cleans_up_the_assigned_suspended_process`（真实 Windows 进程；在 Job 归属后注入恢复失败） |
+| Job 创建、进程归属或启动恢复失败时不遗留挂起进程 | `process::tests::startup_failures_clean_up_the_suspended_process`（真实 Windows 进程；分别注入三个启动步骤失败并检查 PID 已退出） |
 | 优雅停止可用 | `process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree`、`session::core::tests::force_stop_ends_the_run_without_waiting_for_it` |
 | 强制结束只动受管树 | `process::tests::force_stop_removes_the_managed_tree_but_not_an_unrelated_process`、`stop_reclaims_a_descendant_left_behind_by_an_exited_run` |
 
@@ -448,6 +448,12 @@ R-3 / R-4 / R-8 与 T-8、L-11 是**必须**人工确认的项。
   `.session-row__name` 的 `text-overflow: ellipsis` 因此是**够不到的死代码**。CSS 布局
   在仓库的 node 测试环境里断言不了（#25 明确不引入 DOM），所以 §4 的 M-6 就是它的守卫。
 
+### 2026-09-30 — #55 服务启动归属回归
+
+**第 1 层。** 在基线 `8c3fad7` 上，真实 Windows 回归测试暂停启动线程、等待子进程完成 PID 握手，随后旧的“先执行、再加入 Job”路径在启动器退出后得到 `AssignProcessToJobObject` Win32 错误 5；这确认竞态可动态复现。修复后，同一握手测试通过，进程先保持挂起并加入 Job，再恢复执行。
+
+修复后的本地原生 Windows 验证：`cargo test` 的 335 个单元测试和 10 个集成测试全部通过（包含上述进程树回归及三种启动失败清理）；`cargo clippy --all-targets -- -D warnings`、`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 和 `git diff --check` 通过。
+
 ---
 
 ## 7. 当前已知缺口与验收边界
@@ -462,6 +468,6 @@ R-3 / R-4 / R-8 与 T-8、L-11 是**必须**人工确认的项。
 - **安装包验收仍有未完成部分。** 详见 [`RELEASE.md`](RELEASE.md) §4 / §5：I-7 图标外观、I-8 MSI 实际安装未完成，I-15 尚未执行；
   I-16 / I-17 中需要真实窗口和交互的部分仍未验证。已通过的 NSIS 文件与用户数据检查
   不能替代这些验收。
-- **实现跟进尚未完成。** 截至 2026-09-29，MVP 复核的 #52–#55 仍未完成；其实现与原生验收结果应在完成后另行记录，
-  当前文档没有将它们计为通过。
+- **实现跟进（2026-09-29 历史快照）。** 当日 MVP 复核时，#52–#55 尚未完成。#55 于 2026-09-30 完成，
+  其实现与原生 Windows 验证结果见 §6；此历史快照未更新其他工单状态。
 - 手工冒烟二进制不进 CI（会起真实进程、需要人敲回车）。要纳入 CI，需先解决 `supervise_smoke` 的交互步骤。

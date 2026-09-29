@@ -359,7 +359,11 @@ impl ManagedProcess {
                 let _ = child.wait();
                 return Err(ProcessError::Supervision {
                     operation: "assigning the suspended run to its job object before resuming it",
-                    reason,
+                    reason: format!(
+                        "process `{}` in working directory `{}`: {reason}",
+                        spec.program.display(),
+                        spec.cwd.display()
+                    ),
                 });
             }
         };
@@ -1025,27 +1029,38 @@ mod tests {
     }
 
     #[test]
-    fn a_resume_failure_cleans_up_the_assigned_suspended_process() {
-        let created_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let created_pid_for_hook = Arc::clone(&created_pid);
-        before_job_assignment(move |pid| {
-            created_pid_for_hook.store(pid, std::sync::atomic::Ordering::Release);
-            super::win::fail_next_resume_for_test();
-        });
+    fn startup_failures_clean_up_the_suspended_process() {
+        use std::sync::atomic::{AtomicU32, Ordering};
 
-        let error = ManagedProcess::spawn(long_running())
-            .expect_err("a failed initial-thread resume refuses the run");
-        assert!(
-            error.to_string().contains("before resuming it"),
-            "the startup error names the refused ownership step: {error}"
-        );
+        let failure_points = [
+            super::win::StartFailurePointForTest::JobCreation,
+            super::win::StartFailurePointForTest::JobAssignment,
+            super::win::StartFailurePointForTest::Resume,
+        ];
 
-        let pid = created_pid.load(std::sync::atomic::Ordering::Acquire);
-        assert_ne!(pid, 0, "the test observed the created process id");
-        assert!(
-            !super::win::is_process_alive(pid),
-            "a run must not survive when its suspended initial thread cannot be resumed"
-        );
+        for point in failure_points {
+            let created_pid = Arc::new(AtomicU32::new(0));
+            let created_pid_for_hook = Arc::clone(&created_pid);
+            before_job_assignment(move |pid| {
+                created_pid_for_hook.store(pid, Ordering::Release);
+                super::win::fail_start_step_for_test(point);
+            });
+
+            let error = ManagedProcess::spawn(long_running())
+                .expect_err("a startup ownership failure refuses the run");
+            let message = error.to_string();
+            assert!(
+                message.contains("cmd.exe") && message.contains("working directory"),
+                "the startup error includes its command and working directory: {message}"
+            );
+
+            let pid = created_pid.load(Ordering::Acquire);
+            assert_ne!(pid, 0, "the test observed the created process id");
+            assert!(
+                !super::win::is_process_alive(pid),
+                "the process survived injected startup failure at {point:?}"
+            );
+        }
     }
 
     #[test]
