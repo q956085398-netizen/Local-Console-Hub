@@ -83,8 +83,8 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
     }
     // A comment-only document deserializes as null; treat it like an
     // empty file rather than a parse error.
-    let root: Option<RawConfigFile> = match serde_yaml::from_str(text) {
-        Ok(root) => root,
+    let document: serde_yaml::Value = match serde_yaml::from_str(text) {
+        Ok(document) => document,
         Err(err) => {
             return LoadedConfig {
                 file_status: ConfigFileStatusDto::Loaded,
@@ -94,6 +94,28 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
                     session_id: None,
                     field: None,
                     message: format!("config file is not valid YAML: {err}"),
+                }],
+            };
+        }
+    };
+    let root: Option<RawConfigFile> = match serde_yaml::from_value(document.clone()) {
+        Ok(root) => root,
+        Err(err) => {
+            let field = root_deserialization_error_field(&document, &err);
+            let message = match &field {
+                Some(field) => {
+                    format!("config file has an invalid field `{field}`: {err}")
+                }
+                None => format!("config file has an invalid structure: {err}"),
+            };
+            return LoadedConfig {
+                file_status: ConfigFileStatusDto::Loaded,
+                sessions: Vec::new(),
+                errors: vec![SessionConfigError {
+                    index: 0,
+                    session_id: None,
+                    field,
+                    message,
                 }],
             };
         }
@@ -109,11 +131,18 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
         let raw: RawSessionConfig = match serde_yaml::from_value(entry.clone()) {
             Ok(raw) => raw,
             Err(err) => {
+                let field = deserialization_error_field(entry, &err);
+                let message = match &field {
+                    Some(field) => {
+                        format!("session entry {index} has an invalid field `{field}`: {err}")
+                    }
+                    None => format!("session entry {index} is invalid: {err}"),
+                };
                 errors.push(SessionConfigError {
                     index,
                     session_id: None,
-                    field: None,
-                    message: format!("session entry {index} is invalid: {err}"),
+                    field,
+                    message,
                 });
                 continue;
             }
@@ -141,6 +170,170 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
         file_status: ConfigFileStatusDto::Loaded,
         sessions,
         errors,
+    }
+}
+
+fn root_deserialization_error_field(
+    document: &serde_yaml::Value,
+    error: &serde_yaml::Error,
+) -> Option<String> {
+    let message = error.to_string();
+    if let Some(field) = quoted_error_field(&message, "unknown field") {
+        return Some(field);
+    }
+    if let Some(field) = quoted_error_field(&message, "missing field") {
+        return Some(field);
+    }
+    if let Some(sessions) = mapping_value(document, "sessions") {
+        if serde_yaml::from_value::<Option<Vec<serde_yaml::Value>>>(sessions.clone()).is_err() {
+            return Some("sessions".to_owned());
+        }
+    }
+    Some("config".to_owned())
+}
+
+/// Resolve a serde error to the config key that needs attention. Serde's
+/// `from_value` error does not retain the nested key path, so recover explicit
+/// missing/unknown keys from its message and otherwise check the known schema
+/// in declaration order to identify a value with the wrong shape.
+fn deserialization_error_field(
+    entry: &serde_yaml::Value,
+    error: &serde_yaml::Error,
+) -> Option<String> {
+    let message = error.to_string();
+    if let Some(field) = quoted_error_field(&message, "missing field") {
+        return Some(field);
+    }
+    if let Some(field) = quoted_error_field(&message, "unknown field") {
+        return unknown_session_field_path(entry).or(Some(field));
+    }
+
+    let fields = entry.as_mapping()?;
+    for (name, expected) in [
+        ("id", FieldShape::String),
+        ("name", FieldShape::String),
+        ("type", FieldShape::String),
+        ("cwd", FieldShape::OptionalString),
+        ("command", FieldShape::OptionalString),
+        ("url", FieldShape::OptionalString),
+        ("port", FieldShape::OptionalPort),
+        ("purpose", FieldShape::OptionalString),
+        ("close_impact", FieldShape::OptionalString),
+        ("shell", FieldShape::OptionalString),
+        ("initial_command", FieldShape::OptionalString),
+        ("logging", FieldShape::OptionalMapping),
+    ] {
+        let Some(value) = fields.get(serde_yaml::Value::String(name.to_owned())) else {
+            continue;
+        };
+        if !expected.matches(value) {
+            return Some(name.to_owned());
+        }
+    }
+
+    let logging = mapping_value(entry, "logging")?.as_mapping()?;
+    for (name, expected) in [
+        ("mode", FieldShape::OptionalLogMode),
+        ("source", FieldShape::OptionalLogSource),
+        ("path", FieldShape::OptionalString),
+    ] {
+        let Some(value) = logging.get(serde_yaml::Value::String(name.to_owned())) else {
+            continue;
+        };
+        if !expected.matches(value) {
+            return Some(format!("logging.{name}"));
+        }
+    }
+    None
+}
+
+/// Follow the same mapping order serde uses so identically named unknown
+/// fields at the entry and inside `logging` are attributed to the first one it
+/// would reject.
+fn unknown_session_field_path(entry: &serde_yaml::Value) -> Option<String> {
+    let fields = entry.as_mapping()?;
+    for (key, value) in fields {
+        let name = key.as_str()?;
+        if name == "logging" {
+            if let Some(logging) = value.as_mapping() {
+                for (logging_key, _) in logging {
+                    let logging_name = logging_key.as_str()?;
+                    if !matches!(logging_name, "mode" | "source" | "path") {
+                        return Some(format!("logging.{logging_name}"));
+                    }
+                }
+            }
+        } else if !matches!(
+            name,
+            "id" | "name"
+                | "type"
+                | "cwd"
+                | "command"
+                | "url"
+                | "port"
+                | "purpose"
+                | "close_impact"
+                | "shell"
+                | "initial_command"
+        ) {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+fn mapping_value<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
+    value
+        .as_mapping()?
+        .get(serde_yaml::Value::String(key.to_owned()))
+}
+
+fn quoted_error_field(message: &str, marker: &str) -> Option<String> {
+    let value = message
+        .get(message.find(marker)? + marker.len()..)?
+        .trim_start();
+    let quote = value.chars().next()?;
+    if !matches!(quote, '`' | '\'') {
+        return None;
+    }
+    let value = &value[quote.len_utf8()..];
+    let end = value.find(quote)?;
+    Some(value[..end].to_owned())
+}
+
+#[derive(Clone, Copy)]
+enum FieldShape {
+    String,
+    OptionalString,
+    OptionalPort,
+    OptionalMapping,
+    OptionalLogMode,
+    OptionalLogSource,
+}
+
+impl FieldShape {
+    fn matches(self, value: &serde_yaml::Value) -> bool {
+        use serde_yaml::Value;
+        match self {
+            FieldShape::String => matches!(value, Value::String(_)),
+            FieldShape::OptionalString => matches!(value, Value::Null | Value::String(_)),
+            FieldShape::OptionalPort => {
+                matches!(value, Value::Null)
+                    || value.as_u64().is_some_and(|port| port <= u16::MAX as u64)
+            }
+            FieldShape::OptionalMapping => matches!(value, Value::Null | Value::Mapping(_)),
+            FieldShape::OptionalLogMode => {
+                matches!(value, Value::Null)
+                    || matches!(
+                        value.as_str(),
+                        Some("off" | "always" | "on_error" | "manual" | "auto")
+                    )
+            }
+            FieldShape::OptionalLogSource => {
+                matches!(value, Value::Null)
+                    || matches!(value.as_str(), Some("none" | "captured" | "external"))
+            }
+        }
     }
 }
 
@@ -236,7 +429,32 @@ mod tests {
         assert!(loaded.sessions.is_empty());
         assert_eq!(loaded.errors.len(), 1);
         assert_eq!(loaded.errors[0].index, 0);
+        assert_eq!(loaded.errors[0].field, None);
         assert!(loaded.errors[0].message.contains("YAML"));
+    }
+
+    #[test]
+    fn invalid_root_shape_names_the_config_field_to_repair() {
+        let loaded = load_from_str("sessions: nope\n");
+
+        assert!(loaded.sessions.is_empty());
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("sessions"));
+        assert!(loaded.errors[0]
+            .message
+            .contains("invalid field `sessions`"));
+        assert!(!loaded.errors[0].message.contains("not valid YAML"));
+    }
+
+    #[test]
+    fn unknown_root_field_is_reported_as_a_config_field_error() {
+        let loaded = load_from_str("sessions: []\nunknown: true\n");
+
+        assert!(loaded.sessions.is_empty());
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("unknown"));
+        assert!(loaded.errors[0].message.contains("unknown"));
+        assert!(!loaded.errors[0].message.contains("not valid YAML"));
     }
 
     #[test]
@@ -428,6 +646,70 @@ mod tests {
         assert_eq!(loaded.sessions[0].id, "other");
         assert_eq!(loaded.errors.len(), 1);
         assert!(loaded.errors[0].message.contains("unknown field `prot`"));
+    }
+
+    #[test]
+    fn wrong_field_types_identify_the_field_to_repair() {
+        let entry = session_yaml("bad-command", "service", "command: 42");
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert_eq!(loaded.sessions.len(), 0);
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("command"));
+        assert!(loaded.errors[0].message.contains("command"));
+    }
+
+    #[test]
+    fn nested_logging_errors_identify_the_full_field_path() {
+        let entry = session_yaml(
+            "bad-logging",
+            "service",
+            "command: run\nlogging:\n  mode: verbose",
+        );
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert_eq!(loaded.sessions.len(), 0);
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("logging.mode"));
+    }
+
+    #[test]
+    fn top_level_unknown_field_is_not_attributed_to_a_valid_logging_field() {
+        let entry = session_yaml(
+            "bad-source",
+            "service",
+            "command: run\nsource: typo\nlogging:\n  source: captured",
+        );
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("source"));
+    }
+
+    #[test]
+    fn duplicate_unknown_names_are_attributed_to_the_first_invalid_mapping() {
+        let top_level_first = session_yaml(
+            "bad-source",
+            "service",
+            "command: run\nsource_typo: top\nlogging:\n  source_typo: nested",
+        );
+        let nested_first = session_yaml(
+            "bad-logging",
+            "service",
+            "command: run\nlogging:\n  source_typo: nested\nsource_typo: top",
+        );
+
+        let top_level_error = load_from_str(&config(&[top_level_first]));
+        let nested_error = load_from_str(&config(&[nested_first]));
+
+        assert_eq!(
+            top_level_error.errors[0].field.as_deref(),
+            Some("source_typo")
+        );
+        assert_eq!(
+            nested_error.errors[0].field.as_deref(),
+            Some("logging.source_typo")
+        );
     }
 
     #[test]
