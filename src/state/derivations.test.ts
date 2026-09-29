@@ -10,10 +10,13 @@ import {
   formatDuration,
   groupSessions,
   headerCallout,
+  healthReading,
   initialSelectedSessionId,
   isLive,
+  isReady,
   liveCounts,
   logModeLabel,
+  logModeToken,
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
@@ -83,7 +86,6 @@ function fixture(overrides: Partial<SessionView> = {}): SessionView {
     runs: overrides.runs ?? [],
     group: overrides.group ?? "ai",
     busy: overrides.busy,
-    ready: overrides.ready,
     dependsOn: overrides.dependsOn,
     lines: overrides.lines,
   };
@@ -251,11 +253,14 @@ describe("availableActions", () => {
     expect(availableActions(config(), runtime({ status: "stopping" })).restart).toBe(false);
   });
 
-  it("keeps directory and the service URL available", () => {
+  it("offers the two open actions only where the config has a target", () => {
     const actions = availableActions(config(), runtime());
     expect(actions.directory).toBe(true);
     expect(actions.openUrl).toBe("http://127.0.0.1:8000");
+    // A session with nothing to open offers no button, rather than one the
+    // backend would answer with "there is no url in its configuration".
     expect(availableActions(config({ url: undefined }), runtime()).openUrl).toBeUndefined();
+    expect(availableActions(config({ cwd: undefined }), runtime()).directory).toBe(false);
     const terminal = config({
       sessionType: "terminal",
       url: undefined,
@@ -263,12 +268,73 @@ describe("availableActions", () => {
       shell: "pwsh",
     });
     expect(availableActions(terminal, runtime()).openUrl).toBeUndefined();
+    expect(availableActions(terminal, runtime()).directory).toBe(true);
   });
 
   it("scopes force stop to the live window, including Stopping", () => {
     expect(availableActions(config(), runtime()).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopping" })).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopped" })).forceStop).toBe(false);
+  });
+});
+
+describe("isReady", () => {
+  it("calls a service ready when its port answers", () => {
+    expect(isReady(runtime({ health: { processAlive: true, portOpen: true } }))).toBe(true);
+  });
+
+  it("does not call a running service ready while nothing is listening", () => {
+    // The two facts stay apart: the process is alive, the service is not up.
+    expect(isReady(runtime({ health: { processAlive: true, portOpen: false } }))).toBe(false);
+    expect(isReady(runtime({ health: { processAlive: false, portOpen: false } }))).toBe(false);
+  });
+
+  it("does not call a service ready on a port its own process is not holding", () => {
+    // Something is listening on the configured port, but not this run's
+    // process — so this session is not the thing answering, and `Ready` would
+    // be claiming a service that is not there. The Details row says both facts,
+    // and the badge stays on the lifecycle state.
+    const reading = { processAlive: false, portOpen: true };
+    expect(isReady(runtime({ health: reading }))).toBe(false);
+    expect(healthReading(runtime({ health: reading }))).toBe("监听中 · 本会话进程已退出");
+  });
+
+  it("never calls a session ready before anything has been probed", () => {
+    // `null` is "we did not check", not "the port is closed" — so the badge
+    // falls back to what the state machine knows.
+    expect(isReady(runtime({ status: "starting", health: null }))).toBe(false);
+    expect(isReady(runtime({ status: "running", health: null, ptyAttached: false }))).toBe(false);
+  });
+
+  it("calls a running attached terminal ready", () => {
+    // The reference labels it `Ready`; a shell that is attached and accepting
+    // input is the terminal's equivalent of a port that answers.
+    expect(isReady(runtime({ health: null, ptyAttached: true }))).toBe(true);
+    expect(isReady(runtime({ status: "stopped", health: null, ptyAttached: true }))).toBe(false);
+  });
+
+  it("reads the wire's nulls, not just missing keys", () => {
+    expect(isReady(runtime(WIRE_STOPPED))).toBe(false);
+  });
+});
+
+describe("healthReading", () => {
+  it("says the port's answer and the process's as separate facts", () => {
+    expect(healthReading(runtime({ health: { processAlive: true, portOpen: true } }))).toBe(
+      "监听中",
+    );
+    expect(healthReading(runtime({ health: { processAlive: true, portOpen: false } }))).toBe(
+      "未监听",
+    );
+    expect(healthReading(runtime({ health: { processAlive: false, portOpen: false } }))).toBe(
+      "未监听 · 本会话进程已退出",
+    );
+  });
+
+  it("reports nothing at all when nothing has been probed", () => {
+    expect(healthReading(runtime({ health: null }))).toBeUndefined();
+    expect(healthReading(runtime(WIRE_STOPPED))).toBeUndefined();
+    expect(healthReading(runtime({ health: undefined }))).toBeUndefined();
   });
 });
 
@@ -404,6 +470,13 @@ describe("logging labels", () => {
     expect(logSourceLabel("captured")).toBe("Hub captured");
   });
 
+  it("spells the metadata line's mode word lowercase", () => {
+    expect(logModeToken("off")).toBe("off");
+    expect(logModeToken("always")).toBe("always");
+    expect(logModeToken("on_error")).toBe("on error");
+    expect(logModeToken("manual")).toBe("manual");
+  });
+
   it("answers 'is this being logged?' in one line", () => {
     expect(loggingHeadline({ mode: "off", source: "none" })).toBe("仅内存缓冲，不写磁盘");
     expect(loggingHeadline({ mode: "always", source: "captured" })).toBe(
@@ -424,8 +497,19 @@ describe("metadataPairs", () => {
       { label: "port", value: ":8000" },
       { label: "up", value: "3h 14m" },
       { label: "cwd", value: "D:/Tools/SillyTavern" },
-      { label: "log", value: "Always" },
+      { label: "log", value: "always" },
     ]);
+  });
+
+  it("keeps the mode lowercase while the sidebar chip keeps its capital", () => {
+    const session = fixture({
+      config: config({ logging: { mode: "on_error", source: "captured" } }),
+    });
+    expect(metadataPairs(session.config, session.runtime, NOW)).toContainEqual({
+      label: "log",
+      value: "on error",
+    });
+    expect(sidebarRowMeta(session)).toContainEqual({ text: "On error" });
   });
 
   it("says buffer only for a terminal without persistence", () => {

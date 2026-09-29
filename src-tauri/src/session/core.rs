@@ -31,6 +31,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::config::{self, EffectiveLogMode, LogSource, SessionConfig, SessionType};
+use crate::health;
 use crate::logging::{
     self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
     RunLogHandle, RunOutcome, Stream, TerminalBuffer, DEFAULT_LOG_LIMITS,
@@ -489,6 +490,8 @@ pub struct SessionCore {
     scrollback: BufferLimits,
     /// How large one run's log file may grow before it is closed off.
     limits: logging::LogLimits,
+    /// How often a running service's health is re-read (`crate::health`).
+    health_interval: std::time::Duration,
 }
 
 /// Lock a mutex, surviving a previous holder's panic.
@@ -517,6 +520,7 @@ impl SessionCore {
             roots: None,
             scrollback: crate::logging::DEFAULT_BUFFER_LIMITS,
             limits: DEFAULT_LOG_LIMITS,
+            health_interval: health::POLL_INTERVAL,
         }
     }
 
@@ -544,6 +548,18 @@ impl SessionCore {
     fn with_limits(mut self, scrollback: BufferLimits, limits: logging::LogLimits) -> Self {
         self.scrollback = scrollback;
         self.limits = limits;
+        self
+    }
+
+    /// Builder-style: replace the health poll interval.
+    ///
+    /// Only tests do this. The interval is a deliberate product trade rather
+    /// than a setting (`crate::health::POLL_INTERVAL`); a test that had to wait
+    /// five seconds per observation would be testing the constant, not the
+    /// behaviour.
+    #[cfg(test)]
+    fn with_health_interval(mut self, interval: std::time::Duration) -> Self {
+        self.health_interval = interval;
         self
     }
 
@@ -635,19 +651,56 @@ impl SessionCore {
     /// must have released the session lock: this reads every session, and the
     /// lock order everywhere else is registry-then-session.
     fn publish_state_and_summary(&self, session_id: &str) {
-        let Some(runtime) = self.snapshot(session_id) else {
+        if !self.publish_state(session_id) {
             return;
+        }
+        self.sink
+            .publish(SessionEvent::AppSummaryChanged(AppSummaryChanged {
+                summary: self.summary(),
+            }));
+    }
+
+    /// Publish one session's current snapshot. `false` if there is no such
+    /// session.
+    ///
+    /// Split out of [`SessionCore::publish_state_and_summary`] for the events
+    /// that move nothing the summary counts: a health reading changes within a
+    /// run, so the running/error totals it would republish are the same ones
+    /// (T08 §12).
+    fn publish_state(&self, session_id: &str) -> bool {
+        let Some(runtime) = self.snapshot(session_id) else {
+            return false;
         };
-        let summary = self.summary();
         self.sink
             .publish(SessionEvent::StateChanged(SessionStateChanged {
                 session_id: runtime.session_id.clone(),
                 runtime,
             }));
-        self.sink
-            .publish(SessionEvent::AppSummaryChanged(AppSummaryChanged {
-                summary,
-            }));
+        true
+    }
+
+    /// Read a running service's health and publish it if the reading moved.
+    ///
+    /// Only the *changes* go out: a steady service costs one loopback connect
+    /// per interval and no UI work at all, which is what §14 asks for. The
+    /// reading is stored on the snapshot before anything is published, so a
+    /// listener that reacts to the event and re-reads the snapshot sees the
+    /// reading the event was about.
+    fn read_health(
+        &self,
+        session_id: &str,
+        handle: &Arc<Mutex<SessionState>>,
+        run: &Run,
+        port: u16,
+        generation: u64,
+    ) {
+        let reading = health::ServiceHealth::read(run.exit_status().is_none(), port);
+        // The probe takes time and holds no lock, so the session may have moved
+        // on while it was in flight; recording it under the session's own lock
+        // is what decides whether this reading is still about anything.
+        if lock(handle).record_health(generation, reading) {
+            self.publish_state(session_id);
+        }
     }
 
     /// Publish the current run record, if the session has one.
@@ -787,6 +840,11 @@ impl SessionCore {
                     state.runtime.started_at = Some(started_at);
                     state.runtime.exit_code = None;
                     state.runtime.status = SessionStatus::Running;
+                    // The previous run's reading belongs to that run. This run
+                    // has not been probed yet, and the first probe (the
+                    // watcher's, a moment from now) is what will say anything
+                    // about it (T08 §12).
+                    state.runtime.health = None;
 
                     let started = match spawned {
                         Spawned::Process(run) => {
@@ -840,6 +898,7 @@ impl SessionCore {
                     state.runtime.pid = None;
                     state.runtime.run_id = None;
                     state.runtime.pty_attached = false;
+                    state.runtime.health = None;
                     state.run = None;
                     state.record = None;
                     state.log = None;
@@ -1448,6 +1507,65 @@ impl SessionCore {
             .collect()
     }
 
+    /// The URL "open this session's page" should hand to the OS (spec §9).
+    ///
+    /// Resolved here rather than passed in for the same reason a log action is
+    /// (`SessionCore::log_file_path`): the frontend names a session, and the
+    /// layer holding that session's configuration is the one that knows which
+    /// URL it owns. The alternative — a command that opened whatever string it
+    /// was given — would hand the webview a general launcher for any URL, which
+    /// is not a capability a control surface needs (`crate::shell`'s note).
+    ///
+    /// The URL was validated when the config was read (`config::validate_url`:
+    /// http/https only), so what comes back is already known to be a URL the OS
+    /// should be asked to open rather than, say, a `file:` path.
+    pub fn session_url(&self, session_id: &str) -> Result<String, SessionError> {
+        const OPERATION: &str = "open_session_url";
+        let config = self.config_of(session_id, OPERATION)?;
+        config.url.ok_or_else(|| {
+            SessionError::unsupported(
+                session_id,
+                OPERATION,
+                format!(
+                    "session `{session_id}` has no `url` in its configuration — add one to the \
+                     session and this action can open it in the browser"
+                ),
+            )
+        })
+    }
+
+    /// The folder "open this session's working directory" should hand to the OS
+    /// (spec §9).
+    ///
+    /// Whether the folder is still *there* is not decided here: the config was
+    /// checked when it was read and a user can delete a directory afterwards, so
+    /// [`crate::shell::open_path`] is what reports a path that has since gone
+    /// missing, with the advice that belongs to it.
+    pub fn session_cwd(&self, session_id: &str) -> Result<PathBuf, SessionError> {
+        const OPERATION: &str = "open_session_cwd";
+        let config = self.config_of(session_id, OPERATION)?;
+        config.cwd.ok_or_else(|| {
+            SessionError::unsupported(
+                session_id,
+                OPERATION,
+                format!(
+                    "session `{session_id}` has no `cwd` in its configuration — set the folder it \
+                     runs in and this action can open it"
+                ),
+            )
+        })
+    }
+
+    /// One session's validated configuration, or the refusal that names the
+    /// operation that wanted it.
+    fn config_of(&self, session_id: &str, operation: &str) -> Result<SessionConfig, SessionError> {
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
+        let config = lock(&handle).config.clone();
+        Ok(config)
+    }
+
     /// Commit the current run's `on_error` log now, instead of waiting for the
     /// run to end (`docs/LOGGING.md` §3: "save this run's log").
     ///
@@ -2030,11 +2148,33 @@ impl SessionState {
         // does) and is released when the next run replaces it; what must not
         // survive is the claim that a terminal view could type into it.
         self.runtime.pty_attached = false;
+        // A reading describes a run in flight. Once there is none, the last one
+        // is not a fact about now, and leaving it up would have the Details tab
+        // report "not listening" for a service the user has just stopped — a
+        // sentence about something being wrong rather than nothing being
+        // checked (T08 §12).
+        self.runtime.health = None;
 
         if let Some(record) = self.record.as_mut() {
             record.ended_at = Some(Timestamp::now());
             record.exit_code = code;
         }
+    }
+
+    /// Record a health reading taken for the run `generation` names.
+    ///
+    /// `true` when the snapshot changed and the reading is worth announcing.
+    /// Two things answer `false`, and both are about the reading no longer
+    /// being news: the session has moved past that run — a restart replaced it,
+    /// or a stop has already cleared the reading — so writing it would report
+    /// the old process's health as the new run's; or it is the reading already
+    /// on the snapshot, which nothing needs republishing for.
+    fn record_health(&mut self, generation: u64, reading: health::ServiceHealth) -> bool {
+        if self.generation != generation || self.runtime.health == Some(reading) {
+            return false;
+        }
+        self.runtime.health = Some(reading);
+        true
     }
 
     /// The run this session's log answers for: the live one, or the last one
@@ -2184,6 +2324,23 @@ fn policy_reason(status: &LogStatus) -> String {
 /// measuring — well inside the budget D-009 sets for background work.
 const WATCH_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The port whose readiness a run should be probed on, or `None` when there is
+/// nothing to probe (T08 §12).
+///
+/// Only a service that names a port. A service without one has no readiness
+/// question this layer can answer — whether its process is alive is what
+/// `Running` already says, and repeating that as a "health reading" would be
+/// two renderings of one fact. A terminal has neither a port nor a `port` field
+/// to put one in: the config schema refuses `port` on a terminal session
+/// (`config::validate`), and what it *can* answer — whether a shell is attached
+/// — is already on the snapshot as `pty_attached`.
+fn health_port(config: &SessionConfig, run: &Run) -> Option<u16> {
+    match (config.session_type, run) {
+        (SessionType::Service, Run::Process(_)) => config.port,
+        _ => None,
+    }
+}
+
 /// Notice a run ending without anyone asking, and record it.
 ///
 /// This is the mechanism behind spec §5 rule 4 — an unexpected exit updates
@@ -2201,16 +2358,24 @@ fn watch_run(
     session_id: String,
     generation: u64,
 ) {
-    let run = {
+    let (run, polled_port) = {
         let state = lock(&handle);
         if state.generation != generation {
             return;
         }
         match &state.run {
-            Some(run) => run.clone(),
+            Some(run) => (run.clone(), health_port(&state.config, run)),
             None => return,
         }
     };
+
+    // Health rides this thread rather than one of its own: the watcher exists
+    // exactly as long as the run does, which is what "cancellable with session
+    // lifecycle" asks for and what keeps a stopped service from leaving a
+    // monitor behind (spec §12, §14). The first probe is due immediately — a
+    // service that is already listening should not wait an interval to be
+    // called ready — and every one after it is an interval apart.
+    let mut next_probe = polled_port.map(|_| std::time::Instant::now());
 
     loop {
         if run.wait_for_exit(WATCH_TICK).is_some() {
@@ -2226,6 +2391,14 @@ fn watch_run(
         // lines before a quiet spell would sit unpublished. For a terminal the
         // reader ticks faster and this is usually a no-op.
         core.flush_output(&session_id, generation, false);
+
+        if let (Some(port), Some(due)) = (polled_port, next_probe) {
+            let now = std::time::Instant::now();
+            if now >= due {
+                core.read_health(&session_id, &handle, &run, port, generation);
+                next_probe = Some(now + core.health_interval);
+            }
+        }
     }
 
     let ending = {
@@ -2389,6 +2562,7 @@ fn split_command(command: &str) -> Result<(PathBuf, Vec<String>), String> {
 mod tests {
     use super::*;
     use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource, SessionType};
+    use std::net::{Ipv4Addr, TcpListener};
     use std::path::PathBuf;
 
     /// A sink that keeps what it was told, so a test can assert on the event
@@ -2601,6 +2775,217 @@ mod tests {
         assert_eq!(error.kind, SessionErrorKind::UnknownSession);
     }
 
+    /// A long-running service that names `port`, with health polls at
+    /// `interval` so a test does not wait out the product's own cadence.
+    fn core_with_port(
+        id: &str,
+        port: u16,
+        interval: std::time::Duration,
+    ) -> (SessionCore, Arc<RecordingSink>) {
+        let sink = Arc::new(RecordingSink::default());
+        let core = SessionCore::new(sink.clone()).with_health_interval(interval);
+        let mut config = service(id);
+        config.command = Some(LONG_RUNNING.to_owned());
+        config.url = Some(format!("http://127.0.0.1:{port}"));
+        config.port = Some(port);
+        core.register(config).expect("registration succeeds");
+        (core, sink)
+    }
+
+    /// T08 §12, first half: a running service that names a port gets a reading.
+    ///
+    /// The listener here is the *test's*, not the service's — `cmd.exe /c ping`
+    /// never listens on anything. That is what makes this an assertion about the
+    /// probe rather than about the state machine: the reading follows the
+    /// socket, not the session's own status.
+    #[test]
+    fn a_running_service_reads_its_configured_port() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("the bound address").port();
+        let (core, _sink) = core_with_port("svc", port, health::POLL_INTERVAL);
+        core.start("svc").expect("start succeeds");
+
+        let reading = wait_for_health(
+            &core,
+            "svc",
+            |reading| reading.port_open,
+            std::time::Duration::from_secs(10),
+        );
+        assert!(reading.process_alive, "the run's process is alive");
+
+        drop(listener);
+        core.force_stop("svc").expect("cleanup");
+    }
+
+    /// T08's acceptance criterion that port availability is not lifecycle
+    /// state: a service whose port is not answering is still `Running`, and the
+    /// reading says both facts rather than picking one (D-008).
+    #[test]
+    fn a_running_service_whose_port_is_closed_reports_both_facts() {
+        let (core, _sink) = core_with_port("svc", health::closed_port(), health::POLL_INTERVAL);
+        core.start("svc").expect("start succeeds");
+
+        let reading = wait_for_health(
+            &core,
+            "svc",
+            |reading| !reading.port_open,
+            std::time::Duration::from_secs(10),
+        );
+
+        assert!(
+            reading.process_alive,
+            "nothing listening is not the same as nothing running"
+        );
+        assert_eq!(
+            core.snapshot("svc").expect("registered").status,
+            SessionStatus::Running,
+            "a closed port must not move the lifecycle"
+        );
+
+        core.force_stop("svc").expect("cleanup");
+    }
+
+    /// A service that names no port has no readiness question this layer can
+    /// answer, so it is never probed: no reading is not "the port is closed".
+    #[test]
+    fn a_service_with_no_port_is_never_probed() {
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+        core.start("svc").expect("start succeeds");
+
+        // Several watcher ticks: a probe would have landed by now.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+
+        assert_eq!(
+            core.snapshot("svc").expect("registered").health,
+            None,
+            "a session with no port to check reports no reading"
+        );
+
+        core.force_stop("svc").expect("cleanup");
+    }
+
+    /// A reading describes a run in flight, and the polling stops with it
+    /// (spec §12: "cancellable with session lifecycle").
+    ///
+    /// The port stays open across the stop — the test's listener, not the
+    /// service's — so a poller that outlived its run would keep finding it
+    /// listening and put a reading back.
+    #[test]
+    fn a_reading_and_its_polling_go_away_with_the_run_they_described() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("the bound address").port();
+        let (core, _sink) = core_with_port("svc", port, std::time::Duration::from_millis(40));
+        core.start("svc").expect("start succeeds");
+        wait_for_health(
+            &core,
+            "svc",
+            |reading| reading.port_open,
+            std::time::Duration::from_secs(10),
+        );
+
+        let stopped = core.force_stop("svc").expect("stop succeeds");
+        assert_eq!(stopped.health, None, "a stopped session reports no reading");
+
+        // Several poll intervals' worth of time with the port still listening.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            core.snapshot("svc").expect("registered").health,
+            None,
+            "something is still probing a run that has ended"
+        );
+        drop(listener);
+    }
+
+    /// §12 wants checks low-frequency and §14 wants no needless UI work, so a
+    /// reading that has not moved is re-read without being republished.
+    #[test]
+    fn a_reading_is_published_only_when_it_changes() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("the bound address").port();
+        let (core, sink) = core_with_port("svc", port, std::time::Duration::from_millis(40));
+        core.start("svc").expect("start succeeds");
+        wait_for_health(
+            &core,
+            "svc",
+            |reading| reading.port_open,
+            std::time::Duration::from_secs(10),
+        );
+
+        // Many probe intervals with nothing changing.
+        let settled = state_changes(&sink, "svc");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            state_changes(&sink, "svc"),
+            settled,
+            "an unchanged reading was republished"
+        );
+
+        // And the change itself is announced, so a window follows the service
+        // coming up without polling for it.
+        drop(listener);
+        wait_for_health(
+            &core,
+            "svc",
+            |reading| !reading.port_open,
+            std::time::Duration::from_secs(10),
+        );
+        assert!(
+            state_changes(&sink, "svc") > settled,
+            "the reading changed without an event"
+        );
+
+        core.force_stop("svc").expect("cleanup");
+    }
+
+    /// T08 §9: "open this session's URL" resolves the URL from the session, so
+    /// the caller can only name a session — never an address.
+    #[test]
+    fn a_session_url_comes_from_the_session_that_owns_it() {
+        let mut config = service("svc");
+        config.url = Some("http://127.0.0.1:8188".to_owned());
+        let core = SessionCore::new(Arc::new(RecordingSink::default()));
+        core.register(config).expect("registration succeeds");
+
+        assert_eq!(
+            core.session_url("svc").expect("the session has a url"),
+            "http://127.0.0.1:8188"
+        );
+    }
+
+    /// A session with nothing to open says what to add instead of opening
+    /// nothing, and an unknown session is refused as the unknown session it is.
+    #[test]
+    fn a_missing_url_or_cwd_is_refused_with_what_to_add() {
+        let mut config = service("svc");
+        config.cwd = None;
+        let core = SessionCore::new(Arc::new(RecordingSink::default()));
+        core.register(config).expect("registration succeeds");
+
+        let url = core.session_url("svc").expect_err("no url is configured");
+        assert_eq!(url.kind, SessionErrorKind::Unsupported);
+        assert_eq!(url.operation, "open_session_url");
+        assert!(url.message.contains("url"), "message: {}", url.message);
+
+        let cwd = core.session_cwd("svc").expect_err("no cwd is configured");
+        assert_eq!(cwd.kind, SessionErrorKind::Unsupported);
+        assert!(cwd.message.contains("cwd"), "message: {}", cwd.message);
+
+        let unknown = core.session_url("nope").expect_err("no such session");
+        assert_eq!(unknown.kind, SessionErrorKind::UnknownSession);
+    }
+
+    /// The working directory is resolved the same way, and comes back as the
+    /// path the session was configured with.
+    #[test]
+    fn a_session_cwd_comes_from_the_session_that_owns_it() {
+        let (core, _sink) = core_with("svc");
+
+        assert_eq!(
+            core.session_cwd("svc").expect("the session has a cwd"),
+            test_cwd()
+        );
+    }
+
     /// T04 acceptance criterion 5: session state does not depend on a window
     /// being visible.
     ///
@@ -2699,6 +3084,49 @@ mod tests {
 
     /// Poll until the session reaches `want`, so a test asserts on the state
     /// the watcher produced rather than on how long it took to produce it.
+    /// Wait until a session's health reading satisfies `want`.
+    ///
+    /// Health is read by the run's watcher, a tick after the run starts, so
+    /// there is nothing to assert synchronously — the same reason lifecycle
+    /// tests wait rather than read once.
+    fn wait_for_health(
+        core: &SessionCore,
+        session_id: &str,
+        want: impl Fn(health::ServiceHealth) -> bool,
+        timeout: std::time::Duration,
+    ) -> health::ServiceHealth {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let reading = core
+                .snapshot(session_id)
+                .expect("session is registered")
+                .health;
+            if let Some(reading) = reading {
+                if want(reading) {
+                    return reading;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "session `{session_id}` reported no matching health reading within {timeout:?}; \
+                 last was {reading:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The number of `session-state-changed` events published for a session —
+    /// how a test tells "the reading moved" from "the reading was re-read".
+    fn state_changes(sink: &Arc<RecordingSink>, session_id: &str) -> usize {
+        sink.events()
+            .into_iter()
+            .filter(|event| match event {
+                SessionEvent::StateChanged(inner) => inner.session_id == session_id,
+                _ => false,
+            })
+            .count()
+    }
+
     fn wait_for_status(
         core: &SessionCore,
         session_id: &str,
