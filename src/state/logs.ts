@@ -131,6 +131,21 @@ export function showsSourceBadge(status: LogStatusDto): boolean {
  */
 const FILE_NOT_ON_DISK = "日志文件不在磁盘上（运行记录保留）";
 
+/**
+ * A named file's path slot: where the file is, or the fact that it is not on
+ * disk (`docs/DECISIONS.md` D-022).
+ *
+ * One expression for both slots — the card's row for the current run and a run
+ * row in the history — so the two halves of the tab cannot describe one state
+ * in two ways. D-022's rule is why the second says only what it knows: neither
+ * slot can tell a swept log from an `external` application's file that has not
+ * been written yet, and naming a cause it never observed would be the
+ * invention the rest of the tab is built to avoid.
+ */
+function filePathText(path: string, present: boolean): string {
+  return present ? path : `${FILE_NOT_ON_DISK} · ${path}`;
+}
+
 /** Path rows for the policy card, in the order a user asks about them. */
 export function logPathEntries(status: LogStatusDto): Array<{ label: string; value: string }> {
   const entries: Array<{ label: string; value: string }> = [];
@@ -138,9 +153,9 @@ export function logPathEntries(status: LogStatusDto): Array<{ label: string; val
   if (current.path !== undefined) {
     entries.push({
       label: status.source === "external" ? "应用日志" : "当前运行",
-      // The card's answer to "is the file there?", which is the same answer
-      // the run history gives for the row of the run this card is showing.
-      value: current.present ? current.path : `${FILE_NOT_ON_DISK} · ${current.path}`,
+      // The card's answer to "is the file there?", which is the same answer the
+      // run history gives for the row of the run this card is showing.
+      value: filePathText(current.path, current.present),
     });
   }
   if (isPresent(status.sessionLogDir)) {
@@ -231,18 +246,6 @@ export function runLogPresent(run: RunHistoryEntryDto): boolean {
 }
 
 /**
- * Whether the log a run's record names was there and is gone.
- *
- * The one row state that needs saying out loud: the file the record points at
- * is no longer on disk, so nothing about this row can be opened. Left
- * deliberately neutral — a swept log is retention working as designed, not a
- * lifecycle failure, and colour is lifecycle truth (UI_STYLE_GUIDE §10).
- */
-export function runLogGone(run: RunHistoryEntryDto): boolean {
-  return runHasLog(run) && !runLogPresent(run);
-}
-
-/**
  * Which of one run row's file actions that run actually offers
  * (`docs/LOGGING.md` §9/§10).
  */
@@ -303,13 +306,13 @@ export function runLogFile(run: RunHistoryEntryDto): LogFileFacts {
  *
  * Three states, one string each — a row with a file, a run that wrote none
  * (§1.2), and a run whose file is not on disk, in the words the card's path row
- * uses for the same state.
+ * uses for the same state ([`filePathText`]).
  */
 export function runFilePathNote(run: RunHistoryEntryDto): string {
   if (!isPresent(run.logFile)) {
     return "未落盘";
   }
-  return runLogGone(run) ? `${FILE_NOT_ON_DISK} · ${run.logFile}` : run.logFile;
+  return filePathText(run.logFile, runLogPresent(run));
 }
 
 /** Run history, newest first, whatever order the source listed it in. */
@@ -337,25 +340,25 @@ export function previewLogStatus(session: SessionView): LogStatusDto {
   const currentRun =
     session.runs.find((run) => run.runId === session.runtime.runId) ??
     runsNewestFirst(session.runs)[0];
-  // The file the card acts on: the application's own for an `external` session
-  // (D-005), the Hub's current-run file otherwise. That is the same file
-  // [`currentLogPath`] names on a live status, and the one the file answer
-  // below has to be about.
-  const currentFile = logging.source === "external" ? logging.external_path : currentRun?.logFile;
+  // The Hub writes no file for an `external` session (D-005), so its current
+  // file is the application's — reported through `externalLog`, never here.
+  const hubWrittenFile = logging.source === "external" ? undefined : currentRun?.logFile;
+  // The file the card acts on, chosen in [`currentLogPath`]'s order: the Hub's
+  // own when there is one, the linked application log otherwise. It is the one
+  // the file answer below has to be about.
+  const cardFile = hubWrittenFile ?? logging.external_path;
   return {
     sessionId: session.config.id,
     mode: logging.mode,
     source: logging.source,
     state: policyState(logging.source, logging.mode),
-    // The Hub writes no file for an `external` session (D-005), so its current
-    // file is the application's — reported through `externalLog`, never here.
-    logFile: logging.source === "external" ? undefined : currentRun?.logFile,
+    logFile: hubWrittenFile,
     // A fixture run that names a file has one unless the fixture says its file
     // was swept (`SessionRun.logFilePresent`) — the rule `previewRuns` applies
     // to the rows. An `external` session's file belongs to the application, so
     // there is nothing here to ask: a fixture that links one is taken at its
     // word, exactly as the live path offers the file the config names.
-    logFilePresent: isPresent(currentFile) && currentRun?.logFilePresent !== false,
+    logFilePresent: isPresent(cardFile) && currentRun?.logFilePresent !== false,
     externalLog: logging.external_path,
     sessionLogDir: undefined,
     recordsInput: false,

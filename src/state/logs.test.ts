@@ -28,7 +28,6 @@ import {
   runFilePathNote,
   runHasLog,
   runLogFile,
-  runLogGone,
   runLogPresent,
   showsSourceBadge,
 } from "./logs";
@@ -344,12 +343,7 @@ describe("run history", () => {
 
     expect(runHasLog(swept)).toBe(true);
     expect(runLogPresent(swept)).toBe(false);
-    expect(runLogGone(swept)).toBe(true);
-  });
-
-  it("does not call a run with a live log swept", () => {
-    expect(runLogGone(run())).toBe(false);
-    expect(runLogGone(run({ logFilePresent: false, logFile: null }))).toBe(false);
+    expect(runLogFile(swept)).toEqual({ path: "C:/logs/svc/2026-09/run.log", present: false });
   });
 
   /// The three row states, each said in its own words — and the third says
@@ -367,13 +361,21 @@ describe("run history", () => {
   });
 
   /// The two questions a row asks are different ones, and neither implies the
-  /// other: a run that wrote nothing has no log and nothing missing.
+  /// other: a run that wrote nothing has no log and nothing missing, while a
+  /// swept run still names the file it wrote. Both states cost the row its
+  /// open/copy actions, and only the second keeps the folder.
   it("separates 'never wrote a log' from 'the log is gone'", () => {
     const nothingWritten = run({ logFile: null, logFilePresent: false });
+    const swept = run({ logFilePresent: false });
 
     expect(runHasLog(nothingWritten)).toBe(false);
-    expect(runLogPresent(nothingWritten)).toBe(false);
-    expect(runLogGone(nothingWritten)).toBe(false);
+    expect(runLogFile(nothingWritten).path).toBeUndefined();
+    expect(runLogFile(swept).path).toBe("C:/logs/svc/2026-09/run.log");
+    expect(fileActions(runLogFile(nothingWritten))).toEqual({
+      open: false,
+      copy: false,
+      folder: false,
+    });
   });
 
   /// The row's buttons, decided here rather than in the component: what a run
@@ -501,7 +503,9 @@ describe("preview data", () => {
     const runs = previewRuns(fixture("comfyui"));
 
     expect(runs.length).toBeGreaterThan(1);
-    expect(runs.filter(runLogGone).map((entry) => entry.runId)).toEqual(["c711"]);
+    // Exactly one of them names a file that is not on disk.
+    const gone = runs.filter((entry) => runHasLog(entry) && !runLogPresent(entry));
+    expect(gone.map((entry) => entry.runId)).toEqual(["c711"]);
     expect(runs.filter(runLogPresent)).toHaveLength(runs.length - 1);
   });
 
@@ -511,7 +515,8 @@ describe("preview data", () => {
     const runs = previewRuns(fixture("pwsh"));
 
     expect(runs.length).toBeGreaterThan(0);
-    expect(runs.every((entry) => !runHasLog(entry) && !runLogGone(entry))).toBe(true);
+    expect(runs.every((entry) => !runHasLog(entry))).toBe(true);
+    expect(runs.every((entry) => runFilePathNote(entry) === "未落盘")).toBe(true);
   });
 
   it("sizes the scrollback in units a person reads", () => {

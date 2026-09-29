@@ -2226,15 +2226,15 @@ impl SessionState {
         });
 
         // Whether that file is on disk, asked of the file the Logs tab's
-        // actions would act on — which for an `external` session is the
-        // application's own (D-005), not the Hub's. `log_file` stays nil for
-        // such a session until a run files the linked path, so falling back to
-        // `external_log` is what keeps the card and the row answering "is the
-        // file there?" about the same file.
-        let log_file_present = log_file
-            .as_deref()
-            .or(logging.external_path.as_deref())
-            .is_some_and(|path| Path::new(path).exists());
+        // actions would act on. An `external` session's current file is the
+        // application's own (D-005), whatever a run record may also name — the
+        // same choice the frontend's `currentLogPath` makes, so the two agree
+        // on which file this answer is about.
+        let current_file = match logging.source {
+            LogSource::External => logging.external_path.as_deref(),
+            _ => log_file.as_deref(),
+        };
+        let log_file_present = current_file.is_some_and(|path| Path::new(path).exists());
 
         LogStatus {
             session_id: session_id.to_owned(),
