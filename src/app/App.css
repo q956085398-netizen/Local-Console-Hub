@@ -17,6 +17,15 @@
   width: 280px;
   flex: none;
   border-right: 1px solid var(--border);
+  /* The rail is a fixed 280px pane, so nothing inside it may paint past that.
+   * Without this the rail's children size themselves to their content: a
+   * session name wide enough would grow the rail's contents past 280 and draw
+   * over the workspace, which is the pane the terminal is supposed to keep
+   * (UI_STYLE_GUIDE §11). The rows ellipsize their names — see
+   * `.session-row__name` — so this is the guard, not the mechanism: it makes a
+   * future wide child fail visibly inside its own pane instead of quietly
+   * covering the terminal. */
+  overflow: hidden;
 }
 
 .workspace {

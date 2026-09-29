@@ -3,6 +3,15 @@
   flex-direction: column;
   height: 100%;
   background: var(--card);
+  /* The rail that holds this pane is a fixed 280px and this is its only
+   * child, so the sidebar has to fit in 280 rather than take its own content
+   * width. A flex item's `min-width` defaults to `auto`, which floors it at
+   * its min-content width — and with a session name long enough that floor
+   * came out at 316px. The sidebar then grew past its rail and drew over the
+   * workspace, which is the pane UI_STYLE_GUIDE §11 says the terminal must
+   * keep. This is what lets it shrink; `.session-row__name` below is what lets
+   * the name ellipsize once there is less room than the text needs. */
+  min-width: 0;
 }
 
 .sidebar__head {
@@ -172,6 +181,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* A flex item's `min-width` defaults to `auto`, which floors it at its
+   * min-content width — and with `white-space: nowrap` that is the whole name.
+   * So the name could never shrink, `text-overflow` above could never fire,
+   * and any shortfall was paid outside this element: the row grew, and a long
+   * name took the whole rail past its 280px and over the workspace. This is
+   * what makes the ellipsis reachable, so the name yields first and the tail —
+   * the state or the uptime — always keeps its space. */
+  min-width: 0;
 }
 
 .session-row__tail {
