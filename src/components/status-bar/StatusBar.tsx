@@ -1,5 +1,5 @@
 import type { LiveCounts } from "../../state/derivations";
-import type { BackendConnection } from "../../app/useBackendPing";
+import type { BackendConnection } from "../../state/backend-connection";
 import "./StatusBar.css";
 
 export interface StatusBarProps {

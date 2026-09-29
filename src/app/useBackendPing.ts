@@ -1,41 +1,23 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { isPingResponse } from "../types/ipc";
-
-/** What the status bar can say about the backend connection. */
-export type BackendConnection =
-  { state: "pending" } | { state: "connected"; version: string } | { state: "unavailable" };
+import { INITIAL_CONNECTION, watchBackendConnection } from "../state/backend-connection";
+import type { BackendConnection } from "../state/backend-connection";
 
 /**
  * The T00 bootstrap's typed ping, kept alive as a quiet status-bar signal.
  *
- * Only the connection state matters here: a rejection (in a browser preview
- * `invoke` has no host to call) collapses to `unavailable`, which is what
- * labels the shell a preview. The transport error itself is deliberately not
- * surfaced — a browser preview rejecting is the expected case, not a fault to
- * report, and the real error path belongs to whichever command failed.
+ * An adapter, and only that: it supplies the real `invoke("ping")` to
+ * `state/backend-connection.ts` and renders the state that module decides.
+ * The decision itself — including that a host which is late is still worth
+ * waiting for, so `unavailable` is not a permanent verdict — lives there,
+ * where a test can drive it with no DOM and no Tauri host (issue #29).
+ *
+ * This is the only place the window reaches the Tauri API for the ping.
  */
 export function useBackendPing(): BackendConnection {
-  const [connection, setConnection] = useState<BackendConnection>({ state: "pending" });
+  const [connection, setConnection] = useState<BackendConnection>(INITIAL_CONNECTION);
 
-  useEffect(() => {
-    let cancelled = false;
-    invoke("ping")
-      .then((value: unknown) => {
-        if (cancelled) return;
-        setConnection(
-          isPingResponse(value)
-            ? { state: "connected", version: value.appVersion }
-            : { state: "unavailable" },
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setConnection({ state: "unavailable" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useEffect(() => watchBackendConnection(() => invoke("ping"), setConnection), []);
 
   return connection;
 }
