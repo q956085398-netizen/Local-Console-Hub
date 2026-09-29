@@ -101,10 +101,15 @@ CI 也不产出安装包。后果是第一次运行时 Windows SmartScreen 会�
 
 - 文案来自语言文件。`src-tauri/installer/languages/English.nsh` 是 Tauri 自带 `English.nsh`
   的逐字副本，只改了 `LangString deleteAppData` 一句；`tauri.conf.json` 用
-  `bundle.windows.nsis.customLanguageFiles` 把它接上，并显式写了 `languages: ["English"]`——
-  `customLanguageFiles` 只对 `languages` 里列过的语言生效，漏了它等于没接。
+  `bundle.windows.nsis.customLanguageFiles` 把它接上，并显式写了 `languages: ["English"]`。
+  **但要清楚这一句是可选的**：Tauri 的 config schema 说 `customLanguageFiles` 的 key
+  「必须同时加进 `languages` 数组」，而 2.12.0 的**实际行为不是这样**——§5 实测：去掉
+  `languages` 之后，我们文件里的文案照样被挂上（构建仍退出 0，生成的 `English.nsh` 里就是我们
+  那一句）。所以 `languages: ["English"]` 是在满足写下来的契约，不是在满足一个量出来的依赖；
+  留着它是因为将来某个 bundler 版本真按 schema 收紧了，缺了它就会悄悄退回上游文案。
 - 这一句现在是 `Delete WebView2 browser profile (not your config or logs)`：说的是它确实会删的
-  浏览器数据，并且点明配置与日志不受影响。
+  浏览器数据，并且点明配置与日志不受影响。它 56 个字符，而卸载器那个控件的宽度是
+  模板写死的 `400 * DPI / 96`——**再改这句话时留意长度**，超了不会报错，只会被裁掉。
 - `customLanguageFiles` 是**替换**而不是合并，所以这份文件必须保持完整；bundler 版本新增
   `LangString` 时要重新抄一份上游文件、再把这一句改回来。缺字符串是**静默**的：`makensis`
   只打一条 `LangString "x" is not set in language table of language English` 的 warning 然后
@@ -273,6 +278,13 @@ WiX 3.14 与 NSIS 用既有缓存。这一轮只验一件事：确认页上那�
   `warning: 6040: LangString "deleteAppData" is not set in language table of language English`，
   退出码 0。缺字符串因此是**静默**的，而 CI 只做 debug `cargo build`、不跑打包——这就是
   `cargo test` 里那条字符串计数守卫存在的理由。
+
+- 第三件是 `tauri.conf.json` 里 `languages: ["English"]` 到底是不是必需的。Tauri 的 schema
+  写着 `customLanguageFiles` 的 key「必须同时加进 `languages` 数组」，而实测**不是**：
+  把 `languages` 整条删掉、再把我们那份文件的文案改成 `EXPERIMENT MARKER WITHOUT LANGUAGES`
+  重新打包，构建仍退出 0，生成的 `target/release/nsis/x64/English.nsh` 里就是 marker 那一句。
+  所以 2.12.0 会无条件挂载这份文件，`languages` 是在满足**写下来的契约**而不是一个量出来的
+  依赖；它留着，§2.2 也照这个说法写。
 
 **复选框的文案。** 装完之后从外部读那个控件：`un.ConfirmShow` 在运行时用
 `CreateWindowEx(..., w "$(deleteAppData)", ...)` 创建它，所以只有把真实对话框叫起来才看得到。
