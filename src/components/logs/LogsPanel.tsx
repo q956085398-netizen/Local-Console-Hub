@@ -49,7 +49,7 @@ export interface LogsPanelProps {
  */
 export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
   const logs = useSessionLogs(session, onNotice);
-  const { status, provenance, actions, cleanup } = logs;
+  const { status, provenance, actions, cleanup, logActionBusy } = logs;
   const availability = logActionAvailability(status);
   const current = currentLogFile(status);
   const currentActions = fileActions(current);
@@ -140,6 +140,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
             <button
               type="button"
               className="btn btn--secondary btn--sm"
+              disabled={logActionBusy}
               title="把当前运行的缓冲写进日志文件 · 会话停止时没有可保存的运行"
               onClick={() => actions.saveRunLog()}
             >
@@ -151,6 +152,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
             <button
               type="button"
               className="btn btn--secondary btn--sm"
+              disabled={logActionBusy}
               onClick={() => actions.setRecording(availability.recording === "start")}
             >
               {availability.recording === "start" ? (
