@@ -18,7 +18,7 @@ pub use model::{
 };
 pub use paths::{
     local_utc_offset_secs, run_file_name, run_log_filename, run_log_path, run_metadata_path,
-    session_log_dir, AppPaths,
+    session_log_dir, AppPaths, APP_DIR_NAME, CONFIG_FILE_NAME,
 };
 pub use validate::{validate_entry, SessionConfigError};
 

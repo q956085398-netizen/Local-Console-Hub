@@ -28,12 +28,28 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
+    "publisher": "Local Console Hub contributors",
+    "homepage": "https://github.com/q956085398-netizen/Local-Console-Hub",
+    "copyright": "Copyright © 2026 Local Console Hub contributors",
+    "category": "DeveloperTool",
+    "shortDescription": "Unified console for Windows local services and terminals",
+    "longDescription": "Local Console Hub keeps the local services and interactive terminals that would otherwise be scattered across a taskbar in one window: start, stop and restart managed sessions, read their output, type into a real terminal, and find each run's logs without leaving the app.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
   }
 }

@@ -600,6 +600,56 @@ T07 的验收条件写着「UI 不得用只读/假终端路径顶替」，而发
 
 ---
 
+## D-026：安装范围是「当前用户」，安装身份从此冻结；用户数据永远在安装目录之外
+
+**状态：Accepted（2026-09-29，T12 #13 落地时签认）**
+
+T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选择——它们都不是实现细节，
+而是「用户装完之后还能不能拿回自己的东西」这个问题的一部分。
+
+1. **NSIS 的 `installMode` 显式写成 `currentUser`。** 默认值本来就是它，但这里不靠默认：
+   `currentUser` 把程序装进 `%LOCALAPPDATA%\Local Console Hub`，卸载器删除的正是这个
+   目录，而用户的配置与日志在 `%APPDATA%\LocalConsoleHub` 与
+   `%LOCALAPPDATA%\LocalConsoleHub`——**另一个目录**。安装范围因此不只是「少一次 UAC」，
+   它是「卸载删不掉用户数据」这条验收项成立的前提。MSI 保持 per-machine，
+   两份产物装到两个范围，用户按需要选。
+2. **安装目录名与数据目录名必须不同，且由测试守着。**
+   `%LOCALAPPDATA%\Local Console Hub` 与 `%LOCALAPPDATA%\LocalConsoleHub` 今天只差空格。
+   把产品名缩成 `LocalConsoleHub` 会让两者重合，卸载就会带走用户的 `config.yaml` 与
+   `logs\`。`src/release.rs` 的
+   `the_install_directory_can_never_be_the_app_data_directory` 在 `cargo test` 里拦这一下，
+   而不是指望 review 里有人想起来。
+3. **`identifier` 冻结，升级靠它。** Tauri 由 `com.localconsolehub.hub` 推导 WiX 的
+   upgrade code 与 NSIS 的卸载注册表项：同键的新版本覆盖安装、用户数据不动，换键的版本
+   是**另一个应用程序**，装上去只能与旧的并存。所以它不是可以随手改的命名空间，
+   而是升级契约本身。`the_identifier_that_upgrades_are_keyed_on_is_frozen` 钉住它。
+4. **不做自动更新。** T12 的 out of scope 写的是「unless already trivial」——它不 trivial：
+   Tauri 的 updater 需要签名密钥、一个分发端点和 HTTPS 托管，还需要「用户数据在升级中
+   完好吗」的独立验证。这一版的升级路径就是再跑一次新的安装包；用户数据在安装目录之外，
+   覆盖安装天然不动它。
+
+同时落地的还有发布元数据：`publisher` / `copyright` / `category` /
+`shortDescription` / `longDescription` / `homepage` 写进 `bundle`，它们就是 Windows
+属性页里「产品 / 公司 / 版本」那一栏的来源；`webviewInstallMode` 钉成
+`downloadBootstrapper`（Windows 11 自带 WebView2，只有缺失时才需要联网，代价写在
+`docs/RELEASE_NOTES_v0.1.0.md` 的已知限制里）。
+
+用户可见行为：卸载与覆盖安装都不会动 `%APPDATA%\LocalConsoleHub` 与
+`%LOCALAPPDATA%\LocalConsoleHub`；卸载留下的这两个目录是有意为之，要清干净得自己删；
+两个安装包的区别只有安装范围与是否需要管理员。
+
+一处例外值得知道：内嵌 WebView2 把用户数据目录放在 `%LOCALAPPDATA%\<identifier>`，
+也就是 `com.localconsolehub.hub`——**不是** `LocalConsoleHub`（这是 Tauri 与 WebView2
+的行为，不是本决策的结果）。它因此落在 NSIS 卸载器「删除应用数据」复选框的删除范围内，
+而用户的配置与日志不在。方向安全但不直观，记在 `docs/RELEASE.md` §2.2 与 #47。
+
+运维：发布相关的静态事实集中在 `src-tauri/src/release.rs`（test-only 模块，`cargo test`
+即跑）：三份 manifest 的版本号一致、`productName` 与 `ipc::APP_NAME` 同字、
+`identifier` 未变、两个安装目标仍在、WebView2 安装模式未变。改了其中任何一条，
+测试先红，再改这里与 `docs/RELEASE.md`。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：
