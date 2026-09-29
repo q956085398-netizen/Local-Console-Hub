@@ -95,11 +95,11 @@
 **`%APPDATA%\LocalConsoleHub` 与 `%LOCALAPPDATA%\LocalConsoleHub` 会留下**——
 这是刻意的：想彻底删干净，自己删这两个目录（§4 表里那两行）。卸载前记得先关掉应用。
 
-卸载界面上那个「删除应用数据」复选框要单独说一句：在**这一版**里它删掉的是 §4 表最后
-一行那个 WebView2 缓存目录，**不是**你的配置与日志。所以两种选择下，`config.yaml` 与
-`logs\` 都会留着；差别只是那 126 MB 的浏览器缓存还在不在。这件事已经记录在案
-（[#47](https://github.com/q956085398-netizen/Local-Console-Hub/issues/47)），下一版会给一个
-说法一致的复选框。
+卸载界面上那个复选框要单独说一句。它现在写的是 **Delete WebView2 browser profile (not your
+config or logs)**，删掉的就是内嵌浏览器（WebView2）自己的配置文件目录
+`%LOCALAPPDATA%\com.localconsolehub.hub\`（约 126 MB 的浏览器缓存），**不是**你的配置与日志。
+所以勾不勾选，`config.yaml` 与 `logs\` 都会留着，差别只是那 126 MB 的浏览器数据还在不在
+（#47：这一版之前它写着「删除应用数据」，而它其实做不到，那句话已经改掉）。
 
 这一版**没有**自动更新：新版本就是再跑一次新的安装包。
 
@@ -128,10 +128,9 @@
    每个会话 256 MiB 或 30 天，两者先到者生效，但**最近一次运行始终保留**。
 8. **只管理配置里写过的会话。** Hub 绝不扫描或收编系统上已经开着的终端、
    别的工具自己起的后台进程（D-002 / D-012）。列表里没有的会话，就是没配。
-9. **卸载器上那个「删除应用数据」复选框删的不是你的配置与日志。** 它删的是内嵌浏览器
-   （WebView2）的缓存目录 `%LOCALAPPDATA%\com.localconsolehub.hub\`（约 126 MB）。
-   两种选择下 `config.yaml` 与 `logs\` 都会留下——安全，但与复选框的字面意思不一致。
-   见 §5 与 [#47](https://github.com/q956085398-netizen/Local-Console-Hub/issues/47)。
+9. **卸载器不会替你删配置与日志。** 它的复选框删的是内嵌浏览器（WebView2）的配置文件目录
+   `%LOCALAPPDATA%\com.localconsolehub.hub\`（约 126 MB 缓存），文案也照此写；两种选择下
+   `config.yaml` 与 `logs\` 都会留着，想清干净得自己删那两个目录（§5）。
 10. **托盘菜单、任务栏图标、窗口装饰的外观**需要人眼确认——自动化测试覆盖不到它们
     （`docs/VERIFICATION.md` §7）。
 

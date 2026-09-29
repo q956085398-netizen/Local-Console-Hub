@@ -48,7 +48,11 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "languages": ["English"],
+        "customLanguageFiles": {
+          "English": "installer/languages/English.nsh"
+        }
       }
     }
   }
