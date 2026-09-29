@@ -20,6 +20,9 @@ export type EffectiveLogModeValue = "off" | "always" | "on_error" | "manual";
 /** Where persisted log content comes from. */
 export type LogSourceValue = "none" | "captured" | "external";
 
+/** Startup state of the config file, distinct from an empty valid file. */
+export type ConfigFileStatusValue = "missing" | "loaded" | "unreadable" | "unavailable";
+
 /** Effective logging state of a session (LOGGING.md §1.4: the UI must
  * reveal whether persistence is active and where it writes). */
 export interface EffectiveLoggingDto {
@@ -60,11 +63,19 @@ export interface SessionConfigErrorDto {
 /** Result of loading the config file: valid sessions plus per-session
  * errors. One broken entry never removes the others. */
 export interface ConfigReportDto {
+  fileStatus: ConfigFileStatusValue;
+  configPath?: string;
   sessions: SessionConfigDto[];
   errors: SessionConfigErrorDto[];
 }
 
 const SESSION_TYPES: readonly SessionTypeValue[] = ["service", "terminal"];
+const CONFIG_FILE_STATUSES: readonly ConfigFileStatusValue[] = [
+  "missing",
+  "loaded",
+  "unreadable",
+  "unavailable",
+];
 
 /** Every valid log mode, for runtime guards on both sides of the contract. */
 export const LOG_MODES: readonly EffectiveLogModeValue[] = ["off", "always", "on_error", "manual"];
@@ -132,7 +143,12 @@ export function isConfigReportDto(value: unknown): value is ConfigReportDto {
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  if (!Array.isArray(candidate.sessions) || !Array.isArray(candidate.errors)) {
+  if (
+    !CONFIG_FILE_STATUSES.includes(candidate.fileStatus as ConfigFileStatusValue) ||
+    !optionalString(candidate, "configPath") ||
+    !Array.isArray(candidate.sessions) ||
+    !Array.isArray(candidate.errors)
+  ) {
     return false;
   }
   return (

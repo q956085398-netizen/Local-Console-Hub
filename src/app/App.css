@@ -44,6 +44,12 @@
   padding: 8px;
 }
 
+.workspace--empty {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
 /* Narrow widths: the rail becomes an overlay drawer so the terminal keeps
  * priority (UI_STYLE_GUIDE §11). */
 .app-main--narrow {

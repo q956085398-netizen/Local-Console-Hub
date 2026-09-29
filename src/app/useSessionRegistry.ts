@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { isSessionConfigDto } from "../types/config";
+import { isConfigReportDto, isSessionConfigDto, type ConfigReportDto } from "../types/config";
 import {
   isSessionRuntimeDto,
   isSessionStateChangedDto,
@@ -30,6 +30,10 @@ export interface SessionRegistry {
   live: boolean;
   /** The most recent failed action, for the status bar. */
   error: string | null;
+  /** Startup config report, including file-level and per-entry problems. */
+  configReport: ConfigReportDto | null;
+  /** Failure to retrieve the report IPC payload itself. */
+  configReportError: string | null;
   start(sessionId: string): void;
   stop(sessionId: string): void;
   restart(sessionId: string): void;
@@ -72,6 +76,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
   const [sessions, setSessions] = useState<SessionView[]>(() => FIXTURE_SESSIONS);
   const [source, setSource] = useState<SessionSource>("preview");
   const [error, setError] = useState<string | null>(null);
+  const [configReport, setConfigReport] = useState<ConfigReportDto | null>(null);
+  const [configReportError, setConfigReportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!live) {
@@ -129,6 +135,25 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       }
     })();
 
+    // Report retrieval is independent from the session list: a problem with
+    // diagnostics must not prevent valid registered sessions from rendering.
+    void (async () => {
+      try {
+        const rawReport = await invoke<unknown>("get_config_report");
+        if (cancelled) return;
+        if (!isConfigReportDto(rawReport)) {
+          throw new Error("get_config_report 返回了无法识别的载荷");
+        }
+        setConfigReport(rawReport);
+        setConfigReportError(null);
+      } catch (cause) {
+        if (!cancelled) {
+          setConfigReport(null);
+          setConfigReportError(sessionErrorMessage(cause));
+        }
+      }
+    })();
+
     return () => {
       cancelled = true;
       void subscription.then((unlisten) => unlisten());
@@ -152,6 +177,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       source,
       live,
       error,
+      configReport,
+      configReportError,
       start: (sessionId) => run("start_session", sessionId),
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
@@ -159,6 +186,6 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       openUrl: (sessionId) => run("open_session_url", sessionId),
       openDirectory: (sessionId) => run("open_session_cwd", sessionId),
     }),
-    [sessions, source, live, error, run],
+    [sessions, source, live, error, configReport, configReportError, run],
   );
 }

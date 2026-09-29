@@ -296,6 +296,7 @@ MVP command equivalents:
 ~~~text
 list_sessions
 list_session_configs
+get_config_report
 get_session
 start_session
 stop_session
@@ -324,6 +325,11 @@ single operation; neither is a generic "do something to this session".
 what it *is* (name, type, purpose, close impact, port, cwd, shell) — from the
 same registry the snapshots come from, so a row the window can render is one
 Session Core can act on.
+
+`get_config_report` is read-only startup diagnostics: it reports whether the
+config file was loaded, missing, unreadable or unavailable, plus its path,
+validated sessions and file/per-session errors. A read or parse error never
+prevents the app from opening, and a bad session never hides valid sessions.
 
 `attach_terminal` is what a terminal view calls when it appears: it answers with
 the retained scrollback, the byte offset that scrollback reaches, and the run

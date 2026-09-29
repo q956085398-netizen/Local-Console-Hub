@@ -6,9 +6,10 @@
 //! event includes the session id.
 //!
 //! Current surface: the `ping` bootstrap command proving the typed invoke path
-//! end to end (T00), the session lifecycle and service-action commands (T04,
-//! T08), the logging read/action commands (T05), the terminal commands (T07)
-//! and the logs view's file and retention commands (T10).
+//! end to end (T00), startup config diagnostics, the session lifecycle and
+//! service-action commands (T04, T08), the logging read/action commands (T05),
+//! the terminal commands (T07) and the logs view's file and retention commands
+//! (T10).
 
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module

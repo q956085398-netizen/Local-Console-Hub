@@ -15,12 +15,20 @@
 
 use tauri::State;
 
-use crate::config::SessionConfigDto;
+use crate::config::{ConfigReportDto, SessionConfigDto};
 use crate::session::core::{SessionCore, SessionError};
 use crate::session::runtime::SessionRuntime;
 use crate::shell;
 
 use super::hand_over_failed;
+
+/// The startup config-loading and validation report. The report is captured
+/// once during bootstrap; this read-only command never edits or reloads the
+/// user's config file.
+#[tauri::command]
+pub fn get_config_report(report: State<'_, ConfigReportDto>) -> ConfigReportDto {
+    report.inner().clone()
+}
 
 /// Every session's snapshot, in id order.
 #[tauri::command]

@@ -11,7 +11,10 @@ mod model;
 mod paths;
 mod validate;
 
-pub use dto::{ConfigReportDto, EffectiveLoggingDto, SessionConfigDto, SessionConfigErrorDto};
+pub use dto::{
+    ConfigFileStatusDto, ConfigReportDto, EffectiveLoggingDto, SessionConfigDto,
+    SessionConfigErrorDto,
+};
 pub use model::{
     EffectiveLogMode, EffectiveLogging, LogMode, LogSource, LoggingConfig, RawConfigFile,
     RawSessionConfig, SessionConfig, SessionType,
@@ -37,6 +40,8 @@ use std::path::Path;
 /// only unreadable files or broken YAML produce a file-level error entry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoadedConfig {
+    /// Whether a file was read or no file exists yet.
+    pub file_status: ConfigFileStatusDto,
     /// Validated sessions, in file order.
     pub sessions: Vec<SessionConfig>,
     /// Per-session (or file-level, `index == 0`) errors, in file order.
@@ -47,6 +52,8 @@ impl LoadedConfig {
     /// The report DTO exposed to the frontend (stable contract).
     pub fn to_dto(&self) -> ConfigReportDto {
         ConfigReportDto {
+            file_status: self.file_status,
+            config_path: None,
             sessions: self.sessions.iter().map(SessionConfigDto::from).collect(),
             errors: self
                 .errors
@@ -69,7 +76,10 @@ impl LoadedConfig {
 ///   earliest definition valid and pointing the message at both.
 pub fn load_from_str(text: &str) -> LoadedConfig {
     if text.trim().is_empty() {
-        return LoadedConfig::default();
+        return LoadedConfig {
+            file_status: ConfigFileStatusDto::Loaded,
+            ..LoadedConfig::default()
+        };
     }
     // A comment-only document deserializes as null; treat it like an
     // empty file rather than a parse error.
@@ -77,6 +87,7 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
         Ok(root) => root,
         Err(err) => {
             return LoadedConfig {
+                file_status: ConfigFileStatusDto::Loaded,
                 sessions: Vec::new(),
                 errors: vec![SessionConfigError {
                     index: 0,
@@ -126,7 +137,11 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
         }
     }
 
-    LoadedConfig { sessions, errors }
+    LoadedConfig {
+        file_status: ConfigFileStatusDto::Loaded,
+        sessions,
+        errors,
+    }
 }
 
 /// Load the config file at `path`.
@@ -554,10 +569,19 @@ mod tests {
 
     #[test]
     fn missing_config_file_is_a_fresh_install() {
-        let missing = std::env::temp_dir().join("lch-t01-definitely-missing-config.yaml");
+        let root = TempDir::new("missing-config");
+        let missing = root.0.join("config.yaml");
         let loaded = load_from_file(&missing).expect("missing file is not an error");
         assert!(loaded.sessions.is_empty());
         assert!(loaded.errors.is_empty());
+        assert_eq!(loaded.to_dto().file_status, ConfigFileStatusDto::Missing);
+
+        let empty = root.0.join("empty.yaml");
+        std::fs::write(&empty, "\n # intentionally empty\n").expect("write empty config");
+        let loaded = load_from_file(&empty).expect("empty config is readable");
+        assert!(loaded.sessions.is_empty());
+        assert!(loaded.errors.is_empty());
+        assert_eq!(loaded.to_dto().file_status, ConfigFileStatusDto::Loaded);
     }
 
     #[test]

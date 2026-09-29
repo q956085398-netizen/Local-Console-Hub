@@ -8,6 +8,7 @@ import TerminalHost from "../components/terminal/TerminalHost";
 import LogsPanel from "../components/logs/LogsPanel";
 import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
+import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
 import {
   filterSessions,
   groupSessions,
@@ -120,6 +121,7 @@ export default function App() {
   // comes back is still selected.
   const selected = sessions.find((session) => session.config.id === selectedId) ?? sessions[0];
   const counts = useMemo(() => liveCounts(sessions), [sessions]);
+  const diagnosticSessionCount = registry.configReport?.sessions.length ?? sessions.length;
 
   /** Preview mode: actions render from the real lifecycle rules but perform
    * nothing, because there is no run behind them to act on. */
@@ -194,9 +196,12 @@ export default function App() {
         />
         <div className="app-main">
           <section className="workspace workspace--empty">
-            <p className="workspace__empty-hint">
-              没有可显示的会话。配置文件中还没有会话，或后端尚未就绪。
-            </p>
+            <ConfigDiagnostics
+              report={registry.configReport}
+              error={registry.configReportError}
+              sessionCount={diagnosticSessionCount}
+              empty
+            />
           </section>
         </div>
         <StatusBar counts={counts} connection={connection} notice={registry.error ?? notice} />
@@ -246,6 +251,11 @@ export default function App() {
             onAction={onSessionAction}
             onFocusTerminal={() => setTab("terminal")}
             onOpenLogs={() => setTab("logs")}
+          />
+          <ConfigDiagnostics
+            report={registry.configReport}
+            error={registry.configReportError}
+            sessionCount={diagnosticSessionCount}
           />
           <WorkspaceTabs active={tab} onChange={setTab} />
           <div className="workspace__content">

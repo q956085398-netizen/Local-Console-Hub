@@ -17,7 +17,10 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Runtime};
 
-use crate::config::{load_from_file, AppPaths};
+use crate::config::{
+    load_from_file, AppPaths, ConfigFileStatusDto, ConfigReportDto, SessionConfigDto,
+    SessionConfigErrorDto,
+};
 use crate::logging::LogRoots;
 use crate::session::core::{EventSink, FanoutSink, SessionCore};
 use crate::session::tauri_sink::TauriSink;
@@ -47,7 +50,7 @@ use crate::tray::TraySink;
 /// with the core and cannot be reopened afterwards. `TraySink` therefore looks
 /// the core up through the app handle when an event arrives, and events cannot
 /// arrive before `manage`, because registration publishes none.
-pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> SessionCore {
+pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> (SessionCore, ConfigReportDto) {
     let paths = AppPaths::from_env();
     let sink = Arc::new(FanoutSink::new(vec![
         Arc::new(TauriSink::new(app.clone())) as Arc<dyn EventSink>,
@@ -57,15 +60,16 @@ pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> SessionCore {
         Some(paths) => SessionCore::new(sink).with_log_roots(LogRoots::from_app_paths(paths)),
         None => SessionCore::new(sink),
     };
-    register_configured(
+    let report = register_configured(
         &core,
         paths.as_ref().map(|paths| paths.config_file.as_path()),
     );
-    core
+    (core, report)
 }
 
-/// Register every valid session of `config_file` into `core`, returning how
-/// many were registered.
+/// Register valid sessions from the user's config file and retain its report
+/// for the window. Read and parse failures are data, not startup failures, so
+/// the user can open the app and fix their config.
 ///
 /// A missing file is a fresh install and registers nothing — T01 models it as
 /// an empty session list rather than an error, and the app has to open so it
@@ -74,19 +78,62 @@ pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> SessionCore {
 /// no way to fix the file. Per-session problems are T01's
 /// [`crate::config::LoadedConfig`] report and reach the UI through the config
 /// surface, not through a crash.
-pub fn register_configured(core: &SessionCore, config_file: Option<&Path>) -> usize {
+pub fn register_configured(core: &SessionCore, config_file: Option<&Path>) -> ConfigReportDto {
     let Some(config_file) = config_file else {
-        return 0;
+        return config_problem(
+            ConfigFileStatusDto::Unavailable,
+            None,
+            "无法确定配置文件位置；请检查系统应用数据目录后重启应用。".to_owned(),
+        );
     };
-    let Ok(loaded) = load_from_file(config_file) else {
-        return 0;
+    let loaded = match load_from_file(config_file) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            return config_problem(
+                ConfigFileStatusDto::Unreadable,
+                Some(config_file.to_string_lossy().into_owned()),
+                format!(
+                    "无法读取配置文件 `{}`：{error}。请检查文件权限后重启应用。",
+                    config_file.display()
+                ),
+            );
+        }
     };
 
-    loaded
-        .sessions
-        .into_iter()
-        .filter(|session| core.register(session.clone()).is_ok())
-        .count()
+    let mut report = loaded.to_dto();
+    report.config_path = Some(config_file.to_string_lossy().into_owned());
+    for session in loaded.sessions {
+        if let Err(error) = core.register(session) {
+            report.errors.push(SessionConfigErrorDto {
+                index: 0,
+                session_id: Some(error.session_id),
+                field: None,
+                message: format!("有效配置无法注册到会话列表：{}", error.message),
+            });
+        }
+    }
+    // The registry is authoritative for what the UI can act on. A config
+    // entry that fails registration must not appear as a usable session here.
+    report.sessions = core.configs().iter().map(SessionConfigDto::from).collect();
+    report
+}
+
+fn config_problem(
+    file_status: ConfigFileStatusDto,
+    config_path: Option<String>,
+    message: String,
+) -> ConfigReportDto {
+    ConfigReportDto {
+        file_status,
+        config_path,
+        sessions: Vec::new(),
+        errors: vec![SessionConfigErrorDto {
+            index: 0,
+            session_id: None,
+            field: Some("configPath".to_owned()),
+            message,
+        }],
+    }
 }
 
 #[cfg(test)]
@@ -176,9 +223,9 @@ mod tests {
         );
         let core = SessionCore::without_listener();
 
-        let registered = register_configured(&core, Some(config.path()));
+        let report = register_configured(&core, Some(config.path()));
 
-        assert_eq!(registered, 1);
+        assert_eq!(report.sessions.len(), 1);
         let runtime = core.snapshot("one").expect("the session is registered");
         assert_eq!(
             runtime.status,
@@ -191,16 +238,26 @@ mod tests {
     #[test]
     fn a_missing_config_file_registers_nothing() {
         let core = SessionCore::without_listener();
-        let missing = std::env::temp_dir().join("lch-t04-does-not-exist.yaml");
+        let config = TempConfig::new("sessions: []\n");
+        let missing = config.path().with_file_name("missing.yaml");
 
-        assert_eq!(register_configured(&core, Some(&missing)), 0);
+        let report = register_configured(&core, Some(&missing));
+        assert_eq!(report.file_status, ConfigFileStatusDto::Missing);
+        assert_eq!(
+            report.config_path.as_deref(),
+            Some(missing.to_string_lossy().as_ref())
+        );
+        assert!(report.errors.is_empty());
         assert!(core.snapshots().is_empty());
     }
 
     #[test]
     fn no_config_location_registers_nothing() {
         let core = SessionCore::without_listener();
-        assert_eq!(register_configured(&core, None), 0);
+        let report = register_configured(&core, None);
+        assert_eq!(report.file_status, ConfigFileStatusDto::Unavailable);
+        assert_eq!(report.errors.len(), 1);
+        assert!(core.snapshots().is_empty());
     }
 
     /// Broken YAML must not stop the app from opening — otherwise the user has
@@ -210,7 +267,35 @@ mod tests {
         let config = TempConfig::new("sessions: [ this is not a list of sessions\n");
         let core = SessionCore::without_listener();
 
-        assert_eq!(register_configured(&core, Some(config.path())), 0);
+        let report = register_configured(&core, Some(config.path()));
+        assert_eq!(report.file_status, ConfigFileStatusDto::Loaded);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].index, 0);
+        assert!(report.errors[0].message.contains("YAML"));
+        assert!(report.errors[0].message.contains("line"));
+        assert!(core.snapshots().is_empty());
+    }
+
+    #[test]
+    fn a_config_read_error_reports_the_file_and_repair_context() {
+        let config = TempConfig::new("sessions: []\n");
+        let directory = config.path().parent().expect("temporary config parent");
+        let core = SessionCore::without_listener();
+
+        let report = register_configured(&core, Some(directory));
+
+        assert_eq!(report.file_status, ConfigFileStatusDto::Unreadable);
+        assert_eq!(
+            report.config_path.as_deref(),
+            Some(directory.to_string_lossy().as_ref())
+        );
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].index, 0);
+        assert_eq!(report.errors[0].field.as_deref(), Some("configPath"));
+        assert!(report.errors[0]
+            .message
+            .contains(&directory.display().to_string()));
+        assert!(report.errors[0].message.contains("权限"));
         assert!(core.snapshots().is_empty());
     }
 
@@ -222,8 +307,38 @@ mod tests {
         );
         let core = SessionCore::without_listener();
 
-        assert_eq!(register_configured(&core, Some(config.path())), 1);
+        let report = register_configured(&core, Some(config.path()));
+        assert_eq!(report.sessions.len(), 1);
+        assert_eq!(report.errors.len(), 1);
         assert!(core.snapshot("two").is_some());
         assert!(core.snapshot("broken").is_none());
+    }
+
+    #[test]
+    fn config_report_keeps_valid_sessions_and_names_each_invalid_entry() {
+        let config = TempConfig::new(
+            "sessions:\n  - id: good\n    name: Good\n    type: terminal\n    shell: powershell\n  - id: bad\n    name: Bad\n    type: service\n    command: run\n    port: 0\n",
+        );
+        let core = SessionCore::without_listener();
+
+        let report = register_configured(&core, Some(config.path()));
+
+        assert_eq!(
+            report.file_status,
+            crate::config::ConfigFileStatusDto::Loaded
+        );
+        assert_eq!(
+            report.config_path.as_deref(),
+            Some(config.path().to_string_lossy().as_ref())
+        );
+        assert_eq!(report.sessions.len(), 1);
+        assert_eq!(report.sessions[0].id, "good");
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].index, 2);
+        assert_eq!(report.errors[0].session_id.as_deref(), Some("bad"));
+        assert_eq!(report.errors[0].field.as_deref(), Some("port"));
+        assert!(report.errors[0].message.contains("1-65535"));
+        assert!(core.snapshot("good").is_some());
+        assert!(core.snapshot("bad").is_none());
     }
 }

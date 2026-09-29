@@ -17,6 +17,8 @@ import {
  * catch.
  */
 const backendReport: ConfigReportDto = {
+  fileStatus: "loaded",
+  configPath: "D:/Hub/config.yaml",
   sessions: [
     {
       id: "sillytavern",
@@ -109,5 +111,19 @@ describe("config DTO guards", () => {
     expect(isConfigReportDto({ sessions: [{}], errors: [] })).toBe(false);
     expect(isConfigReportDto({ sessions: [], errors: [{ message: 1 }] })).toBe(false);
     expect(isConfigReportDto({ sessions: [] })).toBe(false);
+  });
+
+  it("validates config-file status and optional path in startup reports", () => {
+    expect(
+      isConfigReportDto({
+        ...backendReport,
+        fileStatus: "missing",
+        configPath: "D:/Hub/config.yaml",
+      }),
+    ).toBe(true);
+    expect(isConfigReportDto({ ...backendReport, fileStatus: "corrupt" })).toBe(false);
+    expect(isConfigReportDto({ ...backendReport, fileStatus: "loaded", configPath: 42 })).toBe(
+      false,
+    );
   });
 });

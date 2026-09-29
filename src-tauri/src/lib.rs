@@ -43,8 +43,9 @@ pub fn run() {
         // lifecycle operation, and nothing gets a process until something asks
         // (spec §3, "UI does not own process truth" — nor does startup).
         .setup(|app| {
-            let core = app::bootstrap(app.handle().clone());
+            let (core, config_report) = app::bootstrap(app.handle().clone());
             app.manage(core);
+            app.manage(config_report);
             // After `manage`, so the tray's first menu is built from the real
             // registry instead of briefly showing an empty one.
             tray::install(app.handle())?;
@@ -52,6 +53,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc::ping,
+            ipc::session::get_config_report,
             ipc::session::list_sessions,
             ipc::session::list_session_configs,
             ipc::session::get_session,

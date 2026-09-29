@@ -11,6 +11,21 @@ use serde::Serialize;
 use super::model::{EffectiveLogging, SessionConfig};
 use super::validate::SessionConfigError;
 
+/// How the application found the user's config file at startup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigFileStatusDto {
+    /// No file exists yet; the application can start as a fresh install.
+    #[default]
+    Missing,
+    /// The file was read, even if its contents contain validation errors.
+    Loaded,
+    /// A file exists but could not be read.
+    Unreadable,
+    /// The application could not resolve its config directory.
+    Unavailable,
+}
+
 /// Effective logging state of a session after `auto` resolution — the
 /// thing the UI must display ("is persistence active, and where does it
 /// write?", `docs/LOGGING.md` §1.4).
@@ -76,6 +91,9 @@ pub struct SessionConfigErrorDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigReportDto {
+    pub file_status: ConfigFileStatusDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
     pub sessions: Vec<SessionConfigDto>,
     pub errors: Vec<SessionConfigErrorDto>,
 }
@@ -220,5 +238,24 @@ mod tests {
             serde_json::to_value(SessionConfigErrorDto::from(error)).expect("dto serializes");
         assert_eq!(value["sessionId"], "api");
         assert_eq!(value["index"], 2);
+    }
+
+    #[test]
+    fn config_report_serializes_file_status_and_path() {
+        let report = ConfigReportDto {
+            file_status: ConfigFileStatusDto::Unreadable,
+            config_path: Some("D:/Users/example/LocalConsoleHub/config.yaml".to_owned()),
+            sessions: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        let value = serde_json::to_value(report).expect("report serializes");
+
+        assert_eq!(value["fileStatus"], "unreadable");
+        assert_eq!(
+            value["configPath"],
+            "D:/Users/example/LocalConsoleHub/config.yaml"
+        );
+        assert!(value.get("file_status").is_none());
     }
 }
