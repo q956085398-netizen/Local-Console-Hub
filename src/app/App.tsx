@@ -20,6 +20,7 @@ import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
 import { LIVE_GROUP } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
+import { copyPathToClipboard } from "./clipboard";
 import { useBackendPing } from "./useBackendPing";
 import { useSessionRegistry } from "./useSessionRegistry";
 import { useMediaQuery } from "./useMediaQuery";
@@ -102,13 +103,27 @@ export default function App() {
   /**
    * What a session control was asked for.
    *
-   * Every one of these is a named Session Core operation (T08 #9 added the two
-   * "open" actions); the ones that are not yet — a new session, which needs a
-   * config writer that does not exist — say so rather than being a button that
-   * appears to work.
+   * Every one of these but two is a named Session Core operation (T08 #9 added
+   * the two "open" actions); a new session needs a config writer that does not
+   * exist yet, so it says so rather than being a button that appears to work.
+   *
+   * 复制路径 is the other exception, and the only action that reads nothing from
+   * the backend: the path is already in the config this header renders. It is
+   * answered before the connection check so the preview workspace can serve it
+   * too — what it copies is exactly what the metadata line is showing. The gate
+   * that matters is `availableActions`': a session with no `cwd` is never
+   * offered the control.
    */
   const onSessionAction = (action: SessionAction) => {
     const label = SESSION_ACTION_LABELS[action];
+    if (action === "copy-path") {
+      if (selected.config.cwd === undefined) {
+        setNotice("该会话未配置工作目录，没有可复制的路径");
+        return;
+      }
+      copyPathToClipboard(selected.config.cwd, setNotice);
+      return;
+    }
     if (!registry.live) {
       onPreviewAction(label);
       return;
