@@ -251,10 +251,8 @@ describe("availableActions", () => {
     expect(availableActions(config(), runtime({ status: "stopping" })).restart).toBe(false);
   });
 
-  it("keeps directory and the service URL available", () => {
-    const actions = availableActions(config(), runtime());
-    expect(actions.directory).toBe(true);
-    expect(actions.openUrl).toBe("http://127.0.0.1:8000");
+  it("offers the URL only to a service whose config carries one", () => {
+    expect(availableActions(config(), runtime()).openUrl).toBe("http://127.0.0.1:8000");
     expect(availableActions(config({ url: undefined }), runtime()).openUrl).toBeUndefined();
     const terminal = config({
       sessionType: "terminal",
@@ -263,6 +261,26 @@ describe("availableActions", () => {
       shell: "pwsh",
     });
     expect(availableActions(terminal, runtime()).openUrl).toBeUndefined();
+  });
+
+  it("offers both path actions only where the config has a directory", () => {
+    // 目录/打开目录 and 复制路径 act on one thing, so they are gated on one
+    // fact: a session with no `cwd` shows neither, rather than a control whose
+    // only possible answer is "there is no working directory".
+    const withCwd = availableActions(config(), runtime());
+    expect(withCwd.directory).toBe(true);
+    expect(withCwd.copyPath).toBe(true);
+
+    const withoutCwd = availableActions(config({ cwd: undefined }), runtime());
+    expect(withoutCwd.directory).toBe(false);
+    expect(withoutCwd.copyPath).toBe(false);
+
+    // The gate is the directory's, not the session type's: a shell has a
+    // directory to copy, and needs no URL to be offered one.
+    const shell = config({ sessionType: "terminal", url: undefined, shell: "pwsh" });
+    const shellActions = availableActions(shell, runtime());
+    expect(shellActions.copyPath).toBe(true);
+    expect(shellActions.openUrl).toBeUndefined();
   });
 
   it("scopes force stop to the live window, including Stopping", () => {

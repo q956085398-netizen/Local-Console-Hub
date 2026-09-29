@@ -144,14 +144,17 @@ export default function SessionHeader({
                     打开网页
                   </MenuItem>
                 )}
-                <MenuItem
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onAction("open-directory");
-                  }}
-                >
-                  打开目录
-                </MenuItem>
+                {actions.directory && (
+                  <MenuItem
+                    title={config.cwd}
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("open-directory");
+                    }}
+                  >
+                    打开目录
+                  </MenuItem>
+                )}
                 <MenuItem
                   onSelect={() => {
                     setMenuOpen(false);
@@ -168,14 +171,17 @@ export default function SessionHeader({
                 >
                   查看日志策略
                 </MenuItem>
-                <MenuItem
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onAction("copy-path");
-                  }}
-                >
-                  复制路径
-                </MenuItem>
+                {actions.copyPath && (
+                  <MenuItem
+                    title={config.cwd}
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("copy-path");
+                    }}
+                  >
+                    复制路径
+                  </MenuItem>
+                )}
                 <div className="more-menu__separator" role="separator" />
                 <MenuItem
                   destructive

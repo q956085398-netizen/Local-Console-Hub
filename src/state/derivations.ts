@@ -126,8 +126,16 @@ export interface ActionAvailability {
   restart: boolean;
   /** Open the configured URL (service with a URL). */
   openUrl?: string;
-  /** Open the working directory. */
+  /** Open the working directory (`目录`, and the menu's `打开目录`). */
   directory: boolean;
+  /** Put that same directory on the clipboard (the menu's `复制路径`).
+   *
+   * Gated exactly like `directory`, and for the same reason: both actions act
+   * on the session's working directory, so a session without one has nothing to
+   * open *and* nothing to copy. A control that could only answer "there is no
+   * cwd" is not worth offering (UI_STYLE_GUIDE §5 lists it among the header's
+   * context actions, which exist only where the context does). */
+  copyPath: boolean;
   /** Force-kill the managed tree — a separate, explicit action (D-007).
    * Available for the whole live window, including Stopping: skipping the
    * grace period is exactly what this action is for. */
@@ -141,13 +149,18 @@ export function availableActions(
 ): ActionAvailability {
   const idle = !isLive(runtime.status);
   const settled = runtime.status === "running" || idle;
+  // The two path actions read one thing — the config's working directory — so
+  // it is asked once: 目录 and 复制路径 cannot end up disagreeing about whether
+  // there is one.
+  const hasDirectory = config.cwd !== undefined;
   return {
     start: idle,
     stop: isLive(runtime.status),
     stopDisabled: runtime.status === "stopping",
     restart: settled,
     openUrl: config.sessionType === "service" ? config.url : undefined,
-    directory: true,
+    directory: hasDirectory,
+    copyPath: hasDirectory,
     forceStop: isLive(runtime.status),
   };
 }
