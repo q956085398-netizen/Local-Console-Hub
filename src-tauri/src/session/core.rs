@@ -1744,7 +1744,7 @@ impl SessionCore {
         run_id: Option<&str>,
     ) -> Result<PathBuf, SessionError> {
         const OPERATION: &str = "open_log_file";
-        self.log_target(session_id, run_id, OPERATION)
+        self.log_file_target(session_id, run_id, OPERATION)
     }
 
     /// The folder "open the containing folder" should hand to the OS.
@@ -1759,7 +1759,7 @@ impl SessionCore {
         run_id: Option<&str>,
     ) -> Result<PathBuf, SessionError> {
         const OPERATION: &str = "open_log_folder";
-        let file = self.log_target(session_id, run_id, OPERATION)?;
+        let file = self.log_file_target(session_id, run_id, OPERATION)?;
         file.parent()
             .map(|folder| folder.to_path_buf())
             .ok_or_else(|| {
@@ -1784,7 +1784,7 @@ impl SessionCore {
     ///    place that knows which file the run produced;
     /// 3. no run named means the session's current answer: the file being
     ///    written now, or the one the last run left behind.
-    fn log_target(
+    fn log_file_target(
         &self,
         session_id: &str,
         run_id: Option<&str>,
