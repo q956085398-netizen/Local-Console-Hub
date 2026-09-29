@@ -14,6 +14,7 @@ import {
   isLive,
   liveCounts,
   logModeLabel,
+  logModeToken,
   logSourceLabel,
   loggingHeadline,
   metadataPairs,
@@ -404,6 +405,13 @@ describe("logging labels", () => {
     expect(logSourceLabel("captured")).toBe("Hub captured");
   });
 
+  it("spells the metadata line's mode word lowercase", () => {
+    expect(logModeToken("off")).toBe("off");
+    expect(logModeToken("always")).toBe("always");
+    expect(logModeToken("on_error")).toBe("on error");
+    expect(logModeToken("manual")).toBe("manual");
+  });
+
   it("answers 'is this being logged?' in one line", () => {
     expect(loggingHeadline({ mode: "off", source: "none" })).toBe("仅内存缓冲，不写磁盘");
     expect(loggingHeadline({ mode: "always", source: "captured" })).toBe(
@@ -424,8 +432,19 @@ describe("metadataPairs", () => {
       { label: "port", value: ":8000" },
       { label: "up", value: "3h 14m" },
       { label: "cwd", value: "D:/Tools/SillyTavern" },
-      { label: "log", value: "Always" },
+      { label: "log", value: "always" },
     ]);
+  });
+
+  it("keeps the mode lowercase while the sidebar chip keeps its capital", () => {
+    const session = fixture({
+      config: config({ logging: { mode: "on_error", source: "captured" } }),
+    });
+    expect(metadataPairs(session.config, session.runtime, NOW)).toContainEqual({
+      label: "log",
+      value: "on error",
+    });
+    expect(sidebarRowMeta(session)).toContainEqual({ text: "On error" });
   });
 
   it("says buffer only for a terminal without persistence", () => {
