@@ -203,6 +203,37 @@ impl Driver {
     }
 }
 
+/// Where one session stood at a moment in time.
+///
+/// The integration suite tracks the same three values and cannot share this
+/// with the suite: `tests/` and `examples/` are separate cargo targets with no
+/// module between them. The duplication is deliberate rather than overlooked —
+/// this one reports step by step and exits on a failure, while the suite
+/// asserts and returns, and folding one into the other would cost more than
+/// the twenty lines it saves.
+struct Identity {
+    id: String,
+    run_id: String,
+    pid: Option<u32>,
+}
+
+impl Identity {
+    fn of(driver: &Driver, id: &str) -> Self {
+        Identity {
+            id: id.to_owned(),
+            run_id: driver.run_id(id),
+            pid: driver.pid(id),
+        }
+    }
+
+    /// `id`'s identity in `set`, or a failure naming what was missing.
+    fn in_set<'a>(set: &'a [Identity], id: &str) -> &'a Identity {
+        set.iter()
+            .find(|identity| identity.id == id)
+            .unwrap_or_else(|| fail("identity lookup", &format!("`{id}` was running before")))
+    }
+}
+
 impl Drop for Driver {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
@@ -312,10 +343,7 @@ fn main() {
 
     // ------------------------------------------------------------- flooding
     step("flood one terminal");
-    let before: Vec<(String, String, Option<u32>)> = ids
-        .iter()
-        .map(|id| (id.to_string(), driver.run_id(id), driver.pid(id)))
-        .collect();
+    let before: Vec<Identity> = ids.iter().map(|id| Identity::of(&driver, id)).collect();
     let flood = format!(
         r#"for ($i = 0; $i -lt {FLOOD_LINES}; $i++) {{ Write-Host "{FLOOD_PAYLOAD}" }}; Write-Host ("LCH-STRESS-" + "FLOODDONE")"#
     );
@@ -411,14 +439,11 @@ fn main() {
         fail("stop one session", "term-b did not end");
     }
     for id in ["term-a", "term-c", "svc"] {
-        let (_, run_id, pid) = before
-            .iter()
-            .find(|(before_id, _, _)| before_id == id)
-            .expect("the survivor was running before the stop");
+        let held = Identity::in_set(&before, id);
         if driver.status(id) != SessionStatus::Running {
             fail("stop one session", &format!("{id} stopped with it"));
         }
-        if driver.run_id(id) != *run_id || driver.pid(id) != *pid {
+        if driver.run_id(id) != held.run_id || driver.pid(id) != held.pid {
             fail(
                 "stop one session",
                 &format!("{id} changed run or process, so the stop reached it"),
@@ -439,17 +464,14 @@ fn main() {
     if driver.status("term-b") != SessionStatus::Running {
         fail("restart the stopped session", "term-b did not come back");
     }
-    let (_, old_run, old_pid) = before
-        .iter()
-        .find(|(before_id, _, _)| before_id == "term-b")
-        .expect("term-b was running before the stop");
-    if driver.run_id("term-b") == *old_run {
+    let stopped = Identity::in_set(&before, "term-b");
+    if driver.run_id("term-b") == stopped.run_id {
         fail(
             "restart the stopped session",
             "the restarted run kept the old run id",
         );
     }
-    if driver.pid("term-b") == *old_pid {
+    if driver.pid("term-b") == stopped.pid {
         fail(
             "restart the stopped session",
             "the restarted run kept the old process",

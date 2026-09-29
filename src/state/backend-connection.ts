@@ -67,10 +67,19 @@ export function retryDelayMs(failedAttempts: number): number {
   return RETRY_DELAYS_MS[Math.min(Math.max(failedAttempts, 0), last)];
 }
 
-/** Whether two readings say the same thing, so a report can be skipped. */
+/**
+ * Whether two readings say the same thing, so a report can be skipped.
+ *
+ * `pending` and `unavailable` carry nothing but their name, so for those the
+ * state is the whole reading. `connected` also carries the version, and two
+ * answers from different builds are a change worth telling the shell about —
+ * which is why this is not merely `a.state === b.state`.
+ */
 function same(a: BackendConnection, b: BackendConnection): boolean {
-  if (a.state !== b.state) return false;
-  return a.state !== "connected" || b.state !== "connected" || a.version === b.version;
+  if (a.state !== "connected" || b.state !== "connected") {
+    return a.state === b.state;
+  }
+  return a.version === b.version;
 }
 
 /**

@@ -14,7 +14,7 @@
 //
 // Output defaults to `%TEMP%\lch-ui-capture`. Compare each file against the
 // reference named beside it in the console output, and against the deliberate
-// deviations `docs/DESIGN_SPEC_EXTRACTED.md` §最后 records — an `UI 预览`
+// deviations `docs/DESIGN_SPEC_EXTRACTED.md` §5 records — an `UI 预览`
 // badge, no custom window controls, `External` where the reference shows
 // `Auto`, and fixture-relative uptimes are all expected, not defects.
 

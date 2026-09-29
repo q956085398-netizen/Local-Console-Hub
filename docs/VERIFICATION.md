@@ -84,7 +84,7 @@ node scripts/capture-ui-states.mjs
 
 | 矩阵行 | 自动覆盖 |
 | --- | --- |
-| PowerShell 能起来 | `session::core::tests::terminal_tests::starting_a_terminal_hosts_a_shell_and_reports_it_attached`、`pty::tests::spawn_reports_a_pid_and_first_output`、集成套件 `the_bootstrap_path_turns_a_config_file_into_stopped_sessions` |
+| PowerShell 能起来 | `session::core::tests::terminal_tests::starting_a_terminal_hosts_a_shell_and_reports_it_attached`、`pty::tests::spawn_reports_a_pid_and_first_output`；三个终端同时起来见集成 `three_concurrent_sessions_hold_distinct_runs_and_processes` |
 | 能输入命令 | `terminal_tests::a_command_in_the_hosted_shell_reaches_the_sessions_scrollback`、`each_terminal_answers_only_its_own_input`（集成） |
 | Unicode | `terminal_tests::non_ascii_input_reaches_the_shell`、`non_ascii_output_survives_the_session`、`pty::tests::unicode_survives_the_round_trip` |
 | Ctrl+C 打断长命令 | `terminal_tests::ctrl_c_interrupts_the_command_that_is_running`、`ctrl_c_is_input_and_does_not_close_the_session`、`pty::tests::ctrl_c_interrupts_the_running_command_not_the_shell` |
@@ -112,7 +112,10 @@ node scripts/capture-ui-states.mjs
 | `on_error` 保留错误前上下文 | `logging::on_error_keeps_the_context_of_a_failing_run_only`、`stopping_an_on_error_run_on_purpose_writes_no_log`、`saving_a_running_on_error_log_commits_it` |
 | `external` 只链接不复制 | `logging::an_external_session_links_the_application_log_and_captures_nothing`、`an_external_session_points_at_the_application_own_log`、`a_sweep_never_takes_an_application_owned_log` |
 | stdin 不落盘 | **手工**（§4 日志段最后一行）——行为由「没有 stdin 写入路径」保证，但矩阵问的是可观察结果 |
-| 保留策略只删文件、保留运行记录 | `logging::a_swept_run_stays_in_the_history_without_its_log`、`a_cleanup_leaves_logs_inside_the_retention_window_alone`、`a_cleanup_preview_describes_the_sweep_without_making_it` |
+| 保留策略只删文件、保留运行记录 | `logging::a_swept_run_stays_in_the_history_without_its_log`、`a_cleanup_leaves_logs_inside_the_retention_window_alone`、`a_cleanup_preview_describes_the_sweep_without_making_it`、集成 `a_sessions_log_path_is_resolved_from_the_session_not_from_a_caller` |
+| 单次运行日志上限 16 MiB：截断并在文件里写明（LOGGING §9） | `logging::run_log::tests::the_file_cap_truncates_instead_of_growing_without_limit` |
+| 每会话总量上限 256 MiB、保留 30 天，且最近一次运行始终保留（LOGGING §9） | `logging::retention::tests::one_session_exceeding_its_budget_does_not_delete_another_session`、`an_ancient_file_is_removed_and_the_budget_still_applies`、`files_older_than_the_age_limit_are_removed`、`a_zero_day_limit_disables_the_age_rule_rather_than_deleting_everything` |
+| `off` 会话不会伪造空记录、`on_error` 正常退出不落盘 | `logging::an_off_run_leaves_no_file_and_still_has_a_scrollback`、`stopping_an_on_error_run_on_purpose_writes_no_log` |
 
 ### 多会话
 
@@ -133,6 +136,16 @@ node scripts/capture-ui-states.mjs
 | 摘要跟随运行状态 | `tray::model::tests::the_summary_counts_running_and_failed_sessions`、`the_summary_never_invents_a_busy_count`、`tray::tests::only_state_and_summary_events_reach_the_tray` |
 | 退出不会静默毁掉正在跑的东西 | `tray::actions::tests::a_running_session_makes_exit_ask_first`、`an_idle_hub_exits_without_a_question`、`a_session_mid_flight_blocks_exit_before_any_question` |
 | **托盘菜单本身（图标、文案、灰态、真实点击）** | **手工**（§4 托盘段）——`tray::install` 需要真的 `TrayIcon`，单测覆盖不到 |
+
+### UI 契约（spec §10、§17）
+
+| 条款 | 自动覆盖 |
+| --- | --- |
+| 关闭影响是选中会话自己的文本，不是通用填充 | 集成 `the_bootstrap_path_turns_a_config_file_into_stopped_sessions` 断言 `close_impact` 取自配置；`headerCallout` 的文案规则见 `src/state/derivations.test.ts`。**在真实窗口里看到它**是 §4 S-9 |
+| Terminal / Logs / Details 三分离、不互相重复 | 规则层由 `src/state/logs.test.ts` 与 `derivations.test.ts` 覆盖；**渲染出来的分离**见 §5 的 `service-details` / `service-logs` 截图与 §4 L-1 / L-7 |
+| PTY 交互是真的，不是只读模拟（§17 第 5 条） | `terminal_tests::*` 整组（真实 ConPTY 上的输入、Ctrl+C、resize、非 ASCII）；曾经存在的只读回退见 §6 |
+| 只占一个主窗口（PRODUCT_SPEC §12 场景 2） | **手工**：§4 R-1 / R-4 —— ✕ 是隐藏、托盘是唯一入口 |
+| Hub 不会自动收编别人的后台进程（PRODUCT_SPEC §12 场景 10，D-002 / D-012） | **手工**：§4 C-4 |
 
 ### 配置校验与进程安全
 
@@ -186,7 +199,8 @@ node scripts/capture-ui-states.mjs
 | T-6 | 切到「日志」再切回「终端」 | 之前显示过的输出**不重复、不丢失**，可以继续输入 |
 | T-7 | 选另一个会话再切回来 | 同上；被切走的终端没有被销毁 |
 | T-8 | 打开「日志」页 | 徽标是 `Off`，没有「当前日志文件」路径，历史里没有伪造的空记录 |
-| T-9 | 敲一条命令后，在「日志 → 详情」看 `内存缓冲` | 字节数 / 行数在涨，`未丢弃` |
+| T-9 | 敲一条命令后，在「详情」看 `内存缓冲` | 字节数 / 行数在涨，`未丢弃` |
+| T-10 | 跑一个会**等你输入**的程序：`Read-Host "name"`，回车后输入 `ada` 再回车 | 提示行出现，输入被程序接收并回显；全程不需要别的窗口（DEVELOPMENT §14「需要输入的测试程序」） |
 
 ### 服务（`svc-listening`）
 
@@ -200,6 +214,7 @@ node scripts/capture-ui-states.mjs
 | S-6 | 按「重启」 | 旧进程先结束、新 run 才起来（PID 与 run id 都变），**不会出现两个 `powershell` 抢 28900** |
 | S-7 | 按「停止」 | 立刻变 `Stopping`，随后 `Stopped`；任务管理器里没有残留子进程 |
 | S-8 | 再启动一次，然后用头部溢出菜单里的「强制结束」 | 只影响本会话进程树；其它会话的 PID 不变 |
+| S-9 | 启动前、运行中、以及选中另一个会话时，各看一眼头部的「关闭影响」条 | 运行中**且被选中**时才出现；文字是本会话配置里的原文（`svc-listening` 是「可停止；正在等待该端口的调用方会失联」），不是通用填充；切到别的会话就换成那个会话的（#12 验收条） |
 
 ### 日志
 
@@ -218,6 +233,7 @@ node scripts/capture-ui-states.mjs
 | L-11 | 选中 `term-manual`，在「日志」页按「开始记录」，敲几条命令，再按「保存本次日志」 | 保存前徽标是 `Off`（策略允许不等于正在记录，LOGGING §3）；保存后出现本次 run 的文件 |
 | L-12 | 在任意终端里敲命令，事后在日志文件 / 元数据里搜这些输入 | **搜不到**：stdin 不落盘（LOGGING §4、spec §15） |
 | L-13 | 「日志」页右上「清理日志」 | 两步确认；执行后历史的运行记录**仍在**，只是文件动作被禁用 |
+| L-14 | 让一个 `always` 会话持续输出到超过 16 MiB（`while ($true) { "x" * 200 }` 跑一会儿），然后看文件 | 文件涨到上限就停住，不再增长，并且**文件里写明已截断**而不是静默停止（LOGGING §9；行为由 `run_log` 的 `the_file_cap_truncates_instead_of_growing_without_limit` 保证，这一行是它的可观察面） |
 
 ### 多会话
 
@@ -249,6 +265,7 @@ node scripts/capture-ui-states.mjs
 | C-1 | 在配置里加一条 `type: nonsense`，重起 | 窗口正常打开；那条会话报错，其余会话照常列出（spec §13） |
 | C-2 | 复制一条会话的 `id`，重起 | 重复 id 报错，其余不受影响 |
 | C-3 | 给一条 terminal 写 `port: 1234`，重起 | 报「`port` only applies to `type: service` sessions」——按类型归属拒绝，而不是静默丢弃 |
+| C-4 | 在别处自己起一个 `powershell` / `cmd` / 某个 node 服务，然后看 Hub 的侧栏 | 它**不出现**：Hub 只列出 `config.yaml` 里写过的会话，从不扫描或收编系统上已有的控制台进程（PRODUCT_SPEC §12 场景 10、spec §15、D-002 / D-012） |
 
 ### 进程安全
 

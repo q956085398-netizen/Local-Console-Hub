@@ -32,7 +32,7 @@
 //! matters.
 #![cfg(windows)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use local_console_hub_lib::config::{load_from_file, AppPaths, SessionConfig};
@@ -204,6 +204,45 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         // Best effort: a leaked temp folder is untidy, not a failure.
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Where one session stood at a moment in time.
+///
+/// The multi-session tests ask one question over and over — "did this session
+/// keep the *same* run and the *same* process?" — and the three values only
+/// mean anything together. As a bare `(String, String, u32)` the reader has to
+/// remember which slot is which, twice, including inside a `find` closure.
+struct Identity {
+    id: String,
+    run_id: String,
+    pid: u32,
+}
+
+impl Identity {
+    fn of(fixture: &Fixture, id: &str) -> Self {
+        Identity {
+            id: id.to_owned(),
+            run_id: fixture.run_id(id),
+            pid: fixture.pid(id),
+        }
+    }
+
+    /// `id`'s identity in `set`, or a panic saying it was not running then.
+    fn in_set<'a>(set: &'a [Identity], id: &str) -> &'a Identity {
+        set.iter()
+            .find(|identity| identity.id == id)
+            .unwrap_or_else(|| panic!("`{id}` was running before the stop"))
+    }
+
+    /// Assert the fixture still reports this run and this process for it.
+    fn assert_kept(&self, fixture: &Fixture) {
+        assert_eq!(
+            (fixture.run_id(&self.id), fixture.pid(&self.id)),
+            (self.run_id.clone(), self.pid),
+            "`{}` kept its run and its process",
+            self.id
+        );
     }
 }
 
@@ -421,9 +460,10 @@ fn stopping_one_session_leaves_the_others_untouched() {
     for id in ["term-a", "term-b", "svc"] {
         fixture.core.start(id).expect("start succeeds");
     }
-    let before: Vec<(String, String, u32)> = ["term-a", "term-b", "svc"]
-        .map(|id| (id.to_owned(), fixture.run_id(id), fixture.pid(id)))
-        .into();
+    let before: Vec<Identity> = ["term-a", "term-b", "svc"]
+        .iter()
+        .map(|id| Identity::of(&fixture, id))
+        .collect();
 
     fixture.core.stop("term-b").expect("stop succeeds");
 
@@ -449,15 +489,7 @@ fn stopping_one_session_leaves_the_others_untouched() {
             SessionStatus::Running,
             "`{id}` survives"
         );
-        let (_, run_id, pid) = before
-            .iter()
-            .find(|(before_id, _, _)| before_id == id)
-            .expect("the surviving session was running before the stop");
-        assert_eq!(
-            (fixture.run_id(id), fixture.pid(id)),
-            (run_id.clone(), *pid),
-            "`{id}` kept its run and its process"
-        );
+        Identity::in_set(&before, id).assert_kept(&fixture);
     }
     assert_eq!(fixture.core.summary().running, 2);
 
@@ -766,5 +798,10 @@ fn a_sessions_log_path_is_resolved_from_the_session_not_from_a_caller() {
         status.log_file.as_deref(),
         "the run still names where its log would be"
     );
-    let _: &Path = &folder;
+    // The folder outlives the file, which is what keeps "打开目录" useful on a
+    // run whose log is gone (D-022, UI_STYLE_GUIDE §8).
+    assert!(
+        folder.is_dir(),
+        "the folder the log lived in is still openable: {folder:?}"
+    );
 }
