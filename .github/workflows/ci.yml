@@ -40,6 +40,39 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      # A conflict marker in docs/ has no other defence: the directory is
+      # prettier-ignored ("hand-authored prose") and no job reads Markdown, so
+      # the marker that reached main was caught by nothing at all. Only the
+      # three exact marker forms count — `<<<<<<< ` and `>>>>>>> ` with their
+      # trailing space, and a `=======` line of exactly seven `=`. The
+      # exactly-seven rule is deliberate: a shorter run of `=` is a legitimate
+      # Setext heading underline in Markdown, and this repo's documents are
+      # Markdown. A false positive is answered by changing the content — pad
+      # the underlined heading, or drop the literal `=======` from the example —
+      # never by loosening the pattern: a five-character check would be worse
+      # than no check. `git grep` reads tracked files, so build output and
+      # installed dependencies cannot produce a hit, and `eol=lf` in
+      # .gitattributes keeps the Windows checkout LF so the anchors hold.
+      - name: No committed conflict markers
+        shell: bash
+        run: |
+          # git grep: 0 = a match, 1 = no match, anything else = it never ran.
+          # A guard that fails open is worse than none, so the third case is a
+          # failure too — a broken pattern must not read as a clean tree.
+          status=0
+          git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' || status=$?
+          case "$status" in
+            1) echo "No conflict markers in tracked files." ;;
+            0)
+              echo "::error::A conflict marker is committed. Resolve the conflict and remove the marker."
+              exit 1
+              ;;
+            *)
+              echo "::error::git grep exited $status; the marker check did not run."
+              exit 1
+              ;;
+          esac
+
       # generate_context! embeds ../dist, so the frontend must build before
       # any cargo step.
       - name: Build frontend
