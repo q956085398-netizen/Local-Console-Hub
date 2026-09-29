@@ -257,6 +257,25 @@ export function logModeLabel(mode: RuntimeEffectiveLoggingDto["mode"]): string {
   }
 }
 
+/**
+ * The mode word as the header metadata line spells it: lowercase.
+ *
+ * The reference spells the same mode two ways on purpose, and both are visible
+ * in it: the metadata line is a policy *token* strip (`log always`, `log off`,
+ * `log buffer only`), while the sidebar chip and the Details/Logs surfaces
+ * spell it as a sentence-case label (`Always`, `Off`). So this is a second
+ * spelling of one vocabulary, not a second vocabulary — lowercasing
+ * `logModeLabel` at the call site would drag the chip's capital down with it,
+ * and capitalising this one would put a label where the reference has a token.
+ *
+ * The one place it departs from the reference's letter is `on_error`: the
+ * prototype renders the raw enum there, underscore and all, which would leak a
+ * wire value into the strip. Recorded in DESIGN_SPEC_EXTRACTED §5.
+ */
+export function logModeToken(mode: RuntimeEffectiveLoggingDto["mode"]): string {
+  return logModeLabel(mode).toLowerCase();
+}
+
 /** Human label of a log source. */
 export function logSourceLabel(source: RuntimeEffectiveLoggingDto["source"]): string {
   switch (source) {
@@ -290,7 +309,7 @@ export function metadataPairs(
       ? "buffer only"
       : logging.source === "external"
         ? "external"
-        : logModeLabel(logging.mode);
+        : logModeToken(logging.mode);
   const pairs: Array<{ label: string; value: string }> = [
     { label: "PID", value: isPresent(runtime.pid) ? String(runtime.pid) : "—" },
   ];
