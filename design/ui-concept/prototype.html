@@ -1,0 +1,1189 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="ledger">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local Console Hub · V2 Concept「台账 / Ledger」原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+/* ==========================================================================
+   Local Console Hub — V2 Concept「台账 / Ledger」
+   依据：docs/PRODUCT_SPEC.md · docs/DECISIONS.md · docs/LOGGING.md · docs/UI_STYLE_GUIDE.md
+   关键词：暖纸底 + 墨色印刷感；状态永远「颜色 + 形状 + 文字」三重表达（UI_STYLE_GUIDE 无障碍）
+   纯 HTML/CSS/JS，无构建、无网络请求（字体除外，离线自动回落系统字体）
+   ========================================================================== */
+
+/* ---------- 1 · 令牌 ---------- */
+:root{
+  --paper:#E9E3D6;      /* 页面底 */
+  --card:#F5F1E8;       /* 面板 */
+  --card2:#EFE9DC;      /* 次级面板 */
+  --inset:#E3DCCB;      /* 凹槽 / 输入 */
+  --line:#CFC6B2;       /* 分隔 */
+  --rule:#B7AB92;       /* 强调线 */
+  --ink:#221F19;        /* 主文字 */
+  --ink2:#5D574B;       /* 次文字 */
+  --ink3:#8C8578;       /* 弱文字 */
+  --accent:#0F4C4A;     /* 主操作 · 深墨绿 */
+  --accent-bg:rgba(15,76,74,.09);
+  --ok:#2E6B4F;  --ok-bg:rgba(46,107,79,.12);
+  --wn:#9A6512;  --wn-bg:rgba(154,101,18,.15);
+  --err:#9E2F24; --err-bg:rgba(158,47,36,.12);
+  --busy:#2A5479; --busy-bg:rgba(42,84,121,.13);
+  --wait:#7A2E5C; --wait-bg:rgba(122,46,92,.12);
+  --off:#7E7666; --off-bg:rgba(126,118,102,.13);
+  --scr-bg:#1B1A17; --scr-fg:#E4DDCC; --scr-dim:#8B8474; --scr-line:#2C2A25;
+  --scr-ok:#84C08F; --scr-err:#E9857A; --scr-wn:#E0BB76; --scr-st:#7FB4C9;
+  --sh1:0 1px 0 rgba(255,255,255,.55), 0 1px 2px rgba(46,38,20,.10);
+  --sh2:0 18px 44px -18px rgba(30,24,12,.55), 0 2px 8px rgba(30,24,12,.14);
+  --mono:"IBM Plex Mono","Cascadia Mono",Consolas,"Courier New",monospace;
+  --sans:"Space Grotesk",system-ui,"Segoe UI","Microsoft YaHei UI",sans-serif;
+  --serif:"Newsreader",Georgia,"Noto Serif SC",serif;
+}
+html[data-theme=ink]{
+  --paper:#141311; --card:#1C1B18; --card2:#211F1B; --inset:#141310;
+  --line:#332F28; --rule:#4A443A;
+  --ink:#E6E0D2; --ink2:#A9A292; --ink3:#7B7466;
+  --accent:#8CCFC6; --accent-bg:rgba(140,207,198,.12);
+  --ok:#79C08D;  --ok-bg:rgba(121,192,141,.14);
+  --wn:#E0B469;  --wn-bg:rgba(224,180,105,.14);
+  --err:#EE7F72; --err-bg:rgba(238,127,114,.14);
+  --busy:#82B4DC; --busy-bg:rgba(130,180,220,.14);
+  --wait:#D79BC4; --wait-bg:rgba(215,155,196,.14);
+  --off:#8E897A; --off-bg:rgba(142,137,122,.14);
+  --scr-bg:#0D0C0B; --scr-fg:#DCD5C4; --scr-dim:#7C7565; --scr-line:#221F1B;
+  --sh1:0 1px 0 rgba(255,255,255,.05), 0 1px 2px rgba(0,0,0,.5);
+  --sh2:0 20px 50px -20px rgba(0,0,0,.85), 0 2px 8px rgba(0,0,0,.5);
+}
+
+/* ---------- 2 · 基础 ---------- */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--paper);color:var(--ink);font:400 13px/1.55 var(--sans);
+  -webkit-font-smoothing:antialiased;letter-spacing:.005em;
+  background-image:
+    radial-gradient(120% 90% at 12% -10%, rgba(255,255,255,.5), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(120,105,70,.028) 0 1px, transparent 1px 4px);
+}
+html[data-theme=ink] body{background-image:radial-gradient(120% 90% at 12% -10%, rgba(255,255,255,.035), transparent 60%)}
+button,input{font:inherit;color:inherit;background:none;border:0;outline:0}
+button{cursor:pointer}
+::selection{background:var(--accent);color:var(--card)}
+.mono{font-family:var(--mono)}
+.sp{flex:1 1 auto}
+.dim{color:var(--ink3)}
+.tag{font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink3)}
+
+/* ---------- 3 · 状态系统：颜色 + 形状 + 文字（色盲也能读） ---------- */
+[data-s=running]{--c:var(--ok);--cbg:var(--ok-bg)}
+[data-s=busy]{--c:var(--busy);--cbg:var(--busy-bg)}
+[data-s=waiting]{--c:var(--wait);--cbg:var(--wait-bg)}
+[data-s=stopping]{--c:var(--wn);--cbg:var(--wn-bg)}
+[data-s=error]{--c:var(--err);--cbg:var(--err-bg)}
+[data-s=exited]{--c:var(--wn);--cbg:var(--wn-bg)}
+[data-s=stopped],[data-s=idle]{--c:var(--off);--cbg:var(--off-bg)}
+.dot{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--c);position:relative}
+[data-s=stopped] .dot,[data-s=idle] .dot,[data-s=exited] .dot{border-radius:1px;background:transparent;box-shadow:inset 0 0 0 1.5px var(--c)}
+[data-s=busy] .dot{border-radius:1px;transform:rotate(45deg)}
+[data-s=waiting] .dot{clip-path:polygon(50% 0,100% 100%,0 100%)}
+[data-s=error] .dot{clip-path:polygon(50% 0,100% 50%,100% 100%,0 100%,0 50%)}
+[data-s=busy] .dot::before,[data-s=waiting] .dot::before,[data-s=stopping] .dot::before{
+  content:"";position:absolute;inset:-4px;border:1px solid var(--c);border-radius:50%;opacity:.5;animation:pulse 1.9s infinite}
+[data-s=busy] .dot::before{border-radius:2px}
+[data-s=waiting] .dot::before{clip-path:none}
+@keyframes pulse{0%{transform:scale(.7);opacity:.65}70%{transform:scale(1.5);opacity:0}100%{opacity:0}}
+.st-txt{color:var(--c);font:600 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.gauge{width:26px;flex:0 0 26px;display:flex;flex-direction:column;align-items:center;gap:3px}
+.gauge i{font:600 7.5px/1 var(--mono);color:var(--ink3);letter-spacing:.1em;font-style:normal}
+.gauge .g{width:100%;height:5px;background:var(--inset);border:1px solid var(--line);position:relative;overflow:hidden}
+.gauge .f{position:absolute;left:0;top:0;bottom:0;width:5%;background:var(--off)}
+[data-s=running] .f[data-k=P]{width:78%;background:var(--ok)}
+[data-s=busy] .f[data-k=P]{width:96%;background:var(--busy)}
+[data-s=waiting] .f[data-k=P]{width:14%;background:var(--wait)}
+[data-s=stopping] .f[data-k=P]{width:42%;background:var(--wn);animation:hold 1.1s infinite}
+[data-s=error] .f[data-k=P]{width:100%;background:var(--err)}
+[data-s=exited] .f[data-k=P]{width:100%;background:var(--wn)}
+[data-s=running] .f[data-k=H],[data-s=busy] .f[data-k=H]{width:82%;background:var(--ok)}
+[data-s=waiting] .f[data-k=H]{width:70%;background:var(--wait)}
+[data-s=stopping] .f[data-k=H]{width:50%;background:var(--wn)}
+[data-s=error] .f[data-k=H]{width:26%;background:var(--err)}
+@keyframes hold{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ---------- 4 · 原型工具条（不是产品 UI） ---------- */
+.proto{height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--line);
+  background:var(--card2);position:sticky;top:0;z-index:60}
+.proto .brand{font:600 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink3)}
+.proto .brand b{color:var(--ink)}
+.proto .note{font-size:11px;color:var(--ink3)}
+.seg{display:flex;border:1px solid var(--line);background:var(--inset)}
+.seg button{padding:4px 9px;font:600 10px/1 var(--mono);letter-spacing:.08em;color:var(--ink2)}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+.p-btn{border:1px solid var(--rule);padding:4px 9px;font:600 10px/1 var(--mono);letter-spacing:.08em;background:var(--card);box-shadow:var(--sh1)}
+
+/* ---------- 5 · 窗口骨架 ---------- */
+.holder{display:flex;justify-content:center;padding:22px 18px 34px}
+.window{width:100%;max-width:1500px;border:1px solid var(--rule);background:var(--card);box-shadow:var(--sh2);
+  display:flex;flex-direction:column;min-height:calc(100vh - 90px)}
+.tbar{height:34px;display:flex;align-items:center;gap:8px;padding:0 4px 0 10px;border-bottom:1px solid var(--line);
+  background:var(--card2);user-select:none}
+.tbar .mark{width:11px;height:11px;background:var(--ink);flex:0 0 11px}
+.tbar .t{font:500 11.5px/1 var(--sans);letter-spacing:.02em;color:var(--ink2)}
+.tbar .tb-btn{width:40px;height:33px;display:grid;place-items:center;color:var(--ink3);font-size:12px}
+.tbar .tb-btn:hover{background:var(--inset);color:var(--ink)}
+.tbar .tb-btn.close:hover{background:var(--err);color:var(--card)}
+.body{display:grid;grid-template-columns:288px minmax(0,1fr) 0;flex:1 1 auto;min-height:0;transition:grid-template-columns .22s ease}
+.window.insp .body{grid-template-columns:288px minmax(0,1fr) 312px}
+
+/* ---------- 6 · 左栏：受管服务台账 ---------- */
+.rail{border-right:1px solid var(--line);background:var(--card2);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.rail-head{padding:10px 11px 9px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.search{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--inset);padding:5px 8px}
+.search input{flex:1;min-width:0;font-size:12px}
+.search input::placeholder{color:var(--ink3)}
+.search svg{width:11px;height:11px;stroke:var(--ink3);fill:none;stroke-width:1.6;flex:0 0 11px}
+.sum{display:flex;gap:7px;align-items:center;font:500 10.5px/1 var(--mono);color:var(--ink3);flex-wrap:wrap}
+.sum b{color:var(--ink);font-weight:600}
+.new-btn{border:1px dashed var(--rule);color:var(--ink2);padding:6px 8px;font:500 11px/1 var(--sans);text-align:left;display:flex;justify-content:space-between}
+.new-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.rail-scroll{overflow:auto;flex:1 1 auto;min-height:0;padding-bottom:8px}
+.sec-h{position:sticky;top:0;z-index:2;background:var(--card2);border-bottom:1px solid var(--line);padding:6px 11px 5px;
+  display:flex;align-items:center;gap:7px;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink3)}
+.sec-h em{font-style:normal;color:var(--ink3);font-weight:500;letter-spacing:.04em;text-transform:none;font-size:10px}
+.items{list-style:none}
+.item{display:grid;grid-template-columns:8px 1fr auto;gap:9px;align-items:center;padding:8px 11px;cursor:pointer;
+  border-bottom:1px solid rgba(120,110,90,.13);position:relative}
+.item:hover{background:var(--card)}
+.item.sel{background:var(--card);box-shadow:inset 2px 0 0 var(--ink)}
+.item .idn{min-width:0}
+.item .nm{font:600 12.5px/1.3 var(--sans);display:flex;align-items:baseline;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .nm em{font:500 10px/1 var(--mono);color:var(--ink3);font-style:normal}
+.item .sub{font:400 10.5px/1.4 var(--mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.item .sub b{color:var(--ink2);font-weight:600}
+.item .rt{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+.item .meta{display:flex;align-items:center;gap:6px;font:500 10px/1 var(--mono);color:var(--ink3)}
+.item .rec{font:600 9.5px/1 var(--mono);letter-spacing:.08em;padding:2px 4px;border:1px solid var(--line);color:var(--ink3)}
+.item .rec[data-who=hub]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.item .rec[data-who=app]{color:var(--wn);border-color:color-mix(in srgb,var(--wn) 45%,var(--line))}
+.item .rec[data-who=buf]{color:var(--busy);border-color:color-mix(in srgb,var(--busy) 45%,var(--line))}
+.item .warn{color:var(--err);font:600 9.5px/1 var(--mono)}
+.item[data-hidden=1]{display:none}
+.rail-foot{border-top:1px solid var(--line);padding:7px 11px;display:flex;align-items:center;gap:8px;font:500 10px/1 var(--mono);color:var(--ink3)}
+
+/* ---------- 7 · 舞台头：三个问题 ---------- */
+.stage{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--card)}
+.shead{border-bottom:1px solid var(--line);padding:11px 14px 10px;display:flex;flex-direction:column;gap:9px}
+.l1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.l1 h1{font:500 21px/1.1 var(--serif);letter-spacing:-.005em;display:flex;align-items:baseline;gap:8px}
+.l1 h1 em{font:500 11px/1 var(--mono);color:var(--ink3);font-style:normal}
+.state{display:flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--c);color:var(--c);
+  background:var(--cbg);font:600 10.5px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.url{display:flex;align-items:center;gap:4px;font:500 11px/1 var(--mono);color:var(--ink2)}
+.url a{color:var(--ink);border-bottom:1px dotted var(--rule);text-decoration:none;padding-bottom:1px}
+.url a:hover{color:var(--accent);border-color:var(--accent)}
+.url button{padding:2px 5px;border:1px solid var(--line);color:var(--ink3);font-size:10px}
+.url button:hover{border-color:var(--accent);color:var(--accent)}
+.rail-btn{margin-left:auto}
+.qs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}
+.q{background:var(--card2);padding:7px 9px;min-width:0}
+.q .tag{display:block;margin-bottom:3px}
+.q p{font-size:11.5px;line-height:1.45;color:var(--ink2)}
+.q p b{color:var(--ink);font-weight:600}
+.q.impact{background:var(--card)}
+.q.impact p{color:var(--ink)}
+
+/* ---------- 8 · 动作条：三个动词，三种后果（D-007） ---------- */
+.actionbar{display:flex;align-items:center;gap:6px;padding:7px 14px;border-bottom:1px solid var(--line);background:var(--card2);flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--rule);background:var(--card);
+  padding:5px 11px;font:600 11.5px/1 var(--sans);box-shadow:var(--sh1);white-space:nowrap}
+.btn svg{width:11px;height:11px;fill:currentColor;flex:0 0 11px}
+.btn:hover{border-color:var(--ink2)}
+.btn.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.btn.primary:hover{background:var(--accent);border-color:var(--accent);color:var(--card)}
+.btn.stop{border-color:color-mix(in srgb,var(--wn) 55%,var(--rule));color:var(--wn)}
+.btn.stop:hover{background:var(--wn-bg)}
+.btn.ghost{border-color:transparent;background:transparent;box-shadow:none;color:var(--ink2);font-weight:500}
+.btn.ghost:hover{background:var(--inset);border-color:var(--line);color:var(--ink)}
+.btn.danger{border-color:color-mix(in srgb,var(--err) 50%,var(--rule));color:var(--err)}
+.btn.danger:hover{background:var(--err);color:var(--card);border-color:var(--err)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.sep{width:1px;height:18px;background:var(--line);margin:0 3px}
+[data-menu-btn]{position:relative}
+.menu{position:absolute;z-index:40;top:calc(100% + 4px);right:0;min-width:224px;background:var(--card);
+  border:1px solid var(--rule);box-shadow:var(--sh2);padding:4px;display:none}
+.menu.open{display:block}
+.menu button{display:block;width:100%;text-align:left;padding:6px 8px;font-size:11.5px;color:var(--ink)}
+.menu button:hover{background:var(--inset)}
+.menu button.danger{color:var(--err)}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+.rec-chip{margin-left:auto;display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--card);
+  padding:4px 8px;font:500 10px/1.3 var(--mono);color:var(--ink3);max-width:46%}
+.rec-chip .lab{color:var(--ok);font-weight:600;white-space:nowrap}
+.rec-chip[data-who=app] .lab{color:var(--wn)}
+.rec-chip[data-who=buf] .lab{color:var(--busy)}
+.rec-chip[data-who=off] .lab{color:var(--off)}
+.rec-chip .path{color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-chip em{font-style:normal;color:var(--ink3);white-space:nowrap}
+
+/* ---------- 9 · 标签与面板 ---------- */
+.tabs{display:flex;align-items:stretch;gap:0;border-bottom:1px solid var(--line);background:var(--card);padding:0 8px}
+.tab{padding:8px 13px;font:500 12px/1 var(--sans);color:var(--ink2);border-bottom:2px solid transparent;display:flex;align-items:center;gap:6px}
+.tab:hover{color:var(--ink);background:var(--card2)}
+.tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ink);font-weight:600}
+.tab b{font:600 9px/1 var(--mono);letter-spacing:.06em;padding:2px 4px;border:1px solid var(--c);color:var(--c)}
+.panes{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.pane{display:none;flex:1 1 auto;min-height:0;flex-direction:column}
+.pane[data-active="1"]{display:flex}
+
+/* ---------- 10 · 终端：全界面唯一发光的东西 ---------- */
+.screen{flex:1 1 auto;min-height:0;margin:11px 14px 12px;border:1px solid var(--scr-line);background:var(--scr-bg);
+  color:var(--scr-fg);display:flex;flex-direction:column;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset,0 10px 30px -22px rgba(0,0,0,.7)}
+.scr-bar{display:flex;align-items:center;gap:9px;padding:5px 9px;border-bottom:1px solid var(--scr-line);
+  font:500 9.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--scr-dim);background:rgba(255,255,255,.02)}
+.scr-bar .g{color:var(--scr-st);border:1px solid var(--scr-line);padding:2px 5px}
+.scr-bar button{border:1px solid var(--scr-line);padding:2px 6px;color:var(--scr-dim);font:500 9.5px/1 var(--mono)}
+.scr-bar button:hover{color:var(--scr-fg);border-color:var(--scr-dim)}
+.out{flex:1 1 auto;min-height:0;overflow:auto;padding:9px 11px 4px;font:400 11.5px/1.62 var(--mono);white-space:pre-wrap;word-break:break-word}
+.out .ts{color:var(--scr-dim)}
+.out .ok{color:var(--scr-ok)}
+.out .er{color:var(--scr-err)}
+.out .wn{color:var(--scr-wn)}
+.out .st{color:var(--scr-st)}
+.out .dim{color:var(--scr-dim)}
+.out b{color:#fff;font-weight:500}
+.caret{display:inline-block;width:6.6px;height:13px;background:var(--scr-fg);vertical-align:-2px;animation:blink 1.05s steps(1,end) infinite}
+@keyframes blink{50%{opacity:0}}
+.stdin{display:flex;align-items:center;gap:7px;border-top:1px solid var(--scr-line);padding:5px 10px;background:rgba(255,255,255,.02)}
+.stdin .p{font:500 11px/1 var(--mono);color:var(--scr-st)}
+.stdin input{flex:1;min-width:0;font:400 11.5px/1 var(--mono);color:var(--scr-fg)}
+.stdin input::placeholder{color:var(--scr-dim);opacity:.65}
+.stdin .nokey{font:500 9px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--scr-dim);border:1px solid var(--scr-line);padding:2px 5px}
+
+/* ---------- 11 · 日志 / 运行记录（LOGGING.md 的可视化） ---------- */
+.subbar{display:flex;align-items:center;gap:7px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--card2);flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--card);padding:3px 7px;
+  font:500 10px/1 var(--mono);color:var(--ink3)}
+button.pill:hover{border-color:var(--ink3);color:var(--ink)}
+.pill .d{width:6px;height:6px;border-radius:50%;background:var(--c);flex:0 0 6px}
+.pill[data-who=hub]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line));background:var(--ok-bg)}
+.pill[data-who=buf]{color:var(--busy);border-color:color-mix(in srgb,var(--busy) 40%,var(--line));background:var(--busy-bg)}
+.pill[data-who=app]{color:var(--wn);border-color:color-mix(in srgb,var(--wn) 40%,var(--line));background:var(--wn-bg)}
+.pill[data-who=off]{color:var(--off);background:var(--off-bg)}
+.pill[data-active="1"]{box-shadow:inset 0 0 0 1px var(--rule);color:var(--ink)}
+.field{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--inset);padding:4px 8px;min-width:190px}
+.field input{flex:1;min-width:0;font-size:11.5px}
+.logs{flex:1 1 auto;min-height:0;overflow:auto;background:var(--card)}
+.lrow{display:grid;grid-template-columns:78px 66px 1fr;gap:9px;padding:4px 14px;border-bottom:1px solid rgba(120,110,90,.11);
+  font:400 11.5px/1.5 var(--mono);align-items:baseline}
+.lrow:hover{background:var(--card2)}
+.lrow .lt{color:var(--ink3)}
+.lrow .who{font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+.lrow .who[data-who=hub]{color:var(--ok)}
+.lrow .who[data-who=buf]{color:var(--busy)}
+.lrow .who[data-who=app]{color:var(--wn)}
+.lrow.lv-wa span:last-child{color:var(--wn)}
+.lrow.lv-er span:last-child{color:var(--err)}
+.lrow.lv-st span:last-child{color:var(--ink);font-weight:600}
+.lrow.cur{background:var(--accent-bg);box-shadow:inset 2px 0 0 var(--accent)}
+.timeline{flex:1 1 auto;min-height:0;overflow:auto;padding:12px 14px;background:var(--card)}
+.tl{display:grid;grid-template-columns:auto 1fr;gap:11px;padding:0 0 13px 0;position:relative}
+.tl::before{content:"";position:absolute;left:4px;top:12px;bottom:0;width:1px;background:var(--line)}
+.tl:last-child::before{display:none}
+.tl .rail-dot{width:9px;height:9px;margin-top:4px;border-radius:50%;background:var(--c);z-index:1;box-shadow:0 0 0 3px var(--card)}
+.tl[data-s=stopped] .rail-dot,.tl[data-s=exited] .rail-dot{background:transparent;box-shadow:inset 0 0 0 1.5px var(--c),0 0 0 3px var(--card)}
+.tl .bd{min-width:0}
+.tl .hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.tl .hd b{font:600 12px/1.3 var(--sans)}
+.tl .hd i{font:500 10px/1 var(--mono);color:var(--ink3);font-style:normal}
+.tl .file{font:400 10.5px/1.4 var(--mono);color:var(--ink2);word-break:break-all;margin-top:2px}
+.tl .meta{font:400 10.5px/1.4 var(--mono);color:var(--ink3);margin-top:2px}
+.tl .acts{display:flex;gap:5px;margin-top:5px}
+.tl .acts button{border:1px solid var(--line);padding:2px 7px;font:500 10px/1 var(--mono);color:var(--ink2)}
+.tl .acts button:hover{border-color:var(--accent);color:var(--accent)}
+.note{padding:8px 14px;border-top:1px solid var(--line);background:var(--card2);font:400 11px/1.55 var(--sans);color:var(--ink3)}
+.note b{color:var(--ink2)}
+.note code{font:400 10.5px/1 var(--mono);color:var(--ink2);background:var(--inset);padding:1px 4px;border:1px solid var(--line)}
+.err-card{margin:11px 14px 0;border:1px solid color-mix(in srgb,var(--err) 45%,var(--rule));background:var(--err-bg);padding:10px 12px}
+.err-card h4{font:600 12.5px/1.3 var(--sans);color:var(--err);display:flex;align-items:center;gap:7px;margin-bottom:4px}
+.err-card p{font-size:11.5px;color:var(--ink2)}
+.err-card p code{font:400 10.5px/1.4 var(--mono);color:var(--ink);background:var(--card);padding:1px 4px;border:1px solid var(--line)}
+.err-card .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+
+/* ---------- 12 · 检验单（低频信息，默认收起） ---------- */
+.inspector{border-left:1px solid var(--line);background:var(--card2);overflow:hidden auto;min-height:0}
+.ins-h{position:sticky;top:0;background:var(--card2);border-bottom:1px solid var(--line);padding:7px 11px;display:flex;align-items:center;gap:8px}
+.ins-h button{margin-left:auto;color:var(--ink3);font-size:14px;line-height:1}
+.ins-h button:hover{color:var(--ink)}
+.dl{padding:9px 11px;display:grid;gap:7px}
+.dl > div{display:grid;grid-template-columns:74px 1fr;gap:8px;align-items:baseline}
+.dl dt{font:600 9px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
+.dl dd{font:500 10.5px/1.45 var(--mono);color:var(--ink);word-break:break-all}
+.dl dd u{text-decoration:none;color:var(--ink2)}
+.ins-sec{border-top:1px solid var(--line);padding:9px 11px}
+.ins-sec .tag{display:block;margin-bottom:6px}
+.ins-sec p{font-size:11px;color:var(--ink2);line-height:1.5;margin-bottom:6px}
+.pills{display:flex;flex-wrap:wrap;gap:4px}
+.deps{list-style:none;display:grid;gap:5px;font:500 10.5px/1.4 var(--mono);color:var(--ink2)}
+.deps li{display:flex;align-items:center;gap:6px}
+.ins-btns{border-top:1px solid var(--line);padding:9px 11px;display:grid;gap:5px}
+.ins-btns button{border:1px solid var(--line);background:var(--card);padding:6px 8px;font:500 11px/1 var(--sans);text-align:left;
+  display:flex;align-items:center;gap:7px;color:var(--ink2)}
+.ins-btns button:hover{border-color:var(--ink3);color:var(--ink)}
+.ins-btns button em{font:600 8.5px/1 var(--mono);letter-spacing:.1em;color:var(--ink3);font-style:normal;border:1px solid var(--line);padding:2px 4px}
+.ins-btns button.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
+.ins-btns button.danger:hover{background:var(--err);color:var(--card);border-color:var(--err)}
+
+/* ---------- 13 · 底栏 ---------- */
+.foot{border-top:1px solid var(--line);background:var(--card2);padding:0 10px;height:32px;display:flex;align-items:center;gap:10px;
+  font:500 10.5px/1 var(--mono);color:var(--ink3);flex-wrap:nowrap;overflow:hidden}
+.foot .stat{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.foot .stat b{color:var(--ink);font-weight:600}
+.foot .chip{border:1px solid var(--line);padding:3px 7px;font:inherit;color:var(--ink2);display:flex;align-items:center;gap:5px}
+.foot .chip:hover{border-color:var(--ink3);color:var(--ink)}
+.foot .chip .dot{width:6px;height:6px;flex:0 0 6px}
+.exitbtn{border:1px solid var(--rule);padding:4px 10px;font:600 10.5px/1 var(--mono);letter-spacing:.06em;background:var(--card);
+  box-shadow:var(--sh1);color:var(--ink);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.exitbtn svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1.4}
+.exitbtn:hover{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+/* ---------- 14 · 托盘（SPEC §8 / D-006） ---------- */
+.tray-pop{position:fixed;right:26px;bottom:58px;width:328px;z-index:70;background:var(--card);border:1px solid var(--rule);
+  box-shadow:var(--sh2);display:none}
+.tray-pop.open{display:block}
+.tp-h{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:1px solid var(--line)}
+.tp-h .mark{width:10px;height:10px;background:var(--ink)}
+.tp-h button{margin-left:auto;color:var(--ink3);font-size:13px}
+.tp-sum{padding:7px 11px;border-bottom:1px solid var(--line);font:600 11px/1.3 var(--mono);display:flex;align-items:baseline;gap:7px}
+.tp-sum em{font:400 10px/1.3 var(--mono);color:var(--ink3);font-style:normal}
+.tp-list{max-height:210px;overflow:auto}
+.tp-row{display:grid;grid-template-columns:8px 1fr auto;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 11px;
+  border-bottom:1px solid rgba(120,110,90,.12)}
+.tp-row:hover{background:var(--card2)}
+.tp-row span:nth-child(2){min-width:0;display:grid}
+.tp-row b{font:600 11.5px/1.3 var(--sans)}
+.tp-row .sub{font:400 10px/1.3 var(--mono);color:var(--ink3)}
+.tp-row em{font:600 9px/1 var(--mono);color:var(--c);font-style:normal;white-space:nowrap}
+.tp-foot{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.tp-foot button{background:var(--card);padding:8px 9px;text-align:left;display:grid;gap:2px}
+.tp-foot button:hover{background:var(--card2)}
+.tp-foot button i{font:600 8.5px/1 var(--mono);letter-spacing:.12em;color:var(--ink3);font-style:normal}
+.tp-foot button em{font:400 9.5px/1 var(--mono);color:var(--ink3);font-style:normal;justify-self:end;grid-row:1;grid-column:2}
+.tp-foot button b{font:600 11.5px/1.2 var(--sans)}
+.tp-foot button.danger b{color:var(--err)}
+.tp-foot button.primary{background:var(--ink)}
+.tp-foot button.primary b,.tp-foot button.primary i,.tp-foot button.primary em{color:var(--paper)}
+.tp-note{padding:7px 11px;font:400 10px/1.5 var(--mono);color:var(--ink3);border-bottom:1px solid var(--line)}
+
+/* ---------- 15 · 「真正退出」对话框（SPEC §8：三选一，默认不是杀掉） ---------- */
+.scrim{position:fixed;inset:0;background:rgba(24,20,12,.5);backdrop-filter:blur(1.5px);z-index:80;display:none;place-items:center}
+.scrim.open{display:grid}
+html[data-theme=ink] .scrim{background:rgba(0,0,0,.66)}
+.dialog{width:min(560px,92vw);background:var(--card);border:1px solid var(--rule);box-shadow:var(--sh2)}
+.dlg-h{padding:15px 17px 13px;border-bottom:1px solid var(--line)}
+.dlg-h .tag{display:block;margin-bottom:6px}
+.dlg-h h2{font:500 20px/1.25 var(--serif);letter-spacing:-.01em}
+.dlg-h p{font-size:11.5px;color:var(--ink2);margin-top:5px}
+.dlg-b{padding:6px 17px 10px;display:grid;gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.opt{display:grid;grid-template-columns:auto 1fr;gap:11px;align-items:start;background:var(--card);padding:11px 12px;text-align:left;width:100%}
+.opt:hover{background:var(--card2)}
+.opt .rd{width:13px;height:13px;border:1px solid var(--rule);border-radius:50%;margin-top:3px;display:grid;place-items:center}
+.opt.sel{background:var(--accent-bg);box-shadow:inset 2px 0 0 var(--accent)}
+.opt.sel .rd{border-color:var(--accent)}
+.opt.sel .rd::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.opt b{font:600 12.5px/1.35 var(--sans);display:block}
+.opt p{font-size:11px;line-height:1.5;color:var(--ink2);margin-top:3px}
+.opt p code{font:400 10px/1 var(--mono);background:var(--inset);padding:1px 4px;border:1px solid var(--line)}
+.dlg-f{padding:11px 17px;display:flex;align-items:center;gap:9px}
+.dlg-f .hint{font:400 10px/1.5 var(--mono);color:var(--ink3);text-align:right;max-width:250px}
+
+/* ---------- 16 · Toast ---------- */
+.toast{position:fixed;left:50%;bottom:66px;transform:translate(-50%,14px);z-index:90;background:var(--ink);color:var(--paper);
+  border:1px solid var(--rule);box-shadow:var(--sh2);padding:8px 13px;font:500 11.5px/1.35 var(--mono);
+  display:flex;align-items:center;gap:9px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:min(620px,90vw)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast b{font:600 9px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;opacity:.65}
+
+/* ---------- 17 · 响应式：先藏次要信息，再藏布局 ---------- */
+@media (max-width:1340px){.rec-chip .path{display:none}}
+@media (max-width:1240px){.qs{grid-template-columns:1fr 1fr}.q.impact{grid-column:span 2}.item .rec{display:none}}
+@media (max-width:1120px){.foot .stat.opt-a{display:none}.window.insp .body{grid-template-columns:252px minmax(0,1fr) 280px}.body{grid-template-columns:252px minmax(0,1fr) 0}}
+@media (max-width:980px){.qs{grid-template-columns:1fr}.q.impact{grid-column:auto}.proto .note{display:none}.holder{padding:12px 8px 22px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+
+<!-- ========== 原型工具条：不属于产品 UI ========== -->
+<div class="proto">
+  <span class="brand"><b>Local Console Hub</b> · V2 Concept「Ledger」</span>
+  <span class="seg" role="group" aria-label="主题">
+    <button data-act=theme data-t=ledger aria-pressed=true>Ledger 纸</button>
+    <button data-act=theme data-t=ink aria-pressed=false>Ink 墨</button>
+  </span>
+  <span class="note">同一套语义、两种纸墨 —— UI_STYLE_GUIDE 要求先固定语义，再谈配色</span>
+  <span class="sp"></span>
+  <button class="p-btn" data-act=tray>托盘 Popover</button>
+  <button class="p-btn" data-act=exit>真正退出 Dialog</button>
+  <button class="p-btn" data-act=insp>检验单</button>
+</div>
+
+<div class="holder">
+<div class="window" id="win">
+
+  <!-- ========== 标题栏 ========== -->
+  <div class="tbar">
+    <span class="mark"></span>
+    <span class="t">Local Console Hub</span>
+    <span class="tag" style="margin-left:6px">6 sessions · 3 alive</span>
+    <span class="sp"></span>
+    <button class="tb-btn" data-act=toast data-msg="最小化 = 收进托盘继续常驻（D-006）">–</button>
+    <button class="tb-btn" data-act=toast data-msg="V2 先做单窗口，多窗口排在 Phase 3 之后">□</button>
+    <button class="tb-btn close" data-act=closeonly title="关闭：收进托盘，不杀进程">×</button>
+  </div>
+
+  <div class="body">
+
+    <!-- ========== 01 · 左栏：受管服务台账 ========== -->
+    <aside class="rail">
+      <div class="rail-head">
+        <label class="search">
+          <svg viewBox="0 0 12 12"><circle cx="5" cy="5" r="3.2"/><path d="M7.6 7.6 10.5 10.5"/></svg>
+          <input id="q" placeholder="过滤会话 / 端口 / 用途" />
+        </label>
+        <div class="sum"><span><b>6</b> 台账</span><span><b>3</b> 活着</span><span><b>1</b> 待输入</span><span><b>1</b> 错误</span></div>
+        <button class="new-btn" data-act=toast data-msg="新增会话写进 sessions.yaml，而不是 UI 私有状态（SPEC §4）">＋ 新增受管会话<span style="font-family:var(--mono)">YAML</span></button>
+      </div>
+      <div class="rail-scroll">
+
+        <div class="sec-h">AI Apps <em>有网页界面，也有进程要管</em></div>
+        <ul class="items">
+          <li class="item" data-key=sillytavern data-s=running tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">SillyTavern <em>:8000</em></span>
+              <span class="sub">聊天前端 · <b>node server.js</b> · 依赖 KoboldCpp</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="rec" data-who=app title="外部日志：应用自己写，Hub 只链接">EXT</span><span>6h</span></span>
+            </span>
+          </li>
+          <li class="item sel" data-key=comfyui data-s=busy tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">ComfyUI <em>:8188</em></span>
+              <span class="sub">图生图服务 · <b>正在出图 2/8</b> · VRAM 11.2G</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="rec" data-who=hub title="Hub 正在写入 run 文件">REC</span><span>2h11m</span></span>
+            </span>
+          </li>
+          <li class="item" data-key=kobold data-s=stopped tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">KoboldCpp <em>:5001</em></span>
+              <span class="sub">本地推理后端 · 停止 · 上次 exit 0</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="rec" data-who=buf title="终端缓冲只在内存里">BUF</span><span>3d前</span></span>
+            </span>
+          </li>
+        </ul>
+
+        <div class="sec-h">Debug <em>自己写的东西，出错是常态</em></div>
+        <ul class="items">
+          <li class="item" data-key=scratch data-s=waiting tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">Scratch <em>TTY</em></span>
+              <span class="sub">调试脚本 · <b>等你输入</b> 3m41s · Read-Host</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="warn" title="需要你介入">看我看我</span><span class="rec" data-who=hub>REC</span></span>
+            </span>
+          </li>
+          <li class="item" data-key=testapi data-s=error tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">Test API <em>TTY</em></span>
+              <span class="sub">启动失败 · <b>工作目录不存在</b> · exit 2</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="rec" data-who=hub>ERR</span><span>22:43</span></span>
+            </span>
+          </li>
+        </ul>
+
+        <div class="sec-h">Temporary <em>用完就该消失的一次性终端</em></div>
+        <ul class="items">
+          <li class="item" data-key=tmp data-s=stopped tabindex=0 role=button>
+            <span class="dot"></span>
+            <span class="idn">
+              <span class="nm">临时终端 <em>powershell</em></span>
+              <span class="sub">未保存为受管会话 · 关掉即回收</span>
+            </span>
+            <span class="rt">
+              <span class="gauge"><span class="g"><i class="f" data-k=P></i></span><span class="g"><i class="f" data-k=H></i></span><i>P/H</i></span>
+              <span class="meta"><span class="rec" data-who=off>OFF</span><span>—</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+      <div class="rail-foot"><span>台账 = sessions.yaml</span><span class="sp"></span><span>Ctrl Shift N</span></div>
+    </aside>
+
+    <!-- ========== 02 · 舞台 ========== -->
+    <main class="stage">
+      <header class="shead">
+        <div class="l1">
+          <h1 id="sessName">ComfyUI<em>:8188</em></h1>
+          <span class="state" id="sessState" data-s=busy><span class="dot"></span><span id="stateText">运行 · 忙</span></span>
+          <span class="url" id="urlBox">
+            <a href="#" onclick="return false">127.0.0.1:8188</a>
+            <button title="用系统浏览器打开" data-act=toast data-msg="用系统默认浏览器打开 http://127.0.0.1:8188">↗</button>
+            <button title="复制地址" data-act=toast data-msg="已复制 http://127.0.0.1:8188">⧉</button>
+          </span>
+          <button class="btn ghost rail-btn" data-act=insp>检验单</button>
+        </div>
+
+        <!-- 三个问题：这套设计真正的主角 -->
+        <div class="qs">
+          <div class="q"><span class="tag">是什么 What</span><p id="qWhat">本地图生图服务 · ComfyUI 前端 + 便携 Python</p></div>
+          <div class="q"><span class="tag">在干嘛 Doing</span><p id="qDoing"><b>正在出图 2 / 8</b> · 队列还有 3 个任务 · worker 已跑 4m12s</p></div>
+          <div class="q impact"><span class="tag">能不能关 Impact</span><p id="qImpact"><b>可以关。</b>但会中断当前 2 个任务，已完成的不会丢；网页端会立刻失联。</p></div>
+        </div>
+      </header>
+
+      <!-- 动作条：启动 / 优雅停止 / 强制结束 —— 三个动词，三种后果（D-007） -->
+      <div class="actionbar">
+        <button class="btn" id="btnStart" data-act=toast data-msg="启动：解析配置 → 校验工作目录 → 创建受管进程 → 记录 PID 与进程树">
+          <svg viewBox="0 0 12 12"><path d="M3 2l7 4-7 4z"/></svg>启动</button>
+        <button class="btn stop" id="btnStop">
+          <svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg><span id="stopLabel">优雅停止</span></button>
+        <button class="btn" id="btnRestart" data-act=toast data-msg="重启 = 一次完整的停止 + 启动；旧进程未退出时不会再拉起一份">
+          <svg viewBox="0 0 12 12"><path d="M9.5 6a3.5 3.5 0 1 1-1-2.4"/><path d="M9.8 1.8v2.2H7.6"/></svg>重启</button>
+        <span class="sep"></span>
+        <button class="btn ghost" data-act=toast data-msg="在资源管理器中打开 D:\Tools\ComfyUI_windows_portable">打开目录</button>
+        <button class="btn ghost" data-act=focus>聚焦终端</button>
+        <button class="btn ghost" data-menu-btn=more>更多 <span class="dim">▾</span>
+          <div class="menu" data-menu=more>
+            <button data-act=toast data-msg="已复制子进程树：python.exe → 6 个子进程">复制进程树</button>
+            <button data-act=toast data-msg="已复制启动命令：python_embeded\python.exe -s ComfyUI\main.py">复制启动命令</button>
+            <button data-act=insp>查看检验单</button>
+            <hr />
+            <button data-act=toast data-msg="sessions.yaml → sessions[comfyui]">编辑会话配置</button>
+            <button data-act=toast data-msg="已创建一个与 ComfyUI 同目录的受管终端">从此目录新建受管终端</button>
+            <hr />
+            <button class="danger" data-act=force>强制结束进程树（不等收尾）</button>
+          </div>
+        </button>
+        <button class="rec-chip" id="recChip" data-who=hub>
+          <span class="lab" id="recLab">● 正在记录</span>
+          <span class="path" id="recPath">logs/comfyui/2026-09/2026-09-26_22-31-04__run-8f31.log</span>
+          <em id="recMeta">always · captured · 不含键盘输入</em>
+        </button>
+      </div>
+
+      <!-- 标签 -->
+      <nav class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab=term aria-selected=true>终端</button>
+        <button class="tab" role="tab" data-tab=logs aria-selected=false>日志 <b data-s=busy>REC</b></button>
+        <button class="tab" role="tab" data-tab=runs aria-selected=false>运行记录 <b data-s=running>4</b></button>
+        <button class="tab" role="tab" data-tab=detail aria-selected=false>详情</button>
+        <span class="sp"></span>
+        <button class="tab" data-act=toast data-msg="终端里 Ctrl F = 搜索；搜索只作用于缓冲，不改动日志文件" style="border-bottom-color:transparent">Ctrl F</button>
+      </nav>
+
+      <div class="panes">
+        <!-- ---------- 终端 ---------- -->
+        <section class="pane" data-pane=term data-active="1">
+          <div class="err-card" id="errCard" style="display:none">
+            <h4><span class="dot" data-s=error style="--c:var(--err)"></span><span id="errTitle">Test API 启动失败</span></h4>
+            <p id="errBody">工作目录不存在：<code>D:\Work\scratch-api\.venv\Scripts\activate.ps1</code> —— 先执行 <code>py -3.11 -m venv .venv</code>，或在 <code>sessions.yaml</code> 里改 <code>cwd</code>。失败详情已写进本次 run 日志（exit 2）。</p>
+            <div class="acts">
+              <button class="btn" data-act=toast data-msg="已在资源管理器中定位该路径">打开目录</button>
+              <button class="btn" data-act=toast data-msg="已复制完整错误与退出码">复制错误</button>
+              <button class="btn primary" data-act=toast data-msg="重试启动：重新解析 cwd 并创建进程">重试启动</button>
+            </div>
+          </div>
+
+          <div class="screen">
+            <div class="scr-bar">
+              <span class="g">ConPTY</span><span id="scrGeom">148 × 44</span><span>UTF-8</span>
+              <span class="sp"></span>
+              <span>缓冲 2000 行 · 只在内存 · 不落盘</span>
+              <button data-act=toast data-msg="Ctrl+C 已发送到 PTY 输入（不是复制）">Ctrl C</button>
+              <button data-act=toast data-msg="尺寸变化已作为 resize 事件传给 PTY">Resize</button>
+            </div>
+            <div class="out" id="out"></div>
+            <div class="stdin">
+              <span class="p" id="prompt">comfyui&gt;</span>
+              <input id="stdinInput" placeholder="输入命令，回车发送到 ConPTY" />
+              <span class="nokey">stdin 不写日志</span>
+              <button class="nokey" data-act=toast data-msg="回车 = 把这一行写进 PTY 输入；键盘输入永不进日志（LOGGING §4）">Send</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 日志 ---------- -->
+        <section class="pane" data-pane=logs>
+          <div class="subbar">
+            <span class="pill" data-who=buf><span class="d"></span>终端缓冲 · 内存 2000 行</span>
+            <span class="pill" data-who=hub><span class="d"></span>Hub 捕获 · 本 run 文件</span>
+            <span class="pill" data-who=app><span class="d"></span>应用自身日志 · 仅关联</span>
+            <span class="sp"></span>
+            <span class="field">搜索本 run<input placeholder="全文搜索在 Phase 3" /></span>
+            <button class="pill" data-act=toast data-msg="用系统编辑器打开当前 run 日志文件">打开日志</button>
+            <button class="pill" data-act=toast data-msg="在资源管理器中定位日志目录">打开所在目录</button>
+          </div>
+          <div class="logs" id="logBox"></div>
+          <p class="note" id="logNote"></p>
+        </section>
+
+        <!-- ---------- 运行记录 ---------- -->
+        <section class="pane" data-pane=runs>
+          <div class="subbar">
+            <span class="pill">一次运行 = 一个 run_id = 一个文件</span>
+            <span class="pill" data-who=hub><span class="d"></span>异常运行 1 / 4</span>
+            <span class="sp"></span>
+            <button class="pill" data-act=toast data-msg="按 session 分类清理，不会误删其它会话（LOGGING §9）">清理旧运行…</button>
+            <button class="pill" data-act=toast data-msg="元数据来自 metadata/runs.jsonl">运行元数据</button>
+          </div>
+          <div class="timeline" id="runList"></div>
+          <p class="note">重启后创建<b>新的 run 文件</b>，绝不覆盖旧文件（LOGGING 验收场景 B）；<code>on_error</code> 模式平时不留垃圾，出错时补写错误前的有限内存缓冲。</p>
+        </section>
+
+        <!-- ---------- 详情 ---------- -->
+        <section class="pane" data-pane=detail>
+          <div class="subbar"><span class="pill">完整语义信息 · 低频、只读</span><span class="sp"></span>
+            <button class="pill" data-act=toast data-msg="在编辑器中打开 sessions.yaml（可人工编辑、可版本控制）">编辑 sessions.yaml</button></div>
+          <div class="logs" id="yamlBox" style="padding:10px 14px"></div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ========== 03 · 检验单：低频信息，默认收起 ========== -->
+    <aside class="inspector" id="inspector">
+      <div class="ins-h"><span class="tag">检验单 / Inspector</span><button data-act=insp title="收起">×</button></div>
+      <dl class="dl">
+        <div><dt>PID</dt><dd id="iPid">18424 · 7 个子进程</dd></div>
+        <div><dt>运行时长</dt><dd id="iUp">2h 11m · 本次 run 22:31:04</dd></div>
+        <div><dt>端口</dt><dd id="iPort">0.0.0.0:8188 → LISTENING</dd></div>
+        <div><dt>工作目录</dt><dd>D:\Tools\ComfyUI_windows_portable</dd></div>
+        <div><dt>启动命令</dt><dd>python_embeded\python.exe -s ComfyUI\main.py <u>--gpu-temperature</u></dd></div>
+        <div><dt>健康检查</dt><dd>GET /system_stats · 上次 22:47:02 · 200 · 低频</dd></div>
+        <div><dt>日志目录</dt><dd>%LOCALAPPDATA%\LocalConsoleHub\logs\comfyui</dd></div>
+      </dl>
+
+      <div class="ins-sec">
+        <span class="tag">日志策略 · 点击切换（LOGGING §5）</span>
+        <p>Hub 捕获 stdout / stderr；异常时补写错误前的内存缓冲。<b style="color:var(--ink)">键盘输入永不进日志</b>。</p>
+        <div class="pills" id="modePills">
+          <button class="pill" data-mode=off>off</button>
+          <button class="pill" data-who=hub data-mode=always data-active="1">always</button>
+          <button class="pill" data-mode=manual>manual</button>
+          <button class="pill" data-mode=on_error>on_error</button>
+          <button class="pill" data-mode=auto>auto</button>
+        </div>
+      </div>
+
+      <div class="ins-sec">
+        <span class="tag">依赖关系 · Phase 3</span>
+        <ul class="deps" id="depList">
+          <li data-s=stopped><span class="dot"></span>需要：KoboldCpp :5001（未运行）</li>
+          <li data-s=running><span class="dot"></span>被依赖：无 —— 关掉不会连累别人</li>
+        </ul>
+      </div>
+
+      <div class="ins-sec">
+        <span class="tag">应用自身日志 · 只关联，不复制（D-005）</span>
+        <ul class="deps" id="appLog"><li>comfyui.log · <span style="color:var(--ink3)">user\Documents\comfyui</span></li></ul>
+      </div>
+
+      <div class="ins-btns">
+        <button data-act=toast data-msg="已复制当前 run 日志的完整路径"><em>PATH</em>复制日志路径</button>
+        <button data-act=toast data-msg="按 session 分类清理旧日志（LOGGING §9）"><em>GC</em>清理此会话旧日志…</button>
+        <button data-act=toast data-msg="危险操作必须显式配置（SPEC §10）"><em>ADV</em>高级：强制结束策略…</button>
+        <button class="danger" data-act=force><em>KILL</em>强制结束进程树</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ========== 04 · 底栏：状态条 + 真正退出 ========== -->
+  <footer class="foot">
+    <span class="stat"><b>6</b> 受管会话</span>
+    <span class="stat"><b>3</b> 活着</span>
+    <span class="stat opt-a"><b>1</b> 忙</span>
+    <span class="stat opt-a"><b>1</b> 错误</span>
+    <button class="chip" data-s=waiting data-act=toast data-msg="跳到 Scratch：它在等你输入（等待 3m41s）"><span class="dot"></span>该我看了 1</button>
+    <span class="sp"></span>
+    <span class="stat" id="footSel"><b>ComfyUI</b> busy · port 8188 · run 8f31</span>
+    <button class="chip" data-act=tray data-menu-btn=tray aria-haspopup=true aria-expanded=false title="托盘摘要（SPEC §8）">托盘常驻中</button>
+    <span class="stat opt-a"><b>0.0%</b> 空闲 CPU（D-009）</span>
+    <button class="exitbtn" data-act=exit>
+      <svg viewBox="0 0 12 12"><path d="M6 1.5v5M3.6 3.6a3.4 3.4 0 1 0 4.8 0"/></svg>真正退出
+    </button>
+  </footer>
+
+</div><!-- /window -->
+</div><!-- /holder -->
+
+<!-- ========== 托盘 Popover（独立浮层，SPEC §8 / D-006） ========== -->
+<div class="tray-pop" id="trayPop">
+  <div class="tp-h"><span class="mark"></span><span class="tag">Local Console Hub</span>
+    <button data-act=toast data-msg="设置：V2 走次级入口，不占主界面（UI_STYLE_GUIDE）">⚙</button></div>
+  <div class="tp-sum">3 / 6<em>活着 · 1 busy · 1 待输入 · 1 错误</em></div>
+  <div class="tp-list">
+    <button class="tp-row" data-s=busy data-act=toast data-msg="打开主窗口并切到 ComfyUI"><span class="dot"></span><span><b>ComfyUI</b><span class="sub">:8188 busy</span></span><em>run 8f31</em></button>
+    <button class="tp-row" data-s=running data-act=toast data-msg="打开主窗口并切到 SillyTavern"><span class="dot"></span><span><b>SillyTavern</b><span class="sub">:8000</span></span><em>1.3G</em></button>
+    <button class="tp-row" data-s=waiting data-act=toast data-msg="聚焦 Scratch —— 它在等你输入，托盘只做提示不做预览"><span class="dot"></span><span><b>Scratch</b><span class="sub">等待输入 3m41s</span></span><em>看它</em></button>
+    <button class="tp-row" data-s=error data-act=toast data-msg="Test API：工作目录不存在（exit 2）"><span class="dot"></span><span><b>Test API</b><span class="sub">exit 2</span></span><em>22:43</em></button>
+  </div>
+  <div class="tp-foot">
+    <button class="primary" data-act=trayclose><i>SHOW</i><b>显示主窗口</b><em>双击</em></button>
+    <button data-act=toast data-msg="只重启失败项，不碰正在跑的服务（SPEC §8）"><i>RERUN</i><b>Restart Failed</b><em>1</em></button>
+    <button data-act=toast data-msg="优雅停止全部：逐个停止 → 超时才升级到强制结束"><i>STOP</i><b>Stop All</b><em>3</em></button>
+    <button class="danger" data-act=exit><i>EXIT</i><b>真正退出</b><em>会询问</em></button>
+  </div>
+  <div class="tp-note">关窗口 ≠ 退出：受管进程继续运行（D-006）；托盘不做终端预览，那是主窗口的职责。</div>
+</div>
+
+<!-- ========== 真正退出：三选一，默认不是杀掉（SPEC §8） ========== -->
+<div class="scrim" id="exitScrim">
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="真正退出 Local Console Hub">
+    <div class="dlg-h">
+      <span class="tag">真正退出 · 不是关窗口</span>
+      <h2>关掉 Hub 之前，这 3 个进程怎么办？</h2>
+      <p>关窗口永远只是收进托盘；只有<b style="color:var(--ink)">真正退出</b>才需要这个决定 —— 而且不会悄悄杀进程。</p>
+    </div>
+    <div class="dlg-b" id="exitOpts" role="radiogroup" aria-label="退出时如何处理受管进程">
+      <button class="opt sel" data-opt=detach role=radio aria-checked=true>
+        <span class="rd"></span>
+        <span><b>保留后台进程，Hub 先退出</b>
+        <p>推荐。SillyTavern / ComfyUI / Scratch 继续运行，下次打开 Hub 重新认领；<code>Test API</code> 的日志文件会被正常关闭。</p></span>
+      </button>
+      <button class="opt" data-opt=stopall role=radio aria-checked=false>
+        <span class="rd"></span>
+        <span><b>优雅停止全部 3 个，再退出</b>
+        <p>逐个优雅停止 → 等待可配置超时 → 仍未退出才升级并提示。<b style="color:var(--err)">会中断 ComfyUI 当前 2 个出图任务。</b></p></span>
+      </button>
+      <button class="opt" data-opt=cancel role=radio aria-checked=false>
+        <span class="rd"></span>
+        <span><b>取消，回到主窗口</b>
+        <p>Esc 或点击外部同样取消。Hub 与所有进程保持原样。</p></span>
+      </button>
+    </div>
+    <div class="dlg-f">
+      <button class="btn ghost" data-act=closeexit>取消</button>
+      <span class="sp"></span>
+      <span class="hint">日志根目录<br />%LOCALAPPDATA%\LocalConsoleHub\logs<br />终端键盘输入永不写盘</span>
+      <button class="btn primary" data-act=doexit>确认退出</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><b>Hub</b><span id="toastMsg">—</span></div>
+
+<script>
+/* ==========================================================================
+   原型行为：全本地、无请求。切换左栏会话即可看到「三个问题」如何随语义变化。
+   ========================================================================== */
+var S = {
+comfyui:{n:'ComfyUI',p:':8188',s:'busy',st:'运行 · 忙',url:'127.0.0.1:8188',prompt:'comfyui>',mode:'always',
+ what:'本地图生图服务 · ComfyUI 前端 + 便携 Python，界面在浏览器里用',
+ doing:'<b>正在出图 2 / 8</b> · 队列还有 3 个任务 · worker 已跑 4m12s · VRAM 11.2/12.0 GB',
+ impact:'<b>可以关。</b>但会中断当前 2 个任务（已完成的图不会丢）；网页端立刻失联；没有别的东西依赖它。',
+ rec:['hub','● 正在记录','logs/comfyui/2026-09/2026-09-26_22-31-04__run-8f31.log','always · captured · 不含键盘输入'],
+ pid:'18424 · 7 个子进程',up:'2h 11m · 本次 run 22:31:04',port:'0.0.0.0:8188 → LISTENING',
+ out:[['22:31:04','st','[START]','run_id 8f31 · cwd D:\\Tools\\ComfyUI_windows_portable'],
+  ['22:31:07','ok','[OK]','Total VRAM 12288 MB · RAM DrawPatch Optimization'],
+  ['22:31:09','ok','[OK]','Starting server'],
+  ['','','','    To see the GUI go to: http://127.0.0.1:8188'],
+  ['22:31:12','dim','','[Health] GET /system_stats 200 · 每 30s · 低频'],
+  ['22:44:51','dim','','Prompt received · queue depth 3'],
+  ['22:44:52','','','100%|██████████| 20/20 [00:12&lt;00:00, 1.60it/s]'],
+  ['22:47:02','st','[BUSY]','2 / 8 workers active'],
+  ['22:47:33','ok','[SAVE]','output/ComfyUI_00871_.png'],
+  ['22:48:10','dim','','终端缓冲在内存；日志同时写进 run 文件']],
+ logs:[['22:31:04','hub','st','run 8f31 created (mode=always / source=captured)'],
+  ['22:31:09','hub','--','Starting server on http://127.0.0.1:8188'],
+  ['22:44:51','buf','--','prompt 13468 chars · queue depth 3'],
+  ['22:45:10','hub','wa','CUDA out of memory hint · retry with --lowvram'],
+  ['22:47:02','hub','--','GET /system_stats 200 · health ok'],
+  ['22:47:31','app','--','comfyui.log: Fetching models · 2 entries（仅关联）'],
+  ['22:48:10','buf','--','progress 2/8 · 键盘输入不会出现在这里']],
+ note:'<b>当前 run</b> · run_id <b>8f31</b> · mode <b>always</b> / source <b>captured</b> · 已写 1.24 MB / 轮转 10 MB · 保留 14 天 · 目录 session / 年月 分层，脱离 Hub 也读得懂（D-011）',
+ runs:[['busy','run 8f31 · 运行中 16m','今天 22:31:04','logs/comfyui/2026-09/2026-09-26_22-31-04__run-8f31.log','always · captured · 1.24 MB · exit —'],
+  ['exited','run c8aa · 1h 22m','今天 14:02:01','logs/comfyui/2026-09/2026-09-26_14-02-01__run-c8aa.log','always · captured · 4.9 MB · exit 0'],
+  ['error','run 41de · 3h 41m · 异常退出','昨天 09:12:44','logs/comfyui/2026-09/2026-09-25_09-12-44__run-41de.log','always · captured · 22.1 MB（已轮转 3 片） · exit 137 · OOM'],
+  ['stopped','run 77b0 · 52m','09-21 10:05:00','logs/comfyui/2026-09/2026-09-21_10-05-00__run-77b0.log','manual · 未点开始记录 · 0 B · exit 0']],
+ yaml:'sessions:\n  - id: comfyui\n    name: ComfyUI\n    type: service\n    cwd: D:/Tools/ComfyUI_windows_portable\n    command: python_embeded\\python.exe -s ComfyUI\\main.py --gpu-temperature\n    url: http://127.0.0.1:8188\n    purpose: 本地图生图服务\n    close_impact: 中断当前出图任务；网页端失联\n    health: { url: /system_stats, every: 30s }\n    logging: { mode: always, source: captured }'
+},
+sillytavern:{n:'SillyTavern',p:':8000',s:'running',st:'运行',url:'127.0.0.1:8000',prompt:'sillytavern>',mode:'always',
+ what:'聊天前端 · Node 服务；真正干活的是它依赖的 KoboldCpp',
+ doing:'空闲 · 2 个浏览器连接 · RSS 1.3 GB · 无任务',
+ impact:'<b>可以关。</b>聊天网页失联；聊天记录已落盘不会丢；KoboldCpp 不受影响。',
+ rec:['app','◉ 外部日志','D:\\Tools\\SillyTavern\\data\\access.log','external · Hub 只链接，不复制'],
+ pid:'21160 · 1 个子进程',up:'6h 03m · 本次 run 16:39:12',port:'127.0.0.1:8000 → LISTENING',
+ out:[['16:39:12','st','[START]','run_id b204 · cwd D:\\Tools\\SillyTavern'],
+  ['16:39:15','ok','[OK]','SillyTavern 1.12.12l · http://127.0.0.1:8000'],
+  ['16:39:15','dim','','应用自己写 access.log，Hub 不再复制一份（D-005）'],
+  ['20:11:40','dim','','[Health] GET /version 200'],
+  ['22:41:07','dim','','2 clients connected · idle']],
+ logs:[['16:39:12','hub','st','run b204 created · source=external（不复制）'],
+  ['16:39:15','hub','--','SillyTavern 1.12.12l listening on :8000'],
+  ['18:22:03','app','--','access.log: GET / 200 302ms（外部文件）'],
+  ['20:11:40','hub','--','GET /version 200 · health ok'],
+  ['22:41:07','buf','--','2 clients connected · idle']],
+ note:'<b>External 模式</b> · 权威日志由应用自己维护 · Hub 只做索引与入口 · 轮转与保留由应用负责（LOGGING §11）',
+ runs:[['running','run b204 · 运行中 6h 03m','今天 16:39:12','data/access.log（应用自己写）','external · Hub 未复制 · exit —'],
+  ['exited','run 5c11 · 6h 40m','今天 09:58:20','data/access.log（被应用覆盖写）','external · exit 0'],
+  ['exited','run a9f2 · 2h 10m','09-23 11:02:10','data/access.log','external · exit 0']],
+ yaml:'  - id: sillytavern\n    name: SillyTavern\n    type: service\n    cwd: D:/Tools/SillyTavern\n    command: node server.js\n    url: http://127.0.0.1:8000\n    purpose: 聊天前端\n    close_impact: 可停止；网页会失联\n    depends_on: [kobold]\n    logging:\n      mode: always\n      source: external\n      path: ./data/access.log'
+},
+kobold:{n:'KoboldCpp',p:':5001',s:'stopped',st:'停止',url:'127.0.0.1:5001',prompt:'kobold>',mode:'on_error',
+ what:'本地推理后端 · 单文件 exe，给 SillyTavern 提供模型接口',
+ doing:'没在跑 · 上次 3 天前 exit 0 · 日志留在上次 run 文件里',
+ impact:'<b>随便关。</b>它已经停了；唯一依赖它的 SillyTavern 会连不上模型。',
+ rec:['buf','○ 只有终端缓冲','内存 2000 行 · 没有 run 文件','on_error · 上次没触发错误，未落盘'],
+ pid:'—',up:'— · 上次运行 3d 前',port:'— → 无监听端口',
+ out:[['09:14:02','st','[START]','run 33f0 · KoboldCpp 1.88 · CUDA 12'],
+  ['09:14:09','ok','[OK]','Slot 0 loaded: mixtral-Q4_K_M.gguf (9.8 GB)'],
+  ['09:14:10','dim','','[Health] GET /v1/models 200'],
+  ['12:55:47','dim','','Self-exit requested · exit 0（正常收尾）']],
+ logs:[['09:14:02','hub','st','run 33f0 created (mode=on_error)'],
+  ['09:14:09','hub','--','Slot 0 loaded · mixtral-Q4_K_M.gguf'],
+  ['12:55:47','hub','st','exit 0 · 没有错误 → 不落盘，只留终端缓冲']],
+ note:'<b>on_error</b> · 干净退出（exit 0）→ 不创建日志文件；终端缓冲仍可在内存里回看（LOGGING §5 / 验收场景 A）',
+ runs:[['stopped','run 33f0 · 3h 41m · 未落盘','3d 前 09:14:02','— 无文件（on_error 未触发）','on_error · 干净退出 exit 0 · 仅终端缓冲'],
+  ['error','run 0be2 · 2m · 异常','09-20 08:30:11','logs/kobold/2026-09/2026-09-20_08-30-11__run-0be2.log','on_error · 出错前 400 行内存缓冲已补写 · exit 1 · CUDA OOM']],
+ yaml:'  - id: kobold\n    name: KoboldCpp\n    type: service\n    cwd: D:/Tools/KoboldCpp\n    command: koboldcpp.exe --port 5001 --usecuda\n    url: http://127.0.0.1:5001\n    purpose: 本地推理后端\n    close_impact: 仅影响依赖它的 SillyTavern\n    logging: { mode: on_error, source: captured, ring: 400 }'
+},
+scratch:{n:'Scratch',p:'TTY',s:'waiting',st:'运行 · 等你输入',url:'',prompt:'PS D:\\Work\\scratch>',mode:'always',
+ what:'我自己的调试脚本 · PowerShell 交互式会话（受管终端，不是服务）',
+ doing:'<b>卡在 Read-Host 上 3m41s</b> —— 它在等我敲回车，不是在算',
+ impact:'<b>可以关。</b>未保存的变量会丢；没有任何服务依赖它。等输入时不要直接强制结束。',
+ rec:['hub','● 正在记录','logs/scratch/2026-09/2026-09-26_22-41-58__run-d5c7.log','always · captured · 不含键盘输入'],
+ pid:'24810 · 1 个子进程',up:'7m · 本次 run 22:41:58',port:'无端口（交互式 TTY）',
+ out:[['22:41:58','st','[START]','run d5c7 · ConPTY 132×38 · powershell -NoProfile'],
+  ['22:42:03','','','PS D:\\Work\\scratch> .\\replay.ps1 -Session 8f31'],
+  ['22:42:03','dim','','replaying 1.24 MB of captured output … 812 frames'],
+  ['22:42:06','wn','[WAIT]','Read-Host 提示中：press ENTER to continue（已等待 3m41s）'],
+  ['','','','Press ENTER to continue...',' <span class="caret"></span>']],
+ logs:[['22:41:58','hub','st','run d5c7 created (always / captured)'],
+  ['22:42:03','buf','--','command line: .\\replay.ps1 -Session 8f31'],
+  ['22:42:06','hub','wa','waiting for input · Read-Host · 状态判定 = 等待输入，不是忙'],
+  ['22:45:47','buf','--','idle 3m41s · 提醒只亮一次（SPEC §7）']],
+ note:'<b>等待输入</b> 是独立状态，不是「忙」也不是「卡死」：Hub 只在最近一次输出像提示符时提醒，并且<b>永不替用户按回车</b>（SPEC §7）',
+ runs:[['waiting','run d5c7 · 7m · 等待输入','今天 22:41:58','logs/scratch/2026-09/2026-09-26_22-41-58__run-d5c7.log','always · captured · 42 KB · exit —'],
+  ['exited','run 91aa · 12m','今天 11:20:00','logs/scratch/2026-09/2026-09-26_11-20-00__run-91aa.log','always · captured · 18 KB · exit 0']],
+ yaml:'  - id: scratch\n    name: Scratch\n    type: terminal\n    cwd: D:/Work/scratch\n    command: powershell -NoProfile\n    purpose: 调试脚本的交互式会话\n    close_impact: 未保存变量丢失；无人依赖\n    logging: { mode: always, source: captured, stdin: never }'
+},
+testapi:{n:'Test API',p:'TTY',s:'error',st:'错误 · exit 2',url:'',prompt:'test-api>',mode:'always',
+ what:'试写的小 FastAPI · 只是试一下，不值得为它开 IDE',
+ doing:'<b>启动失败</b>：工作目录不存在 → 进程立刻退出（exit 2），什么都没跑起来',
+ impact:'<b>没什么不能关的。</b>它已经退出了；清理掉只会丢掉这次的失败现场 —— 想查错就先别清。',
+ rec:['hub','● 已写入失败详情','logs/test-api/2026-09/2026-09-26_22-43-11__run-7e10.log','always · captured · 错误上下文已保留'],
+ pid:'— · 已退出',up:'4s · 本次 run 22:43:11',port:'无（进程未进入监听阶段）',
+ err:['Test API 启动失败 · exit 2','工作目录不存在：<code>D:\\Work\\scratch-api\\.venv\\Scripts\\activate.ps1</code> —— 先执行 <code>py -3.11 -m venv .venv</code>，或在 <code>sessions.yaml</code> 里改 <code>cwd</code>。失败详情已写进本次 run 日志，不会因为进程退出而消失。'],
+ out:[['22:43:11','st','[START]','run 7e10 · cwd D:\\Work\\scratch-api'],
+  ['22:43:11','er','[FAIL]','cwd 校验失败：.venv\\Scripts\\activate.ps1 不存在'],
+  ['22:43:11','dim','','提示：py -3.11 -m venv .venv && .venv\\Scripts\\activate'],
+  ['22:43:11','er','[EXIT]','exit code 2 · 4s · 失败上下文已落盘']],
+ logs:[['22:43:11','hub','st','run 7e10 created (always / captured)'],
+  ['22:43:11','hub','er','启动失败：工作目录不存在（cwd 校验阶段，未创建进程树）'],
+  ['22:43:11','hub','er','hint: 缺少虚拟环境 · py -3.11 -m venv .venv'],
+  ['22:43:11','hub','st','exit 2 · 状态 = 错误 · 需要「该我看了」提醒']],
+ note:'<b>启动失败也要留证据</b>：进程还没活到能自己写日志的阶段，Hub 捕获的输出就是唯一现场（LOGGING §6 / 验收场景 D）',
+ runs:[['error','run 7e10 · 4s · 启动失败','今天 22:43:11','logs/test-api/2026-09/2026-09-26_22-43-11__run-7e10.log','always · captured · 2 KB · exit 2 · cwd 不存在'],
+  ['error','run 2c44 · 3s · 启动失败','今天 22:38:02','logs/test-api/2026-09/2026-09-26_22-38-02__run-2c44.log','always · captured · 2 KB · exit 2 · 同一原因'],
+  ['exited','run b7d1 · 1m','今天 22:30:40','logs/test-api/2026-09/2026-09-26_22-30-40__run-b7d1.log','always · captured · 6 KB · exit 1 · 端口被占用']],
+ yaml:'  - id: test-api\n    name: Test API\n    type: terminal\n    cwd: D:/Work/scratch-api\n    command: .venv\\Scripts\\activate.ps1\n    purpose: 试写的 FastAPI\n    close_impact: 无\n    logging: { mode: always, source: captured }   # 启动失败也要留现场'
+},
+tmp:{n:'临时终端',p:'powershell',s:'stopped',st:'未纳管',url:'',prompt:'PS ~>',mode:'off',
+ what:'一次性受管终端 · 没有写进 sessions.yaml，关掉就没了',
+ doing:'没在跑 · 一次性终端不保留状态，也不生成台账',
+ impact:'<b>可以关。</b>这正是它的用途：用完即弃。想留下就另存为受管会话。',
+ rec:['off','○ 不记录','—','off · 一次性终端默认不落盘'],
+ pid:'—',up:'—',port:'无',
+ out:[['22:20:14','st','[START]','一次性 ConPTY 会话 · cwd %USERPROFILE%'],
+  ['22:20:31','','','PS ~> git -C ..\\repo status --short'],
+  ['22:20:32','dim','','（这类终端关掉即回收，Hub 不给它编 run_id）'],
+  ['22:24:05','dim','','[EXIT]','user closed · exit 0 · 无日志文件']],
+ logs:[['22:20:14','hub','st','一次性终端 · mode=off · 不创建 run 文件'],
+  ['22:24:05','buf','--','closed by user · 终端缓冲随会话释放']],
+ note:'<b>off</b> · 明确不记录：想记录就另存为受管会话（mode 默认 always），Hub 不替你做这个决定（LOGGING §5）',
+ runs:[['stopped','一次性会话 · 4m','今天 22:20:14','— 无文件（mode=off）','off · 关掉即回收 · exit 0']],
+ yaml:'# 一次性终端不在 sessions.yaml 里\n# 想让它进入台账 → 「另存为受管会话」，Hub 会补一段 YAML：\n  - id: scratch-tmp\n    name: 临时终端（已保存）\n    type: terminal\n    cwd: ~/\n    command: powershell -NoProfile\n    logging: { mode: always, source: captured }'
+}
+};
+
+/* ---------- 小工具 ---------- */
+var $ = function(id){return document.getElementById(id)};
+var ST = {running:'运行',busy:'运行 · 忙',waiting:'运行 · 等你输入',stopping:'优雅停止中',error:'错误 · exit 2',exited:'已退出',stopped:'停止',idle:'空闲'};
+var ALIVE = {running:1,busy:1,waiting:1,stopping:1};
+var cur = 'comfyui';
+
+/* 检验单里的「依赖关系」与「应用自身日志」：也是每个会话自己的事实，不是一句通用文案（D-005 / D-010） */
+var DEP = {
+ comfyui:[['stopped','需要：KoboldCpp :5001（未运行 · 出图不受影响，只是没接后端）'],
+          ['running','被依赖：无 —— 关掉不会连累别人']],
+ sillytavern:[['busy','需要：任一 OpenAI 兼容后端（现在指向 KoboldCpp :5001，已停）'],
+          ['running','被依赖：无 —— 只有浏览器在连它']],
+ kobold:[['running','需要：无（模型权重就在本地目录）'],
+          ['busy','被依赖：SillyTavern 把它当后端 —— 关掉那边会报连接失败']],
+ scratch:[['running','需要：无'],['running','被依赖：无 —— 没人依赖一个调试 shell']],
+ testapi:[['error','需要：Python 3.11 + .venv（当前缺失 → 启动即 exit 2）'],
+          ['running','被依赖：无']],
+ tmp:[['running','需要：无（一次性终端，不进台账）'],['running','被依赖：无']]
+};
+var APPLOG = {
+ comfyui:'comfyui.log · <span style="color:var(--ink3)">%USERPROFILE%\\Documents\\comfyui（应用自己写的，Hub 只关联不复制）</span>',
+ sillytavern:'server.log · <span style="color:var(--ink3)">SillyTavern/log/2026-9-26 - [日志].log</span>',
+ kobold:'koboldcpp.log · <span style="color:var(--ink3)">程序同目录（--no-logging 未开）</span>',
+ scratch:'<span style="color:var(--ink3)">交互式 shell 不写自己的日志 —— 现场只有 Hub 捕获的那份</span>',
+ testapi:'<span style="color:var(--ink3)">没有：进程没活到能自己写日志的阶段，Hub 捕获 = 唯一现场</span>',
+ tmp:'<span style="color:var(--ink3)">无 · 一次性终端不产生文件</span>'
+};
+
+function outHtml(lines){
+  return lines.map(function(l){
+    var t = l[0] ? '<span class="ts">'+l[0]+'</span>' : '';
+    var a = l[2] ? '<span class="'+(l[1]||'')+'">'+l[2]+'</span> ' : '';
+    var m = l[3]||'';
+    if(!l[2] && l[1]) m = '<span class="'+l[1]+'">'+m+'</span>';
+    return t+a+m;
+  }).join('\n');
+}
+function logHtml(rows){
+  return rows.map(function(r){
+    return '<div class="lrow lv-'+r[2]+'"><span class="lt">'+r[0]+'</span>'+
+           '<span class="who" data-who='+r[1]+'>'+r[1]+'</span><span>'+r[3]+'</span></div>';
+  }).join('');
+}
+function runHtml(rows){
+  return rows.map(function(r){
+    return '<div class="tl" data-s='+r[0]+'><span class="rail-dot"></span><div class="bd">'+
+      '<div class="hd"><b>'+r[1]+'</b><i>'+r[2]+'</i></div>'+
+      '<div class="file">'+r[3]+'</div><div class="meta">'+r[4]+'</div>'+
+      '<div class="acts"><button data-act=toast data-msg="在编辑器中打开这个 run 文件">打开文件</button>'+
+      '<button data-act=toast data-msg="在资源管理器中定位">显示所在目录</button>'+
+      '<button data-act=toast data-msg="复制这一行的元数据（run_id · mode · exit）">复制元数据</button></div></div></div>';
+  }).join('');
+}
+function yamlHtml(y){
+  return '<pre style="margin:0;font:400 11.5px/1.75 var(--mono);white-space:pre-wrap;color:var(--ink2)">'+
+    y.replace(/^(#.*$)/gm,'<span class="dim" style="color:var(--ink3)">$1</span>')
+     .replace(/^(\s*[\w.]+:)/gm,'<b style="color:var(--ink);font-weight:500">$1</b>')+'</pre>';
+}
+
+/* ---------- 渲染一个会话：三个问题 + 证据 ---------- */
+function render(){
+  var s = S[cur], alive = !!ALIVE[s.s];
+  document.querySelectorAll('.item').forEach(function(i){i.classList.toggle('sel', i.dataset.key===cur)});
+  $('sessName').innerHTML = s.n + '<em>'+s.p+'</em>';
+  $('sessState').dataset.s = s.s;
+  $('stateText').textContent = ST[s.s] || s.st;
+  $('urlBox').style.display = s.url ? 'flex' : 'none';
+  var ua = $('urlBox').querySelector('a'); if(ua && s.url) ua.textContent = s.url;
+  $('qWhat').innerHTML = s.what;
+  $('qDoing').innerHTML = s.doing;
+  $('qImpact').innerHTML = s.impact;
+  $('out').innerHTML = outHtml(s.out) + (alive ? '\n<span class="caret"></span>' : '');
+  $('out').scrollTop = $('out').scrollHeight;
+  $('prompt').textContent = s.prompt;
+  $('logBox').innerHTML = logHtml(s.logs);
+  $('logNote').innerHTML = s.note;
+  $('runList').innerHTML = runHtml(s.runs);
+  $('yamlBox').innerHTML = yamlHtml(s.yaml);
+  /* 标签上的徽标随会话变化：REC/OFF 表示这个会话现在有没有被记录（D-005） */
+  var lb = document.querySelector('.tab[data-tab=logs] b');
+  if(lb){ lb.textContent = (s.mode==='off') ? 'OFF' : 'REC';
+          lb.dataset.s = (s.mode==='off') ? 'stopped' : (s.rec[0]==='app' ? 'busy' : 'running'); }
+  var rb = document.querySelector('.tab[data-tab=runs] b');
+  if(rb){ rb.textContent = s.runs.length; rb.dataset.s = 'idle'; }
+  $('recChip').dataset.who = s.rec[0];
+  $('recLab').textContent = s.rec[1];
+  $('recPath').textContent = s.rec[2];
+  $('recMeta').textContent = s.rec[3];
+  $('iPid').textContent = s.pid; $('iUp').textContent = s.up; $('iPort').textContent = s.port;
+  var dl=$('depList');
+  if(dl) dl.innerHTML = (DEP[cur]||[['running','需要：无'],['running','被依赖：无']]).map(function(d){
+    return '<li data-s='+d[0]+'><span class="dot"></span>'+d[1]+'</li>'; }).join('');
+  var al=$('appLog');
+  if(al) al.innerHTML = '<li>'+(APPLOG[cur]||'—')+'</li>';
+  $('footSel').innerHTML = '<b>'+s.n+'</b> '+s.s+' · '+s.p;
+  $('errCard').style.display = s.err ? 'block' : 'none';
+  if(s.err){ $('errTitle').textContent = s.err[0]; $('errBody').innerHTML = s.err[1]; }
+  $('btnStart').disabled = alive || s.s==='stopping';
+  $('btnStop').disabled = s.s==='stopping' ? false : !alive;
+  $('btnRestart').disabled = s.s==='stopping';
+  document.querySelectorAll('#modePills .pill').forEach(function(p){
+    p.dataset.active = (p.dataset.mode===s.mode) ? '1' : '';
+    p.dataset.who = (p.dataset.mode===s.mode) ? (s.rec[0]==='app'?'app':s.rec[0]==='off'?'off':'hub') : '';
+  });
+}
+function setState(v){
+  S[cur].s = v;
+  var it = document.querySelector('.item[data-key='+cur+']');
+  if(it) it.dataset.s = v;
+  render();
+}
+
+/* ---------- 交互：动作条 / 状态 ---------- */
+var tt=null;
+function toast(m){ $('toastMsg').textContent=m; $('toast').classList.add('show'); clearTimeout(tt); tt=setTimeout(function(){$('toast').classList.remove('show')},2800); }
+function hhmm(){ var d=new Date(),p=function(x){return (x<10?'0':'')+x}; return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()) }
+var stTimer=null;
+function stopFlow(){
+  if(S[cur].s==='stopping'){ force(); return }
+  if(!ALIVE[S[cur].s]){ toast('它已经停了：'+S[cur].n+' = '+(ST[S[cur].s]||S[cur].st)); return }
+  var n=6; setState('stopping'); $('stopLabel').textContent='优雅停止中 '+n+'s · 再点一次 = 强制结束';
+  toast('优雅停止：先请求它自己收尾，超时才升级到强制结束（D-007）');
+  stTimer=setInterval(function(){
+    n--;
+    if(n>0){ $('stopLabel').textContent='优雅停止中 '+n+'s · 再点一次 = 强制结束'; return }
+    clearInterval(stTimer); stTimer=null; $('stopLabel').textContent='优雅停止';
+    setState('stopped'); S[cur].doing='已优雅停止 · exit 0 · run 日志已 flush 并关闭'; S[cur].err=null; render();
+    toast('已优雅停止：'+S[cur].n+' · 日志文件正常关闭，不留半截');
+  },900);
+}
+function force(){
+  if(stTimer){ clearInterval(stTimer); stTimer=null }
+  $('stopLabel').textContent='优雅停止'; setState('stopped');
+  S[cur].doing='被强制结束 · 进程树已杀死（可能留下半截日志与临时文件）'; S[cur].err=null; render();
+  toast('强制结束：整个进程树被杀死，不等收尾 —— 它不是默认动作（SPEC §10）');
+}
+function startFlow(){ setState('running'); S[cur].doing='刚启动 · 等第一次健康检查 · 已新建 run 文件'; S[cur].err=null; render(); }
+function restartFlow(){
+  if(stTimer) return;
+  setState('stopping'); $('stopLabel').textContent='重启中：先优雅停止…';
+  setTimeout(function(){ $('stopLabel').textContent='优雅停止'; setState('running');
+    S[cur].doing='刚重启完成 · 新的 run_id，旧日志文件保持不动'; render();
+    toast('重启 = 一次完整的停止 + 启动：新 run 文件，旧文件绝不覆盖'); },1400);
+}
+var MODE={
+ off:['off','○ 不记录','— 不创建 run 文件','off · 明确不记录（想记录请改成 always）'],
+ manual:['off','◌ 等你点「开始记录」','— 未创建 run 文件','manual · 不自动写盘，避免垃圾日志'],
+ on_error:['buf','○ 只有终端缓冲','内存 2000 行 · 没有 run 文件','on_error · 出错时补写错误前的内存缓冲'],
+ auto:['hub','● 正在记录（auto 推断）','规则见 LOGGING §6：服务=always · 一次性终端=off','auto · 由会话类型推断，可在检验单改']
+};
+/* always 的 run 文件路径属于这个会话自己，不能在别处预先写死 */
+function alwaysRec(k, orec){
+  var p = (orec && orec[2]) || S[k].rec[2];
+  return ['hub','● 正在记录',
+          (p && p.indexOf('logs/')===0) ? p : 'logs/'+k+'/…__run-<新 run_id>.log',
+          'always · captured · 不含键盘输入'];
+}
+var MODE_NOTE={
+ off:'<b>off</b>：不创建 run 文件，终端缓冲随会话释放 —— 关掉它，现场就彻底没了（LOGGING §5）',
+ always:'<b>always</b>：从启动起持续写这一份 run 文件；键盘输入（stdin）永远不进日志（LOGGING §4）',
+ manual:'<b>manual</b>：输出先留在内存里，你点「开始记录」才创建 run 文件 —— 别一屋子没人看的垃圾日志（D-005）',
+ on_error:'<b>on_error</b>：平时只有内存缓冲；出错时把错误之前的缓冲补写成一个 run 文件（LOGGING §6）',
+ auto:'<b>auto</b>：按会话类型推断 —— 服务=always、一次性终端=off；推断结果写在检验单里，可以改'
+};
+
+/* ---------- 全局事件：一个委托够用 ---------- */
+document.addEventListener('click', function(e){
+  var item=e.target.closest('.item');
+  if(item && !item.classList.contains('sel')){ cur=item.dataset.key; render(); }
+  var tab=e.target.closest('[data-tab]');
+  if(tab){
+    document.querySelectorAll('.tab[data-tab]').forEach(function(t){ t.setAttribute('aria-selected', t===tab?'true':'false') });
+    document.querySelectorAll('.pane').forEach(function(p){ p.dataset.active = p.dataset.pane===tab.dataset.tab ? '1':'' });
+  }
+  var mb=e.target.closest('[data-menu-btn]');
+  document.querySelectorAll('.menu.open').forEach(function(m){ if(!mb||m.parentElement!==mb) m.classList.remove('open') });
+  if(mb){ var mm=document.querySelector('[data-menu='+mb.dataset.menuBtn+']'); if(mm) mm.classList.toggle('open') }
+  var opt=e.target.closest('.opt');
+  if(opt){ document.querySelectorAll('.opt').forEach(function(o){ o.classList.toggle('sel', o===opt) }) }
+  var md=e.target.closest('[data-mode]');
+  if(md){
+    var s0=S[cur], v=md.dataset.mode;
+    /* 第一次改动时记住出厂状态：改回原策略时，连文案一起还原 */
+    if(!s0._p) s0._p = {mode:s0.mode, rec:s0.rec.slice(), note:s0.note};
+    s0.mode=v;
+    s0.rec = (v==='always') ? alwaysRec(cur, s0._p.rec) : MODE[v];
+    s0.note = (v===s0._p.mode) ? s0._p.note : MODE_NOTE[v];
+    render(); toast('日志策略 = '+v+' · '+s0.rec[3]);
+  }
+  var b=e.target.closest('[data-act]'); if(!b) return;
+  if(b.id==='btnStart' && !b.disabled) startFlow();
+  if(b.id==='btnStop' && !b.disabled) stopFlow();
+  if(b.id==='btnRestart' && !b.disabled) restartFlow();
+  var a=b.dataset.act;
+  if(a==='toast'){ toast(b.dataset.msg||b.textContent.trim()) }
+  else if(a==='theme'){
+    document.documentElement.dataset.theme=b.dataset.t;
+    document.querySelectorAll('.seg button').forEach(function(x){ x.setAttribute('aria-pressed', x===b?'true':'false') });
+    toast('主题 = '+(b.dataset.t==='ink'?'Ink 墨（深色纸 · 夜间）':'Ledger 纸（暖白 · 白天）')+'：语义、布局、状态形状都不变');
+  }
+  else if(a==='insp'){ $('win').classList.toggle('insp') }
+  else if(a==='tray'){ $('trayPop').classList.toggle('open') }
+  else if(a==='trayclose'){ $('trayPop').classList.remove('open'); toast('显示主窗口：受管进程一直都在跑，托盘只是入口') }
+  else if(a==='exit'){ $('trayPop').classList.remove('open'); $('exitScrim').classList.add('open') }
+  else if(a==='closeexit'){ $('exitScrim').classList.remove('open') }
+  else if(a==='doexit'){
+    var s=document.querySelector('.opt.sel'), t=s?s.dataset.opt:'detach';
+    $('exitScrim').classList.remove('open');
+    toast(t==='stopall' ? '优雅停止 3 个进程 → 全部退出后 Hub 才关闭（日志已 flush）' :
+          t==='cancel'  ? '取消：Hub 与所有进程保持原样' :
+                          'Hub 退出，3 个进程留在后台，下次打开重新认领');
+  }
+  else if(a==='force') force();
+  else if(a==='focus'){ $('stdinInput').focus(); toast('已聚焦终端：键盘输入直接进 ConPTY，不进日志') }
+  else if(a==='closeonly'){ toast('关窗口 = 收进托盘：3 个受管进程继续运行（D-006）') }
+});
+document.addEventListener('keydown', function(e){
+  /* 左侧列表是可聚焦的 role=button：Enter = 选中（UI_STYLE_GUIDE §8：键盘可达） */
+  if(e.key==='Enter'){
+    var it=e.target.closest ? e.target.closest('.item') : null;
+    if(it){ cur=it.dataset.key; render(); e.preventDefault(); return; }
+  }
+  if(e.key!=='Escape') return;
+  $('exitScrim').classList.remove('open'); $('trayPop').classList.remove('open');
+  document.querySelectorAll('.menu.open').forEach(function(m){ m.classList.remove('open') });
+  var q=$('q'); if(q===document.activeElement && q.value){ q.value=''; document.querySelectorAll('.item').forEach(function(i){ i.dataset.hidden='' }); }
+});
+$('stdinInput').addEventListener('keydown', function(e){
+  if(e.key!=='Enter') return;
+  var v=this.value.trim(); if(!v) return; this.value='';
+  S[cur].out.push([hhmm(),'','','<span class="st">→ PTY</span> '+v]);
+  S[cur].logs.push([hhmm(),'buf','--','stdin 一行已发送到 ConPTY · 键盘输入永不写进日志文件']);
+  render(); toast('这一行进的是 PTY 输入；日志文件里不会有它（LOGGING §4）');
+});
+$('q').addEventListener('input', function(){
+  var v=this.value.trim().toLowerCase();
+  document.querySelectorAll('.item').forEach(function(i){
+    i.dataset.hidden = (v && i.textContent.toLowerCase().indexOf(v)<0) ? '1':'';
+  });
+});
+
+/* 一点点活着的证据：只在 ComfyUI busy 时滚 */
+var tickN=2, tickMsgs=['100%|██████████| 20/20 [00:12&lt;00:00, 1.60it/s]','Prompt received · queue depth 2','GET /system_stats 200 · health ok'];
+setInterval(function(){
+  if(cur!=='comfyui' || S.comfyui.s!=='busy') return;
+  tickN=tickN%8+1;
+  S.comfyui.out.push([hhmm(),'','[BUSY]',tickN+' / 8 workers active · '+tickMsgs[tickN%3]]);
+  if(S.comfyui.out.length>44) S.comfyui.out.shift();
+  render();
+},3200);
+render();
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
