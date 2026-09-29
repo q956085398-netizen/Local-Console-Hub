@@ -7,6 +7,14 @@ truth — runtime state belongs to Session Core in the Rust backend. Do not add
 a runtime session model here: runtime state arrives as `SessionRuntimeDto`
 and lifecycle changes originate in Session Core.
 
+- `backend-connection.ts` — **transport liveness, and only that**: is a host
+  answering the typed ping? It is the first question the shell asks, and the
+  one it keeps asking — a lost request is not a permanent answer, so
+  `unavailable` re-asks on a bounded, documented backoff, a question nobody
+  answers counts as no answer after `QUESTION_TIMEOUT_MS`, and the first reply
+  stops the asking (`#29`). It holds no session state and no error text: a
+  failed ping means "no host is answering", never that a session or a terminal
+  failed.
 - `derivations.ts` — pure view rules over the DTOs (status tones and labels,
   action availability, callout wording, metadata pairs, row chips, grouping,
   filtering). Unit-tested; components stay thin wrappers around these.
@@ -34,6 +42,12 @@ and lifecycle changes originate in Session Core.
 events) and falls back to `FIXTURE_SESSIONS` when none is — the browser
 preview, and the moment before the first listing returns. The two sources fill
 the *same* `SessionView`, so the shell renders one model, not two.
+
+"Answering" is `backend-connection.ts`'s answer, not this hook's: a host that
+was down at startup and replies later flips this state to `connected`, which is
+the same transition the first listing already rides — so the live workspace
+takes over without a restart, and the fixture workspace keeps its precedence
+right up until then.
 
 `SessionView`'s extras beyond the landed DTOs are documented per field on the
 type and are not a second runtime model:

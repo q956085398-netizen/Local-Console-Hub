@@ -10,7 +10,7 @@ import {
 } from "../types/runtime";
 import { FIXTURE_SESSIONS } from "../state/fixtures";
 import { sessionsFromLive, type SessionView } from "../state/session-view";
-import type { BackendConnection } from "./useBackendPing";
+import type { BackendConnection } from "../state/backend-connection";
 
 /** The workspace the shell renders, and the actions its controls call. */
 export interface SessionRegistry {
