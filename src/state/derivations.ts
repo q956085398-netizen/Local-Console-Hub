@@ -237,6 +237,22 @@ export function ptyChromeLabel(config: SessionConfigDto, runtime: SessionRuntime
 }
 
 /**
+ * What the terminal pane's "not running" overlay says a start would get you.
+ *
+ * The reason to start a session is not the same for both kinds, so neither is
+ * the sentence. A stopped interactive terminal is a PTY nobody can type into,
+ * and the overlay's job there is to say it is not a log panel standing in for
+ * one (UI_STYLE_GUIDE §7). A stopped service is simply not writing anything
+ * yet; telling that user "this is not a read-only log panel" answers a
+ * question they did not ask, about a distinction that does not apply to them.
+ */
+export function stoppedHint(session: SessionView): string {
+  return session.config.sessionType === "terminal"
+    ? "交互终端必须先启动进程。这不是只读日志面板。"
+    : "这个服务未运行。启动后它的输出会出现在这里。";
+}
+
+/**
  * Whether a session's terminal view may send keystrokes (T07 #8).
  *
  * The backend's own predicate at `terminal_write`, transcribed rather than

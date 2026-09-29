@@ -23,6 +23,7 @@ import {
   acceptsTerminalInput,
   ptyChromeLabel,
   runOutcome,
+  stoppedHint,
   runOutcomeBadge,
   sidebarRowMeta,
   sidebarSummaryText,
@@ -406,6 +407,22 @@ describe("ptyChromeLabel", () => {
       "PTY attached · stdin 可用",
     );
     expect(ptyChromeLabel(config(), runtime({ ptyAttached: false }))).toBe("PTY 未连接 · 只读缓冲");
+  });
+});
+
+describe("stoppedHint", () => {
+  it("tells a terminal user the pane is not a log panel, and a service user what starting does", () => {
+    expect(stoppedHint(fixture())).toBe("这个服务未运行。启动后它的输出会出现在这里。");
+    expect(stoppedHint(fixture({ config: config({ sessionType: "terminal" }) }))).toBe(
+      "交互终端必须先启动进程。这不是只读日志面板。",
+    );
+  });
+
+  it("does not answer a service's question with the terminal's distinction", () => {
+    // The overlay appears for a stopped session of either kind (observed on a
+    // real service run, T11 #12). The terminal sentence names a distinction
+    // — real PTY versus read-only log box — that only exists for terminals.
+    expect(stoppedHint(fixture())).not.toContain("只读日志面板");
   });
 });
 
