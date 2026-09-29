@@ -3,13 +3,14 @@ import { logSourceLabel, loggingHeadline, runOutcomeBadge } from "../../state/de
 import {
   bufferNote,
   cleanupPrompt,
-  currentLogPath,
+  currentLogFile,
+  fileActions,
   logActionAvailability,
   logPathEntries,
   logStateLabel,
   logStateTone,
-  runFileActions,
   runFilePathNote,
+  runLogFile,
   runsNewestFirst,
   showsSourceBadge,
 } from "../../state/logs";
@@ -31,9 +32,8 @@ export interface LogsPanelProps {
  * Three things this surface has to keep apart, because `docs/LOGGING.md` never
  * lets them merge: the in-memory terminal buffer, the Hub-owned captured log,
  * and an application-owned external log. The state badge answers "is this being
- * logged?" before anything else (T05's §1.4 requirement), the path rows say
- * where, and the history lists only runs that actually left something — no
- * fabricated empty records for a session that writes nothing.
+ * logged?" before anything else (T05's §1.4 requirement), and the path rows say
+ * where.
  *
  * T06 rendered this from fixtures; T10 (#11) reads it back from Session Core
  * and wires the file and retention actions. The fixtures are still the answer
@@ -43,12 +43,16 @@ export interface LogsPanelProps {
  * A run whose log retention has since swept stays on the list and says so
  * (`RunRow`): the record is the evidence the run happened, and a view that
  * dropped the row — or offered to open a file that is gone — would lose that.
+ * The current run's card answers that question the same way, because both it
+ * and the rows read their file actions from `fileActions` (D-022): a file that
+ * is gone loses 打开日志 and 复制路径 in both places, and keeps 打开目录 in both.
  */
 export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
   const logs = useSessionLogs(session, onNotice);
   const { status, provenance, actions, cleanup } = logs;
   const availability = logActionAvailability(status);
-  const current = currentLogPath(status);
+  const current = currentLogFile(status);
+  const currentActions = fileActions(current);
   const ordered = runsNewestFirst(logs.runs);
 
   return (
@@ -108,7 +112,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={!availability.openCurrent}
+            disabled={!currentActions.open}
             onClick={() => actions.openFile()}
           >
             <ScrollText size={14} />
@@ -117,7 +121,7 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={!availability.openCurrent}
+            disabled={!currentActions.folder}
             onClick={() => actions.openFolder()}
           >
             <FolderOpen size={14} />
@@ -126,8 +130,8 @@ export default function LogsPanel({ session, onNotice }: LogsPanelProps) {
           <button
             type="button"
             className="btn btn--ghost btn--sm"
-            disabled={current === undefined}
-            onClick={() => current !== undefined && actions.copyPath(current)}
+            disabled={!currentActions.copy}
+            onClick={() => current.path !== undefined && actions.copyPath(current.path)}
           >
             <Copy size={14} />
             复制路径
@@ -259,7 +263,7 @@ interface RunRowProps {
 function RunRow({ run, onOpen, onFolder, onCopy }: RunRowProps) {
   const outcome = runOutcomeBadge(run);
   const file = run.logFile;
-  const available = runFileActions(run);
+  const available = fileActions(runLogFile(run));
   return (
     <li className="logs-panel__run">
       <div className="logs-panel__run-top">

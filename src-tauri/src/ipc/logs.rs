@@ -152,6 +152,7 @@ mod tests {
             source: LogSource::Captured,
             state: LogState::Capturing,
             log_file: Some("C:/logs/comfyui/2026-09/run.log".to_owned()),
+            log_file_present: true,
             external_log: None,
             session_log_dir: Some("C:/logs/comfyui/2026-09".to_owned()),
             records_input: false,
@@ -175,6 +176,7 @@ mod tests {
             "source",
             "state",
             "logFile",
+            "logFilePresent",
             "sessionLogDir",
             "recordsInput",
             "buffer",
@@ -185,6 +187,14 @@ mod tests {
         assert!(
             value.get("log_file").is_none(),
             "snake_case leaked into {value}"
+        );
+        // The file answer travels as a boolean and not as the path's shadow:
+        // the frontend reads "logFile names a file **and** this is true", the
+        // same rule a run-history entry is read by (D-022).
+        assert_eq!(
+            value["logFilePresent"],
+            serde_json::json!(true),
+            "the status's file answer must be a boolean: {value}"
         );
         // An absent optional arrives as `null`, not as a missing key: these
         // structs carry `Option` fields without `skip_serializing_if`, unlike

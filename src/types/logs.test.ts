@@ -23,6 +23,7 @@ const wire = {
   source: "captured",
   state: "capturing",
   logFile: "C:/logs/comfyui/2026-09/run.log",
+  logFilePresent: true,
   externalLog: null,
   sessionLogDir: "C:/logs/comfyui/2026-09",
   recordsInput: false,
@@ -41,8 +42,8 @@ describe("log status", () => {
     expect(isLogStatusDto(wire)).toBe(true);
   });
 
-  /// The empty-string-file case is real: a session that persists nothing sends
-  /// no `logFile`, and a guard that demanded one would reject it.
+  /// The no-file case is real: a session that persists nothing sends no
+  /// `logFile`, and a guard that demanded one would reject it.
   it("accepts a status with no file at all", () => {
     expect(
       isLogStatusDto({
@@ -51,8 +52,18 @@ describe("log status", () => {
         source: "none",
         state: "off",
         logFile: null,
+        logFilePresent: false,
       }),
     ).toBe(true);
+  });
+
+  /// The card's file answer, the same question a run-history entry carries:
+  /// a payload without it is rejected rather than rendered with a guess about
+  /// whether the file the card names is still there (D-022).
+  it("requires the current run's file answer", () => {
+    expect(isLogStatusDto({ ...wire, logFilePresent: false })).toBe(true);
+    expect(isLogStatusDto(without("logFilePresent"))).toBe(false);
+    expect(isLogStatusDto({ ...wire, logFilePresent: "true" })).toBe(false);
   });
 
   it("rejects a state outside the vocabulary", () => {

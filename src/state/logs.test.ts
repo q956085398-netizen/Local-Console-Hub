@@ -14,7 +14,9 @@ import {
   bufferNote,
   cleanupOutcome,
   cleanupPrompt,
+  currentLogFile,
   currentLogPath,
+  fileActions,
   formatBytes,
   logActionAvailability,
   logPathEntries,
@@ -23,10 +25,9 @@ import {
   previewLogStatus,
   previewRuns,
   runsNewestFirst,
-  runFileActions,
   runFilePathNote,
   runHasLog,
-  runLogGone,
+  runLogFile,
   runLogPresent,
   showsSourceBadge,
 } from "./logs";
@@ -38,6 +39,7 @@ function status(overrides: Partial<LogStatusDto> = {}): LogStatusDto {
     source: "captured",
     state: "capturing",
     logFile: "C:/logs/svc/2026-09/run.log",
+    logFilePresent: true,
     externalLog: undefined,
     sessionLogDir: "C:/logs/svc/2026-09",
     recordsInput: false,
@@ -129,7 +131,11 @@ describe("which file an action points at", () => {
 
     expect(currentLogPath(nulled)).toBeUndefined();
     expect(logPathEntries(nulled)).toEqual([]);
-    expect(logActionAvailability(nulled).openCurrent).toBe(false);
+    expect(fileActions(currentLogFile(nulled))).toEqual({
+      open: false,
+      copy: false,
+      folder: false,
+    });
   });
 
   it("names the Hub folder as unused for an external session", () => {
@@ -144,6 +150,107 @@ describe("which file an action points at", () => {
       { label: "应用日志", value: "D:/Tools/SillyTavern/data/access.log" },
       { label: "Hub 日志目录（本会话空白）", value: "C:/logs/sillytavern/2026-09" },
     ]);
+  });
+});
+
+describe("the current run's file answer", () => {
+  /// D-022 asked of the card, not only of the history: a log deleted behind the
+  /// Hub's back — by the OS, by a person, by retention — is answered from the
+  /// filesystem when the tab reads, so the card stops offering an action that
+  /// fails when it is clicked.
+  it("says a file that is not on disk is not on disk", () => {
+    const gone = status({ logFilePresent: false });
+
+    expect(currentLogFile(gone)).toEqual({ path: "C:/logs/svc/2026-09/run.log", present: false });
+    expect(logPathEntries(gone)).toEqual([
+      {
+        label: "当前运行",
+        value: "日志文件不在磁盘上（运行记录保留） · C:/logs/svc/2026-09/run.log",
+      },
+      { label: "日志目录", value: "C:/logs/svc/2026-09" },
+    ]);
+  });
+
+  /// The wording names the fact and not a cause: this slot cannot tell a swept
+  /// log from an `external` application's file that has not been written yet,
+  /// and "已被清理" would be a claim about something nobody watched happen.
+  it("does not name a cause for the missing file", () => {
+    const note = logPathEntries(status({ logFilePresent: false }))[0].value;
+
+    expect(note).toContain("不在磁盘上");
+    expect(note).not.toContain("清理");
+    expect(note).not.toContain("删除");
+  });
+
+  it("leaves the path alone when the file is there", () => {
+    expect(logPathEntries(status())).toEqual([
+      { label: "当前运行", value: "C:/logs/svc/2026-09/run.log" },
+      { label: "日志目录", value: "C:/logs/svc/2026-09" },
+    ]);
+  });
+
+  /// One run cannot be offered two different action sets depending on whether
+  /// the user looks at the card or at its row in the history: both read
+  /// `fileActions`, so a file that is gone costs both of them 打开日志 and
+  /// 复制路径 while the folder survives in both (D-022, LOGGING §9/§10).
+  it("offers the card and the run's row the same actions for the same file", () => {
+    const present = status();
+    const presentRow = run();
+    expect(fileActions(currentLogFile(present))).toEqual(fileActions(runLogFile(presentRow)));
+    expect(fileActions(currentLogFile(present))).toEqual({
+      open: true,
+      copy: true,
+      folder: true,
+    });
+
+    const gone = status({ logFilePresent: false });
+    const goneRow = run({ logFilePresent: false });
+    expect(fileActions(currentLogFile(gone))).toEqual(fileActions(runLogFile(goneRow)));
+    expect(fileActions(currentLogFile(gone))).toEqual({
+      open: false,
+      copy: false,
+      folder: true,
+    });
+  });
+
+  /// D-005: an `external` session's current file is the application's own, and
+  /// the card keeps naming it — so the answer has to be about that file, not
+  /// about the Hub-written one the session does not have. Its *rows* are
+  /// unchanged; this is the card reading the same fact about the same file.
+  it("asks an external session's answer about the application's file", () => {
+    const applicationOwned = "D:/Tools/SillyTavern/data/access.log";
+    const external = status({
+      source: "external",
+      state: "external",
+      logFile: undefined,
+      externalLog: applicationOwned,
+      logFilePresent: true,
+    });
+
+    expect(currentLogFile(external)).toEqual({ path: applicationOwned, present: true });
+    expect(fileActions(currentLogFile(external))).toEqual({
+      open: true,
+      copy: true,
+      folder: true,
+    });
+
+    const unwritten = status({
+      source: "external",
+      state: "external",
+      logFile: undefined,
+      externalLog: applicationOwned,
+      logFilePresent: false,
+    });
+
+    expect(logPathEntries(unwritten)[0]).toEqual({
+      label: "应用日志",
+      value: `日志文件不在磁盘上（运行记录保留） · ${applicationOwned}`,
+    });
+    expect(fileActions(currentLogFile(unwritten))).toEqual({
+      open: false,
+      copy: false,
+      folder: true,
+    });
   });
 });
 
@@ -162,24 +269,36 @@ describe("policy badges", () => {
 
 describe("which actions the policy offers", () => {
   it("offers nothing file-shaped to a session that writes nothing", () => {
-    const off = status({ mode: "off", source: "none", state: "off", logFile: undefined });
-
-    expect(logActionAvailability(off)).toEqual({
-      openCurrent: false,
-      saveRunLog: false,
-      recording: null,
+    const off = status({
+      mode: "off",
+      source: "none",
+      state: "off",
+      logFile: undefined,
+      logFilePresent: false,
     });
+
+    expect(logActionAvailability(off)).toEqual({ saveRunLog: false, recording: null });
+    expect(fileActions(currentLogFile(off))).toEqual({ open: false, copy: false, folder: false });
   });
 
   /// LOGGING §3: `on_error` keeps a buffer and commits it on request, so the
   /// save action is offered by the policy rather than by the presence of a
   /// file — the run that has not failed yet is exactly the case it serves.
   it("offers the save action to an on_error policy before it has a file", () => {
-    const onError = status({ mode: "on_error", state: "on_error", logFile: undefined });
+    const onError = status({
+      mode: "on_error",
+      state: "on_error",
+      logFile: undefined,
+      logFilePresent: false,
+    });
 
     expect(logActionAvailability(onError).saveRunLog).toBe(true);
     // Saving is offered, opening is not: there is nothing on disk to open.
-    expect(logActionAvailability(onError).openCurrent).toBe(false);
+    expect(fileActions(currentLogFile(onError))).toEqual({
+      open: false,
+      copy: false,
+      folder: false,
+    });
   });
 
   it("reads a manual run's switch off its state, not its mode", () => {
@@ -224,12 +343,7 @@ describe("run history", () => {
 
     expect(runHasLog(swept)).toBe(true);
     expect(runLogPresent(swept)).toBe(false);
-    expect(runLogGone(swept)).toBe(true);
-  });
-
-  it("does not call a run with a live log swept", () => {
-    expect(runLogGone(run())).toBe(false);
-    expect(runLogGone(run({ logFilePresent: false, logFile: null }))).toBe(false);
+    expect(runLogFile(swept)).toEqual({ path: "C:/logs/svc/2026-09/run.log", present: false });
   });
 
   /// The three row states, each said in its own words — and the third says
@@ -247,13 +361,21 @@ describe("run history", () => {
   });
 
   /// The two questions a row asks are different ones, and neither implies the
-  /// other: a run that wrote nothing has no log and nothing missing.
+  /// other: a run that wrote nothing has no log and nothing missing, while a
+  /// swept run still names the file it wrote. Both states cost the row its
+  /// open/copy actions, and only the second keeps the folder.
   it("separates 'never wrote a log' from 'the log is gone'", () => {
     const nothingWritten = run({ logFile: null, logFilePresent: false });
+    const swept = run({ logFilePresent: false });
 
     expect(runHasLog(nothingWritten)).toBe(false);
-    expect(runLogPresent(nothingWritten)).toBe(false);
-    expect(runLogGone(nothingWritten)).toBe(false);
+    expect(runLogFile(nothingWritten).path).toBeUndefined();
+    expect(runLogFile(swept).path).toBe("C:/logs/svc/2026-09/run.log");
+    expect(fileActions(runLogFile(nothingWritten))).toEqual({
+      open: false,
+      copy: false,
+      folder: false,
+    });
   });
 
   /// The row's buttons, decided here rather than in the component: what a run
@@ -261,13 +383,13 @@ describe("run history", () => {
   /// §10 lists the actions; §9 is why the third row loses two of them — the
   /// folder survives a sweep, the file does not.
   it("offers a row only the file actions its run can carry out", () => {
-    expect(runFileActions(run())).toEqual({ open: true, copy: true, folder: true });
-    expect(runFileActions(run({ logFilePresent: false }))).toEqual({
+    expect(fileActions(runLogFile(run()))).toEqual({ open: true, copy: true, folder: true });
+    expect(fileActions(runLogFile(run({ logFilePresent: false })))).toEqual({
       open: false,
       copy: false,
       folder: true,
     });
-    expect(runFileActions(run({ logFile: null, logFilePresent: false }))).toEqual({
+    expect(fileActions(runLogFile(run({ logFile: null, logFilePresent: false })))).toEqual({
       open: false,
       copy: false,
       folder: false,
@@ -327,6 +449,7 @@ describe("preview data", () => {
     // The current run's file, taken from the fixture's own run record rather
     // than invented for the preview.
     expect(preview.logFile).toContain("__run-c8aa.log");
+    expect(preview.logFilePresent).toBe(true);
   });
 
   /// A stopped session still has a file to open when its last run left one:
@@ -337,7 +460,8 @@ describe("preview data", () => {
 
     expect(preview.state).toBe("on_error");
     expect(preview.logFile).toContain("__run-e3f0.log");
-    expect(logActionAvailability(preview).openCurrent).toBe(true);
+    expect(preview.logFilePresent).toBe(true);
+    expect(fileActions(currentLogFile(preview))).toEqual({ open: true, copy: true, folder: true });
   });
 
   /// A fixture's `auto`-resolved external session reads as `External` with the
@@ -349,6 +473,9 @@ describe("preview data", () => {
     expect(preview.logFile).toBeUndefined();
     expect(preview.externalLog).toBe("D:\\Tools\\SillyTavern\\data\\access.log");
     expect(currentLogPath(preview)).toBe("D:\\Tools\\SillyTavern\\data\\access.log");
+    // The linked application log is the file the card acts on, so the file
+    // answer is about it — the Hub's own nil `logFile` is not the question.
+    expect(preview.logFilePresent).toBe(true);
   });
 
   /// The interactive terminal's default policy is the one the whole logging
@@ -360,6 +487,7 @@ describe("preview data", () => {
     expect(preview.mode).toBe("off");
     expect(preview.source).toBe("none");
     expect(currentLogPath(preview)).toBeUndefined();
+    expect(preview.logFilePresent).toBe(false);
     expect(preview.recordsInput).toBe(false);
     expect(bufferNote(preview)).toContain("内存缓冲");
   });
@@ -375,7 +503,9 @@ describe("preview data", () => {
     const runs = previewRuns(fixture("comfyui"));
 
     expect(runs.length).toBeGreaterThan(1);
-    expect(runs.filter(runLogGone).map((entry) => entry.runId)).toEqual(["c711"]);
+    // Exactly one of them names a file that is not on disk.
+    const gone = runs.filter((entry) => runHasLog(entry) && !runLogPresent(entry));
+    expect(gone.map((entry) => entry.runId)).toEqual(["c711"]);
     expect(runs.filter(runLogPresent)).toHaveLength(runs.length - 1);
   });
 
@@ -385,7 +515,8 @@ describe("preview data", () => {
     const runs = previewRuns(fixture("pwsh"));
 
     expect(runs.length).toBeGreaterThan(0);
-    expect(runs.every((entry) => !runHasLog(entry) && !runLogGone(entry))).toBe(true);
+    expect(runs.every((entry) => !runHasLog(entry))).toBe(true);
+    expect(runs.every((entry) => runFilePathNote(entry) === "未落盘")).toBe(true);
   });
 
   it("sizes the scrollback in units a person reads", () => {

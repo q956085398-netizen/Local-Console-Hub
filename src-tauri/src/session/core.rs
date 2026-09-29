@@ -24,7 +24,7 @@
 //! against the operation that produced it.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -2216,20 +2216,34 @@ impl SessionState {
             .and_then(|log| log.hub_log_path())
             .map(|path| path.display().to_string());
 
+        let log_file = live_file.or_else(|| {
+            // From the run record, so a `capture` run's file stays named
+            // after the run has ended and an `on_error` run that failed
+            // keeps the file it just wrote.
+            self.record
+                .as_ref()
+                .and_then(|record| record.log_file.clone())
+        });
+
+        // Whether that file is on disk, asked of the file the Logs tab's
+        // actions would act on. An `external` session's current file is the
+        // application's own (D-005), whatever a run record may also name — the
+        // same choice the frontend's `currentLogPath` makes, so the two agree
+        // on which file this answer is about.
+        let current_file = match logging.source {
+            LogSource::External => logging.external_path.as_deref(),
+            _ => log_file.as_deref(),
+        };
+        let log_file_present = current_file.is_some_and(|path| Path::new(path).exists());
+
         LogStatus {
             session_id: session_id.to_owned(),
             mode: logging.mode,
             source: logging.source,
             state,
             truncated: self.log.as_ref().is_some_and(|log| log.is_truncated()),
-            log_file: live_file.or_else(|| {
-                // From the run record, so a `capture` run's file stays named
-                // after the run has ended and an `on_error` run that failed
-                // keeps the file it just wrote.
-                self.record
-                    .as_ref()
-                    .and_then(|record| record.log_file.clone())
-            }),
+            log_file,
+            log_file_present,
             external_log: logging.external_path.clone(),
             session_log_dir: session_dir(
                 roots,
@@ -4541,6 +4555,104 @@ mod tests {
                 !crate::logging::session_run_files(&dir.join("metadata"), "json", Some("svc"))
                     .is_empty(),
                 "the sweep reached the run metadata"
+            );
+        }
+
+        /// D-022 asked of the current run, not only of the history.
+        ///
+        /// The Logs tab's card offers the same file actions a history row does,
+        /// so it has to answer "is the file there?" from the same read-time
+        /// fact — otherwise one panel holds two rules for one question, and the
+        /// card is the half that offers an action which fails when it is
+        /// clicked.
+        ///
+        /// The file is deleted by hand rather than swept here: that is the
+        /// other way a log goes missing (the OS does not ask the Hub first),
+        /// and the answer has to be the same either way, because it is asked
+        /// now and never remembered.
+        #[test]
+        fn the_current_run_reports_whether_its_log_is_still_on_disk() {
+            let dir = TempDir::new();
+            let config = service_printing(
+                "svc",
+                "cmd.exe /c echo current-file",
+                captured(EffectiveLogMode::Always),
+            );
+            let (core, _sink) = core_logging_to(&dir, config);
+            core.start("svc").expect("start succeeds");
+            wait_for_status(
+                &core,
+                "svc",
+                SessionStatus::Exited,
+                std::time::Duration::from_secs(30),
+            );
+            wait_for_filing(&core, "svc");
+
+            let status = core.log_status("svc").expect("a status");
+            let file = status.log_file.clone().expect("the run named a file");
+            assert!(
+                status.log_file_present,
+                "the file the run just wrote was reported gone"
+            );
+            assert!(FsPath::new(&file).exists());
+
+            fs::remove_file(&file).expect("the log is removable");
+
+            let gone = core.log_status("svc").expect("a status");
+            assert_eq!(
+                gone.log_file.as_deref(),
+                Some(file.as_str()),
+                "the status stopped naming the file the run wrote"
+            );
+            assert!(
+                !gone.log_file_present,
+                "a log deleted by hand was still answered as present"
+            );
+        }
+
+        /// An `external` session's current file is the application's own
+        /// (D-005), so the file answer is asked of *that* file.
+        ///
+        /// The Hub writes nothing for such a session, which is why its
+        /// `log_file` is nil — reading the answer off that field would report
+        /// every `external` session as having no log at all, including the ones
+        /// whose application is writing one right now.
+        #[test]
+        fn an_external_sessions_file_answer_is_about_the_applications_file() {
+            let dir = TempDir::new();
+            let application_owned = dir.join("app/access.log");
+            fs::create_dir_all(application_owned.parent().expect("a parent folder"))
+                .expect("creatable");
+            fs::write(&application_owned, b"the application's own output").expect("writable");
+
+            let mut config = service_printing("svc", LONG_RUNNING, captured(EffectiveLogMode::Off));
+            config.logging = EffectiveLogging {
+                mode: EffectiveLogMode::Always,
+                source: LogSource::External,
+                external_path: Some(application_owned.display().to_string()),
+            };
+            let (core, _sink) = core_logging_to(&dir, config);
+
+            let status = core.log_status("svc").expect("a status");
+            assert_eq!(
+                status.external_log.as_deref(),
+                Some(application_owned.to_string_lossy().as_ref())
+            );
+            assert!(
+                status.log_file.is_none(),
+                "the status named a file the Hub does not write"
+            );
+            assert!(
+                status.log_file_present,
+                "the application's file is on disk and was reported gone"
+            );
+
+            fs::remove_file(&application_owned).expect("the application's log is removable");
+
+            assert!(
+                !core.log_status("svc").expect("a status").log_file_present,
+                "a session whose application has not written its log still \
+                 answered that there was one to open"
             );
         }
 
