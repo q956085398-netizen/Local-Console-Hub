@@ -277,14 +277,14 @@ describe("which actions the policy offers", () => {
       logFilePresent: false,
     });
 
-    expect(logActionAvailability(off)).toEqual({ saveRunLog: false, recording: null });
+    expect(logActionAvailability(off, "running")).toEqual({ saveRunLog: false, recording: null });
     expect(fileActions(currentLogFile(off))).toEqual({ open: false, copy: false, folder: false });
   });
 
-  /// LOGGING §3: `on_error` keeps a buffer and commits it on request, so the
-  /// save action is offered by the policy rather than by the presence of a
-  /// file — the run that has not failed yet is exactly the case it serves.
-  it("offers the save action to an on_error policy before it has a file", () => {
+  /// LOGGING §3: `on_error` keeps a buffer and commits it on request while a
+  /// Core owns a current run during Running and Stopping. A completed failing
+  /// run already has its auto-saved history entry, so it must not offer Save.
+  it("offers Save only while Session Core owns the on_error run", () => {
     const onError = status({
       mode: "on_error",
       state: "on_error",
@@ -292,7 +292,12 @@ describe("which actions the policy offers", () => {
       logFilePresent: false,
     });
 
-    expect(logActionAvailability(onError).saveRunLog).toBe(true);
+    expect(logActionAvailability(onError, "running").saveRunLog).toBe(true);
+    expect(logActionAvailability(onError, "stopping").saveRunLog).toBe(true);
+    expect(logActionAvailability(onError, "starting").saveRunLog).toBe(false);
+    expect(logActionAvailability(onError, "error").saveRunLog).toBe(false);
+    expect(logActionAvailability(onError, "exited").saveRunLog).toBe(false);
+    expect(logActionAvailability(onError, "stopped").saveRunLog).toBe(false);
     // Saving is offered, opening is not: there is nothing on disk to open.
     expect(fileActions(currentLogFile(onError))).toEqual({
       open: false,
@@ -305,12 +310,16 @@ describe("which actions the policy offers", () => {
     const idle = status({ mode: "manual", state: "off", logFile: undefined });
     const recording = status({ mode: "manual", state: "capturing" });
 
-    expect(logActionAvailability(idle).recording).toBe("start");
-    expect(logActionAvailability(recording).recording).toBe("stop");
+    expect(logActionAvailability(idle, "running").recording).toBe("start");
+    expect(logActionAvailability(recording, "running").recording).toBe("stop");
+    expect(logActionAvailability(recording, "stopping").recording).toBe("stop");
+    expect(logActionAvailability(idle, "starting").recording).toBeNull();
+    expect(logActionAvailability(idle, "stopping").recording).toBeNull();
+    expect(logActionAvailability(idle, "stopped").recording).toBeNull();
   });
 
   it("has no recording switch outside manual mode", () => {
-    expect(logActionAvailability(status()).recording).toBeNull();
+    expect(logActionAvailability(status(), "running").recording).toBeNull();
   });
 });
 

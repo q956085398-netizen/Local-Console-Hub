@@ -16,6 +16,7 @@
 
 import type { EffectiveLogModeValue, LogSourceValue } from "../types/config";
 import type { CleanupReportDto, LogStatusDto, RunHistoryEntryDto } from "../types/logs";
+import type { SessionStatusValue } from "../types/runtime";
 import { isPresent, type RunRecordDto } from "../types/runtime";
 import type { SessionView } from "./session-view";
 import type { StatusTone } from "./derivations";
@@ -78,31 +79,40 @@ export function currentLogFile(status: LogStatusDto): LogFileFacts {
   return { path: currentLogPath(status), present: status.logFilePresent };
 }
 
-/** Which of the tab's actions this session's policy actually offers. */
+/** Which of the tab's logging actions its policy and lifecycle permit. */
 export interface LogActionAvailability {
   /** Commit an `on_error` run's buffer now (`LOGGING.md` §3). */
   saveRunLog: boolean;
-  /** Switch a `manual` run's recording, or `null` when the mode is not manual. */
+  /** Switch a `manual` run's recording, or `null` when no current run allows it. */
   recording: "start" | "stop" | null;
 }
 
 /**
- * Derive the action set from the effective policy, not from what renders.
+ * Derive the action set from the effective policy and Session Core lifecycle.
  *
  * The file actions are deliberately *not* here: they belong to the file
  * ([`fileActions`]), and both the card and a run row read them from it.
  */
-export function logActionAvailability(status: LogStatusDto): LogActionAvailability {
+export function logActionAvailability(
+  status: LogStatusDto,
+  sessionStatus: SessionStatusValue,
+): LogActionAvailability {
+  // Session Core keeps the current run and its log through the stop request,
+  // until finalization changes the status to a settled state.
+  const hasCurrentRun = sessionStatus === "running" || sessionStatus === "stopping";
   // `manual` reads its own switch state off the state badge: `capturing` means
-  // this run is being recorded right now (`docs/LOGGING.md` §3).
-  const recording =
-    status.mode === "manual" ? (status.state === "capturing" ? "stop" : "start") : null;
+  // this run is being recorded right now (`docs/LOGGING.md` §3). Stopping an
+  // existing recording remains valid while the run shuts down, but starting
+  // one during shutdown does not.
+  let recording: LogActionAvailability["recording"] = null;
+  if (status.mode === "manual" && hasCurrentRun) {
+    if (status.state === "capturing") recording = "stop";
+    else if (sessionStatus === "running") recording = "start";
+  }
   return {
-    // Offered whenever the policy *could* produce a file on request. A run
-    // that has none yet is the case this exists for, and the backend answers
-    // with the reason when there is no run to save — better than a button that
-    // silently disappears while the session is starting.
-    saveRunLog: status.mode === "on_error" && status.source === "captured",
+    // An `on_error` run is auto-saved when it fails. Once Session Core settles
+    // the run, there is no live buffer left for `save_run_log` to commit.
+    saveRunLog: hasCurrentRun && status.mode === "on_error" && status.source === "captured",
     recording,
   };
 }
