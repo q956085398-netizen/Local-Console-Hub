@@ -1,6 +1,7 @@
 import { Plus, Search, Terminal } from "lucide-react";
 import {
   formatDuration,
+  isReady,
   sidebarRowMeta,
   statusLabel,
   statusTone,
@@ -105,7 +106,7 @@ function SessionRow({ item, selected, now, onSelect }: SessionRowProps) {
   const tail =
     live && isPresent(runtime.startedAt)
       ? formatDuration(runtime.startedAt, now)
-      : statusLabel(runtime.status, item.busy ?? false, item.ready ?? false);
+      : statusLabel(runtime.status, item.busy ?? false, isReady(runtime));
   const meta = sidebarRowMeta(item);
   return (
     <li>

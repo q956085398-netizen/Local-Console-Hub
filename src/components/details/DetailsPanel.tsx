@@ -1,5 +1,7 @@
 import {
   dependenciesOf,
+  healthReading,
+  isReady,
   logModeLabel,
   logSourceLabel,
   statusLabel,
@@ -25,16 +27,21 @@ export interface DetailsPanelProps {
  * Deliberately does not repeat the header's live metadata line — PID, port,
  * uptime, cwd and effective log policy are already visible one tab across
  * (§13 forbids excessive duplication). What lives here is what the header
- * does not carry: the launch command, run identity, run outcome, PTY state
- * and the scrollback summary.
+ * does not carry: the launch command, run identity, run outcome, PTY state,
+ * the scrollback summary, and since T08 the health reading — the one place the
+ * two facts behind the header's badge are spelled out (`derivations.healthReading`).
  */
 export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
   const { config, runtime } = session;
   const deps = dependenciesOf(session, sessions);
+  const health = healthReading(runtime);
 
   const rows: Array<[string, string]> = [
     ["类型", typeLabel(config.sessionType)],
-    ["状态", statusLabel(runtime.status, session.busy ?? false, session.ready ?? false)],
+    ["状态", statusLabel(runtime.status, session.busy ?? false, isReady(runtime))],
+    // Only while there is a reading: the row says nothing rather than claiming
+    // a port is closed when nothing has been probed (spec §12).
+    ...(health !== undefined ? ([["健康", health]] as Array<[string, string]>) : []),
     ["启动命令", config.command ?? config.shell ?? "—"],
     ["Run", isPresent(runtime.runId) ? `run-${runtime.runId}` : "—"],
     ["退出码", isPresent(runtime.exitCode) ? String(runtime.exitCode) : "—"],
@@ -91,7 +98,7 @@ export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
                 <span
                   className={`badge badge--${statusTone(dep.runtime.status, dep.busy ?? false)}`}
                 >
-                  {statusLabel(dep.runtime.status, dep.busy ?? false, dep.ready ?? false)}
+                  {statusLabel(dep.runtime.status, dep.busy ?? false, isReady(dep.runtime))}
                 </span>
               </li>
             ))}

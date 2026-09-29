@@ -21,6 +21,13 @@
  * therefore report `ptyAttached: false` (T07 #8), so the preview does not
  * repeat a claim the product cannot produce.
  *
+ * The health readings work the same way round (T08 #9): a running service the
+ * reference shows as `Ready` carries the reading that makes it ready
+ * (`processAlive`, `portOpen`), and every session with nothing to read carries
+ * `null`. `ready` itself is no longer a field here — it is derived from these
+ * snapshots exactly as it is for a live one (`derivations.isReady`), so the
+ * preview and the app cannot disagree about the same session.
+ *
  * Timestamps are minted relative to module load so uptimes stay plausible
  * (3h 12m, 2h 14m, 12m …) without becoming clock fixtures.
  */
@@ -74,6 +81,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
         external_path: "D:\\Tools\\SillyTavern\\data\\access.log",
       },
       buffer: { bytes: 3120, lines: 8, droppedBytes: 0 },
+      health: { processAlive: true, portOpen: true },
     },
     runs: [
       {
@@ -86,7 +94,6 @@ export const FIXTURE_SESSIONS: SessionView[] = [
         logFile: "D:\\Tools\\SillyTavern\\data\\access.log",
       },
     ],
-    ready: true,
     dependsOn: ["koboldcpp"],
     lines: [
       { kind: "sys", text: "Hub 启动会话 sillytavern · run a91c" },
@@ -122,6 +129,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       ptyAttached: false,
       logging: { mode: "always", source: "captured", external_path: undefined },
       buffer: { bytes: 24576, lines: 14, droppedBytes: 0 },
+      health: { processAlive: true, portOpen: true },
     },
     runs: [
       {
@@ -153,7 +161,6 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       },
     ],
     busy: true,
-    ready: true,
     lines: [
       { kind: "sys", text: "Hub 启动会话 comfyui · run c8aa" },
       { kind: "out", text: "Total VRAM 24564 MB, total RAM 65241 MB" },
@@ -193,6 +200,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       ptyAttached: false,
       logging: { mode: "on_error", source: "captured", external_path: undefined },
       buffer: { bytes: 7340, lines: 7, droppedBytes: 0 },
+      health: { processAlive: true, portOpen: true },
     },
     runs: [
       {
@@ -216,7 +224,6 @@ export const FIXTURE_SESSIONS: SessionView[] = [
         logSource: "captured",
       },
     ],
-    ready: true,
     lines: [
       { kind: "sys", text: "Hub 启动会话 koboldcpp · run k02e" },
       { kind: "out", text: "KoboldCpp v1.82.4" },
@@ -247,6 +254,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       ptyAttached: false,
       logging: { mode: "on_error", source: "captured", external_path: undefined },
       buffer: { bytes: 1720, lines: 4, droppedBytes: 0 },
+      health: null,
       lastError: {
         operation: "start",
         message: "上次退出码 1 · 端口 7788 已被占用",
@@ -297,6 +305,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       ptyAttached: true,
       logging: { mode: "off", source: "none", external_path: undefined },
       buffer: { bytes: 2048, lines: 9, droppedBytes: 0 },
+      health: null,
     },
     runs: [
       {
@@ -308,7 +317,6 @@ export const FIXTURE_SESSIONS: SessionView[] = [
         logSource: "none",
       },
     ],
-    ready: true,
     lines: [
       { kind: "sys", text: "Interactive terminal · logging off · stdin 不落盘" },
       { kind: "out", text: "PowerShell 7.4.6" },
@@ -342,6 +350,7 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       ptyAttached: false,
       logging: { mode: "off", source: "none", external_path: undefined },
       buffer: { bytes: 0, lines: 0, droppedBytes: 0 },
+      health: null,
     },
     runs: [],
     lines: [{ kind: "sys", text: "会话未启动。启动后这是一个真正的可交互终端，不是只读日志。" }],

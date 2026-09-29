@@ -27,6 +27,8 @@ use crate::logging::{CleanupReport, LogStatus, RunHistory};
 use crate::session::core::{SessionCore, SessionError};
 use crate::shell;
 
+use super::hand_over_failed;
+
 /// What this session's logging is doing, and where it writes
 /// (`docs/LOGGING.md` §1.4).
 #[tauri::command]
@@ -130,20 +132,6 @@ pub fn preview_log_cleanup(core: State<'_, SessionCore>, session_id: String) -> 
 #[tauri::command]
 pub fn cleanup_logs(core: State<'_, SessionCore>, session_id: String) -> CleanupReport {
     core.cleanup_logs(Some(&session_id))
-}
-
-/// Report a failed handoff as the session operation it was.
-///
-/// The shell layer knows the path and the OS's answer; the frontend knows one
-/// structured error shape per session operation, so the two are joined here
-/// rather than by teaching the window about a second error type.
-fn hand_over_failed(session_id: &str, operation: &str, error: shell::ShellError) -> SessionError {
-    SessionError::failed(
-        session_id,
-        operation,
-        format!("{} ({})", error.message, error.path),
-        None,
-    )
 }
 
 #[cfg(test)]

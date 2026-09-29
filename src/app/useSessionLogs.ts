@@ -38,6 +38,7 @@ import {
 import { isSessionErrorDto, RUN_RECORD_UPDATED, SESSION_STATE_CHANGED } from "../types/runtime";
 import type { SessionView } from "../state/session-view";
 import { cleanupOutcome, previewLogStatus, previewRuns } from "../state/logs";
+import { copyPathToClipboard } from "./clipboard";
 
 /** Where the tab's values came from: Session Core, or the fixture record. */
 export type LogsProvenance = "live" | "preview";
@@ -200,22 +201,6 @@ export function useSessionLogs(
     [onNotice, provenance, read, report, sessionId],
   );
 
-  const copyPath = useCallback(
-    (path: string) => {
-      // The clipboard needs a secure context, which a hosted preview is not;
-      // falling back to telling the user the path is honest and still useful.
-      const written = navigator.clipboard?.writeText(path);
-      if (written === undefined) {
-        onNotice(`复制不可用，请手动复制：${path}`);
-        return;
-      }
-      written
-        .then(() => onNotice(`已复制路径：${path}`))
-        .catch(() => onNotice(`复制失败，请手动复制：${path}`));
-    },
-    [onNotice],
-  );
-
   const previewCleanup = useCallback(() => {
     if (provenance === "preview") {
       onNotice("预览数据 · 该会话未在后台注册，无法清理日志");
@@ -261,7 +246,7 @@ export function useSessionLogs(
     actions: {
       openFile: (runId?: string) => act("open_log_file", { runId: runId ?? null }),
       openFolder: (runId?: string) => act("open_log_folder", { runId: runId ?? null }),
-      copyPath,
+      copyPath: (path: string) => copyPathToClipboard(path, onNotice),
       saveRunLog: () => act("save_run_log", {}, () => onNotice("本次运行的缓冲已写入日志文件")),
       setRecording: (recording: boolean) =>
         act("set_log_recording", { recording }, () =>
