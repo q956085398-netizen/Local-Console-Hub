@@ -6,6 +6,8 @@
 //! [`TreeHandle`] and stores handles as `usize`, which keeps that token `Send +
 //! Sync` whichever way `windows-sys` spells `HANDLE`.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
@@ -15,6 +17,9 @@ use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
     AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, CTRL_BREAK_EVENT,
 };
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
@@ -22,7 +27,8 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, INFINITE,
+    OpenThread, ResumeThread, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+    INFINITE, THREAD_SUSPEND_RESUME,
 };
 
 /// Capability gate for the process layer: this backend can own a process tree,
@@ -42,6 +48,16 @@ const MAX_TREE_PROCESSES: usize = 512;
 #[derive(Debug)]
 pub struct TreeHandle(usize);
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_RESUME_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub fn fail_next_resume_for_test() {
+    FAIL_NEXT_RESUME_FOR_TEST.with(|fail| fail.set(true));
+}
+
 impl Drop for TreeHandle {
     fn drop(&mut self) {
         // `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: closing the last handle to a job
@@ -55,13 +71,18 @@ impl Drop for TreeHandle {
 /// Put the run in a process group of its own, so a `CTRL_BREAK` can be aimed at
 /// this run alone (see [`request_graceful_stop`]).
 pub fn prepare(command: &mut Command) {
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    // Keep the primary thread from running user code until `attach` has put the
+    // process in its job. This closes the interval where a fast launcher could
+    // create descendants before ownership is established.
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
 }
 
-/// Create the run's job object and assign the run's process to it.
+/// Create the run's job object, assign the suspended process, then let its
+/// initial thread execute.
 ///
-/// Job membership is what makes a later termination incapable of reaching a
-/// process outside the run.
+/// The process cannot create descendants before job membership is established.
+/// If assignment or resumption fails, dropping `job` terminates any assigned
+/// process and the caller kills/reaps the child handle.
 pub fn attach(child: &Child) -> Result<TreeHandle, String> {
     let created = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as usize;
     if created == 0 {
@@ -88,7 +109,73 @@ pub fn attach(child: &Child) -> Result<TreeHandle, String> {
     if assigned == 0 {
         return Err(last_error("AssignProcessToJobObject"));
     }
+
+    resume_initial_thread(child.id())?;
     Ok(job)
+}
+
+/// Resume the only thread a process can have before its suspended primary
+/// thread starts. Tool Help identifies it by owner PID; opening only the
+/// suspend/resume right keeps the handle narrow and startup-only.
+fn resume_initial_thread(process_id: u32) -> Result<(), String> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(last_error("CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)"));
+    }
+    let snapshot = ScopedHandle(snapshot as usize);
+
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    if unsafe { Thread32First(snapshot.0 as _, &mut entry) } == 0 {
+        return Err(last_error("Thread32First"));
+    }
+
+    loop {
+        if entry.th32OwnerProcessID == process_id {
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(last_error("OpenThread(THREAD_SUSPEND_RESUME)"));
+            }
+            let thread = ScopedHandle(thread as usize);
+
+            // CREATE_SUSPENDED adds exactly one suspend count. A different
+            // count means another actor changed the thread; fail closed so the
+            // job's kill-on-close limit tears the process down.
+            #[cfg(test)]
+            if FAIL_NEXT_RESUME_FOR_TEST.with(|fail| fail.replace(false)) {
+                return Err("test-injected ResumeThread failure".to_owned());
+            }
+
+            let previous_count = unsafe { ResumeThread(thread.0 as _) };
+            if previous_count == u32::MAX {
+                return Err(last_error("ResumeThread"));
+            }
+            if previous_count != 1 {
+                return Err(format!(
+                    "unexpected initial-thread suspend count for process {process_id}: {previous_count}"
+                ));
+            }
+            return Ok(());
+        }
+
+        if unsafe { Thread32Next(snapshot.0 as _, &mut entry) } == 0 {
+            break;
+        }
+    }
+
+    Err(format!(
+        "no initial thread found for suspended process {process_id}"
+    ))
+}
+
+/// Temporary Win32 handle used for Tool Help snapshots and the initial thread.
+#[derive(Debug)]
+struct ScopedHandle(usize);
+
+impl Drop for ScopedHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0 as _) };
+    }
 }
 
 /// Terminate everything still assigned to the job.

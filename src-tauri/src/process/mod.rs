@@ -309,6 +309,27 @@ pub struct ManagedProcess {
     shared: Arc<Shared>,
 }
 
+#[cfg(all(test, windows))]
+type BeforeJobAssignmentTestHook = Box<dyn FnOnce(u32)>;
+
+#[cfg(all(test, windows))]
+thread_local! {
+    /// Lets the native regression hold the caller at the exact process-start
+    /// boundary so an unsuspended launcher can publish its child handshake
+    /// before the old post-spawn job assignment runs.
+    static BEFORE_JOB_ASSIGNMENT_TEST_HOOK: std::cell::RefCell<Option<BeforeJobAssignmentTestHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(all(test, windows))]
+fn run_before_job_assignment_test_hook(child: &Child) {
+    BEFORE_JOB_ASSIGNMENT_TEST_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook(child.id());
+        }
+    });
+}
+
 impl ManagedProcess {
     /// Start a run and take ownership of its process tree.
     pub fn spawn(spec: ProcessSpec) -> Result<Self, ProcessError> {
@@ -326,6 +347,9 @@ impl ManagedProcess {
             source,
         })?;
 
+        #[cfg(all(test, windows))]
+        run_before_job_assignment_test_hook(&child);
+
         let tree = match backend::attach(&child) {
             Ok(tree) => tree,
             Err(reason) => {
@@ -334,7 +358,7 @@ impl ManagedProcess {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(ProcessError::Supervision {
-                    operation: "attaching the run to its job object",
+                    operation: "assigning the suspended run to its job object before resuming it",
                     reason,
                 });
             }
@@ -617,8 +641,11 @@ fn reap(shared: &Shared) -> Option<ExitStatus> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
     use std::process::Stdio;
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// A run that stays alive far longer than any test needs, and that writes no
     /// noise into the test log. `ping` is a real child of `cmd`, so the run has
@@ -655,6 +682,109 @@ mod tests {
         // detaches a service and ends.
         let args = vec!["/c".to_owned(), "start /b ping -n 60 127.0.0.1".to_owned()];
         ProcessSpec::new("cmd.exe", std::env::temp_dir()).with_args(args)
+    }
+
+    /// A private directory for the batch-file handshake used by the fast
+    /// launcher regression. The child uses the PowerShell executable shipped
+    /// with Windows, so no test helper binary needs to be built or installed.
+    struct ProcessFixtureDir(PathBuf);
+
+    impl ProcessFixtureDir {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("the system clock is after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "lch-process-startup-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("the process fixture directory is created");
+            ProcessFixtureDir(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ProcessFixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The launcher signals when its detached child is actually alive, then
+    /// exits while that child keeps running. This is the startup window in
+    /// which a process created before job assignment could escape the run.
+    fn coordinated_launcher(directory: &std::path::Path) -> (ProcessSpec, PathBuf) {
+        let child = directory.join("child.cmd");
+        let child_script = directory.join("child.ps1");
+        let launcher = directory.join("launcher.cmd");
+        let ready = directory.join("child-ready.txt");
+        fs::write(
+            &child_script,
+            "[System.IO.File]::WriteAllText($args[0], [string]$PID)\nStart-Sleep -Seconds 60\n",
+        )
+        .expect("the child handshake script is written");
+        fs::write(
+            child,
+            "@echo off\r\nstart \"\" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0child.ps1\" \"%~dp0child-ready.txt\"\r\n",
+        )
+        .expect("the child launcher script is written");
+        fs::write(
+            &launcher,
+            "@echo off\r\ncall \"%~dp0child.cmd\"\r\nexit /b 0\r\n",
+        )
+        .expect("the parent launcher script is written");
+
+        let spec = ProcessSpec::new("cmd.exe", directory).with_args(vec![
+            "/d".to_owned(),
+            "/c".to_owned(),
+            launcher.to_string_lossy().into_owned(),
+        ]);
+        (spec, ready)
+    }
+
+    /// Stop a helper process named by the readiness handshake. This also
+    /// cleans up the escaped child when the regression deliberately fails on
+    /// the old post-spawn assignment path.
+    fn stop_handshake_process(ready: &std::path::Path) {
+        let Ok(pid) = fs::read_to_string(ready) else {
+            return;
+        };
+        let Ok(pid) = pid.trim().parse::<u32>() else {
+            return;
+        };
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    struct HandshakeProcessGuard(PathBuf);
+
+    impl Drop for HandshakeProcessGuard {
+        fn drop(&mut self) {
+            stop_handshake_process(&self.0);
+        }
+    }
+
+    struct UnrelatedProcessGuard(Child);
+
+    impl Drop for UnrelatedProcessGuard {
+        fn drop(&mut self) {
+            kill_tree(&mut self.0);
+        }
+    }
+
+    /// Coordinate a real child at the create/assign boundary. This hook is
+    /// thread-local so parallel process tests cannot delay one another.
+    fn before_job_assignment(hook: impl FnOnce(u32) + 'static) {
+        BEFORE_JOB_ASSIGNMENT_TEST_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(hook));
+        });
     }
 
     /// A process with the same executable name that the supervisor never sees.
@@ -822,6 +952,100 @@ mod tests {
                 "pid {pid} survived the stop of its run"
             );
         }
+    }
+
+    #[test]
+    fn an_early_descendant_stays_in_the_run_after_its_launcher_exits() {
+        let fixture = ProcessFixtureDir::new();
+        let (spec, ready) = coordinated_launcher(fixture.path());
+        let _handshake_process = HandshakeProcessGuard(ready.clone());
+        let mut unrelated = UnrelatedProcessGuard(start_unrelated());
+        let ready_before_assignment = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready_before_assignment_for_hook = Arc::clone(&ready_before_assignment);
+        let ready_for_hook = ready.clone();
+        before_job_assignment(move |_pid| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !ready_for_hook.exists() && Instant::now() < deadline {
+                thread::sleep(POLL_INTERVAL);
+            }
+            ready_before_assignment_for_hook.store(
+                ready_for_hook.exists(),
+                std::sync::atomic::Ordering::Release,
+            );
+        });
+
+        let run = match ManagedProcess::spawn(spec) {
+            Ok(run) => run,
+            Err(error) => panic!("the coordinated launcher starts: {error}"),
+        };
+        assert!(
+            !ready_before_assignment.load(std::sync::atomic::Ordering::Acquire),
+            "the service must not create a child before its process belongs to the managed job"
+        );
+
+        let handshake_deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < handshake_deadline {
+            thread::sleep(POLL_INTERVAL);
+        }
+        assert!(
+            ready.exists(),
+            "the launcher child must publish its readiness handshake"
+        );
+
+        let exit = run
+            .wait_for_exit(Duration::from_secs(10))
+            .expect("the launcher exits after starting its child");
+        assert!(exit.code.is_some(), "the launcher's exit is observable");
+
+        let remaining = managed_tree(&run);
+        assert!(
+            !remaining.is_empty(),
+            "the live child created during startup must remain in the managed job after its parent exits"
+        );
+        assert!(
+            !remaining.contains(&run.pid()),
+            "the launcher itself should have exited before the child is checked"
+        );
+
+        run.force_stop().expect("the remaining child is stopped");
+        assert!(
+            managed_tree(&run).is_empty(),
+            "stopping the run removes its early child"
+        );
+        for pid in remaining {
+            assert!(
+                !super::win::is_process_alive(pid),
+                "early child pid {pid} survived the managed stop"
+            );
+        }
+        assert!(
+            still_running(&mut unrelated.0),
+            "stopping the early child must leave the unrelated sentinel running"
+        );
+    }
+
+    #[test]
+    fn a_resume_failure_cleans_up_the_assigned_suspended_process() {
+        let created_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let created_pid_for_hook = Arc::clone(&created_pid);
+        before_job_assignment(move |pid| {
+            created_pid_for_hook.store(pid, std::sync::atomic::Ordering::Release);
+            super::win::fail_next_resume_for_test();
+        });
+
+        let error = ManagedProcess::spawn(long_running())
+            .expect_err("a failed initial-thread resume refuses the run");
+        assert!(
+            error.to_string().contains("before resuming it"),
+            "the startup error names the refused ownership step: {error}"
+        );
+
+        let pid = created_pid.load(std::sync::atomic::Ordering::Acquire);
+        assert_ne!(pid, 0, "the test observed the created process id");
+        assert!(
+            !super::win::is_process_alive(pid),
+            "a run must not survive when its suspended initial thread cannot be resumed"
+        );
     }
 
     #[test]

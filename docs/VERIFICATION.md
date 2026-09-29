@@ -100,6 +100,8 @@ node scripts/capture-ui-states.mjs
 | stdout/stderr 可见 | `session::core::tests::logging::a_run_file_carries_both_streams_tagged` |
 | 配置的端口 / URL 可见 | `a_running_service_reads_its_configured_port`、`a_running_service_whose_port_is_closed_reports_both_facts`、`a_service_with_no_port_is_never_probed`、`a_session_url_comes_from_the_session_that_owns_it` |
 | 重启会等前一个进程退出 | `process::tests::restart_leaves_exactly_one_run_alive`、`terminal_tests::restarting_a_terminal_replaces_the_run_and_leaves_one_shell`、集成 `a_restart_starts_a_new_run_and_keeps_the_scrollback` |
+| 启动器快速退出时，启动期间创建的子进程仍属于受管 Job | `process::tests::an_early_descendant_stays_in_the_run_after_its_launcher_exits`（真实 Windows 进程；子进程 PID 握手，并检查无关哨兵存活） |
+| 启动恢复失败时不遗留挂起进程 | `process::tests::a_resume_failure_cleans_up_the_assigned_suspended_process`（真实 Windows 进程；在 Job 归属后注入恢复失败） |
 | 优雅停止可用 | `process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree`、`session::core::tests::force_stop_ends_the_run_without_waiting_for_it` |
 | 强制结束只动受管树 | `process::tests::force_stop_removes_the_managed_tree_but_not_an_unrelated_process`、`stop_reclaims_a_descendant_left_behind_by_an_exited_run` |
 

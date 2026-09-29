@@ -150,6 +150,19 @@ Session Core = Running
 
 “停止”不能直接等同于 Kill。
 
+### 服务启动归属
+
+Windows 服务以 `CREATE_SUSPENDED` 创建。Session Core 先建立带
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job、把尚未执行用户代码的进程加入 Job，
+再通过 Tool Help 线程快照按 owner PID 找到唯一的初始线程并调用 `ResumeThread`。
+因此服务首次执行及其创建的后代从开始就处于受管 Job 中。创建 Job、归属或恢复线程失败时，
+启动失败并清理本次进程；不能退回到无监管运行。
+
+Tool Help 快照只在每次服务启动时读取一次，不用于后台进程扫描。实现依据：
+[`CREATE_SUSPENDED`](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)、
+[`AssignProcessToJobObject`](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)、
+[`CreateToolhelp32Snapshot`](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot)。
+
 建议顺序：
 
 1. 请求优雅退出；

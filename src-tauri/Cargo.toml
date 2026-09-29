@@ -48,6 +48,8 @@ base64 = "0.22"
 # module its signature names — so JobObjects alone does not expose it.
 # Win32_System_Pipes carries `CreatePipe`, the two anonymous pipes around every
 # pseudoconsole.
+# Win32_System_Diagnostics_ToolHelp finds the suspended process's initial
+# thread by owner PID so it can be resumed only after Job assignment.
 #
 # Win32_System_Time carries `GetTimeZoneInformation`, the T01 path-layout
 # helper's source for the local UTC offset that decides which month directory a
@@ -68,6 +70,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
