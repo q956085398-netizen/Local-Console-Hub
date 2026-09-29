@@ -14,7 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon` is T09's native tray (spec §11): the icon, its menu, and the
+# hide-on-close lifecycle D-006 decides. It gates `dep:tray-icon` (and, through
+# it, `muda`'s tray support) — both already in Cargo.lock as this crate's
+# optional dependencies, so enabling the feature downloads no new package. The
+# layer on top of them is `tray/`.
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # T01 config schema: YAML is the user-facing config format (D-010).
@@ -54,6 +59,10 @@ base64 = "0.22"
 # (`shell/win.rs`): `ShellExecuteW` is gated behind the first feature, and its
 # `nshowcmd` parameter behind the second, so both are required for one call.
 # Enabling them downloads nothing — windows-sys gates modules, not packages.
+#
+# Win32_UI_WindowsAndMessaging has a second consumer since T09: the tray's exit
+# confirmation (`tray/confirm.rs`) is a native message box, so the question can
+# be answered while the window is hidden (spec §11).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

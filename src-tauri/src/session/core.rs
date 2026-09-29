@@ -68,6 +68,37 @@ impl EventSink for NoopSink {
     fn publish(&self, _event: SessionEvent) {}
 }
 
+/// Publish every event to several sinks, in the order given.
+///
+/// The running app has two listeners with nothing to say to each other: the
+/// window's event transport (T04) and the tray (T09). Neither is a reason for
+/// Session Core to grow a second publishing path, and a collection of sinks
+/// keeps "who is listening" outside the lifecycle — the same reason the sink is
+/// a trait in the first place.
+///
+/// A sink must return: publishing is synchronous, and one that waited for
+/// something would hold up the operation that produced the event as well as the
+/// sinks behind it. Both current sinks return immediately (the tray's rebuild
+/// is skipped outright unless the reading changed).
+pub struct FanoutSink {
+    sinks: Vec<Arc<dyn EventSink>>,
+}
+
+impl FanoutSink {
+    /// A sink forwarding to `sinks`, in order.
+    pub fn new(sinks: Vec<Arc<dyn EventSink>>) -> Self {
+        FanoutSink { sinks }
+    }
+}
+
+impl EventSink for FanoutSink {
+    fn publish(&self, event: SessionEvent) {
+        for sink in &self.sinks {
+            sink.publish(event.clone());
+        }
+    }
+}
+
 /// Why a lifecycle operation was refused or failed
 /// (`docs/DEVELOPMENT.md` §9: the message names the operation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -623,20 +654,10 @@ impl SessionCore {
     }
 
     /// App-wide counts. Derived from the same state the snapshots come from,
-    /// so the tray can never disagree with the window.
+    /// so the tray can never disagree with the window — including the counting
+    /// rule itself, which lives in [`AppSummary::of`] rather than here.
     pub fn summary(&self) -> AppSummary {
-        let snapshots = self.snapshots();
-        AppSummary {
-            total: snapshots.len(),
-            running: snapshots
-                .iter()
-                .filter(|runtime| runtime.status == SessionStatus::Running)
-                .count(),
-            error: snapshots
-                .iter()
-                .filter(|runtime| runtime.status == SessionStatus::Error)
-                .count(),
-        }
+        AppSummary::of(&self.snapshots())
     }
 
     fn handle(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
@@ -2572,6 +2593,33 @@ mod tests {
         fn publish(&self, event: SessionEvent) {
             lock(&self.events).push(event);
         }
+    }
+
+    /// Both listeners see the same event. The window's transport and the tray
+    /// have nothing to say to each other, but neither may be skipped — that is
+    /// the whole point of having both behind one core.
+    #[test]
+    fn a_fanout_reaches_every_sink() {
+        let transport = Arc::new(RecordingSink::default());
+        let tray = Arc::new(RecordingSink::default());
+        let fanout = FanoutSink::new(vec![transport.clone(), tray.clone()]);
+
+        fanout.publish(SessionEvent::AppSummaryChanged(AppSummaryChanged {
+            summary: AppSummary::default(),
+        }));
+
+        assert_eq!(transport.names(), vec!["app-summary-changed"]);
+        assert_eq!(tray.names(), vec!["app-summary-changed"]);
+    }
+
+    /// A Hub with no listeners is a Hub, not a panic — the same guarantee
+    /// `NoopSink` gives, and what keeps a core constructible before anything
+    /// has decided who is listening.
+    #[test]
+    fn a_fanout_with_no_sinks_discards_quietly() {
+        FanoutSink::new(Vec::new()).publish(SessionEvent::AppSummaryChanged(AppSummaryChanged {
+            summary: AppSummary::default(),
+        }));
     }
 
     /// A command that stays alive until it is stopped, so a test can observe a

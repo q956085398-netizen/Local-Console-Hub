@@ -44,6 +44,31 @@ pub struct AppSummary {
     pub error: usize,
 }
 
+impl AppSummary {
+    /// Count `snapshots`.
+    ///
+    /// The one place that decides what is counted, so the window's numbers and
+    /// the tray's cannot drift: both read their counts through here rather than
+    /// each keeping a rule of its own. "Failed" and `error` are the same count
+    /// under two names — the wire name came first (spec §9), and the tray's
+    /// wording is the display side of it.
+    pub fn of(snapshots: &[SessionRuntime]) -> Self {
+        use super::state::SessionStatus;
+
+        AppSummary {
+            total: snapshots.len(),
+            running: snapshots
+                .iter()
+                .filter(|runtime| runtime.status == SessionStatus::Running)
+                .count(),
+            error: snapshots
+                .iter()
+                .filter(|runtime| runtime.status == SessionStatus::Error)
+                .count(),
+        }
+    }
+}
+
 /// Payload of [`SESSION_STATE_CHANGED`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,6 +202,49 @@ mod tests {
                 external_path: None,
             },
         )
+    }
+
+    fn with_status(
+        session_id: &str,
+        status: crate::session::state::SessionStatus,
+    ) -> SessionRuntime {
+        let mut runtime = snapshot(session_id);
+        runtime.status = status;
+        runtime
+    }
+
+    /// The counting rule, asserted where it now lives: `running` and `error`
+    /// over the whole list, every other state counted by nobody, and a total
+    /// that is the list's length rather than the sum.
+    #[test]
+    fn a_summary_counts_running_and_error_over_every_session() {
+        use crate::session::state::{SessionStatus, ALL_STATUSES};
+
+        let snapshots: Vec<SessionRuntime> = ALL_STATUSES
+            .iter()
+            .map(|status| with_status("s", *status))
+            .collect();
+
+        let summary = AppSummary::of(&snapshots);
+
+        assert_eq!(summary.total, ALL_STATUSES.len());
+        assert_eq!(summary.running, 1);
+        assert_eq!(summary.error, 1);
+        assert!(
+            summary.running + summary.error < summary.total,
+            "four states are counted by neither number"
+        );
+        assert_eq!(
+            AppSummary::of(&[with_status("a", SessionStatus::Running)]).running,
+            1
+        );
+    }
+
+    /// A Hub with no sessions has nothing running and nothing failed — the
+    /// reading the tray shows as an idle summary.
+    #[test]
+    fn an_empty_list_summarizes_to_zero() {
+        assert_eq!(AppSummary::of(&[]), AppSummary::default());
     }
 
     fn every_event() -> Vec<SessionEvent> {
