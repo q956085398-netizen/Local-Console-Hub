@@ -20,6 +20,11 @@ mod ipc;
 pub mod logging;
 pub mod process;
 pub mod pty;
+// Release-manifest guards (T12, #13). Test-only: they pin facts about the
+// packaging that no production code reads, and they need `ipc::APP_NAME` and
+// `config::APP_DIR_NAME`, which are not public API.
+#[cfg(test)]
+mod release;
 pub mod session;
 pub mod shell;
 mod tray;

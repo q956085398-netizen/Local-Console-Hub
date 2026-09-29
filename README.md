@@ -225,6 +225,8 @@ sessions:
 - [Roadmap](docs/ROADMAP.md)
 - [开发与贡献规范](docs/DEVELOPMENT.md)
 - [端到端验证与回归清单](docs/VERIFICATION.md)
+- [Windows 打包与安装验收](docs/RELEASE.md)
+- [v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md)
 - [关键设计决策](docs/DECISIONS.md)
 
 ## 开发
@@ -238,8 +240,12 @@ npm run check      # TypeScript 类型检查
 npm test           # 前端单元测试（Vitest）
 npm run lint       # ESLint
 npm run format     # Prettier 格式化
-npm run tauri build # 产出 Windows 安装包
+npm run tauri build # 产出 Windows 安装包（MSI + NSIS）
 ```
+
+安装包装到哪、用户数据放在哪、装 / 卸 / 升怎么验，见
+[打包与安装验收](docs/RELEASE.md)。当前版本的已知限制见
+[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md)。
 
 CI（GitHub Actions，`windows-latest`）在每次 push/PR 时执行前端检查与 Rust `fmt` / `clippy` / `test` / `build`。
 
@@ -260,4 +266,9 @@ Local Console Hub 更关注的是：
 
 ## 状态
 
-🚧 设计 / MVP 准备中。
+🚧 **v0.1.0 release candidate。** MVP（`docs/ROADMAP.md` 的 Phase 1–2，外加 Phase 3 的端口
+与基础健康信号）已实现、通过端到端验证，并产出可安装的 Windows 包（未签名，
+首次运行会有 SmartScreen 提示）。距公开发布还差
+[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7 列出的三件事：交互终端在配置里的
+`purpose` / `close_impact`（#38，`MVP_IMPLEMENTATION_SPEC.md` §17 的完成定义因此
+未全部满足）、安装版上的手工验收、以及 MSI 那一份的实装验证。
