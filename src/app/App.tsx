@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import TitleBar from "../components/title-bar/TitleBar";
 import Sidebar from "../components/sidebar/Sidebar";
 import SessionHeader from "../components/session-header/SessionHeader";
@@ -20,6 +21,7 @@ import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
 import { LIVE_GROUP } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
+import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
 import { copyPathToClipboard } from "./clipboard";
 import { useBackendPing } from "./useBackendPing";
 import { useSessionRegistry } from "./useSessionRegistry";
@@ -78,6 +80,31 @@ export default function App() {
     const timer = window.setTimeout(() => setNotice(null), NOTICE_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  /**
+   * The tray's "show me this session" request (T09 #10).
+   *
+   * A click on a tray row is a request to *look at* a session, not an operation
+   * on it, so it arrives as a selection and nothing else: no lifecycle command
+   * is implied, and a session name the workspace cannot resolve falls back to
+   * the derived selection exactly as a stale deep link does.
+   *
+   * Only registered once a backend answers. A tray exists only in the desktop
+   * app, and in the browser preview there is no IPC channel to listen on — the
+   * same reason `useSessionRegistry` registers its own listener there and
+   * nowhere else.
+   */
+  useEffect(() => {
+    if (connection.state !== "connected") return;
+    const subscription = listen<unknown>(SESSION_FOCUS_REQUESTED, (event) => {
+      if (isSessionFocusRequestedDto(event.payload)) {
+        setSelectedId(event.payload.sessionId);
+      }
+    });
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [connection.state]);
 
   const filtered = useMemo(() => filterSessions(sessions, query), [sessions, query]);
   const groups = useMemo(

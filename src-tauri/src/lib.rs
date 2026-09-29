@@ -10,11 +10,8 @@
 //! - Tray actions call the same Session Core APIs as the main window;
 //! - Session Core is the single source of lifecycle truth.
 //!
-//! Modules other than `ipc`, `config`, `process`, `pty`, `session`, `logging`,
-//! `shell` and `health` are intentionally empty placeholders: they exist so
-//! later tickets fill the right boundaries instead of inventing parallel
-//! subsystems. No fake process/session/logging behavior lives here (T00
-//! out-of-scope).
+//! As of T09 every module in `docs/MVP_IMPLEMENTATION_SPEC.md` §3 is filled;
+//! none is a placeholder any more.
 
 mod app;
 pub mod config;
@@ -33,6 +30,9 @@ pub fn run() {
     use tauri::Manager;
 
     tauri::Builder::default()
+        // Closing the main window hides it; the tray is the way back and the
+        // only way out (D-006, spec §11).
+        .on_window_event(tray::on_window_event)
         // The session registry is built once, at startup, and shared by every
         // caller. It is not started from here: registering a session is not a
         // lifecycle operation, and nothing gets a process until something asks
@@ -40,6 +40,9 @@ pub fn run() {
         .setup(|app| {
             let core = app::bootstrap(app.handle().clone());
             app.manage(core);
+            // After `manage`, so the tray's first menu is built from the real
+            // registry instead of briefly showing an empty one.
+            tray::install(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

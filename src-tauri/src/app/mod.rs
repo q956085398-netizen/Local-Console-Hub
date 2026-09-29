@@ -19,8 +19,9 @@ use tauri::{AppHandle, Runtime};
 
 use crate::config::{load_from_file, AppPaths};
 use crate::logging::LogRoots;
-use crate::session::core::SessionCore;
+use crate::session::core::{EventSink, FanoutSink, SessionCore};
 use crate::session::tauri_sink::TauriSink;
+use crate::tray::TraySink;
 
 /// Build the session registry for the running app.
 ///
@@ -34,12 +35,27 @@ use crate::session::tauri_sink::TauriSink;
 /// them (`docs/LOGGING.md` §5). Without it the registry still works and still
 /// buffers, but every policy that needs a file resolves to `off` with a
 /// reported reason (T05) — a running app has no business being in that state.
+///
+/// Session Core publishes to both of the app's listeners from here: the event
+/// transport the window reads, and the tray (T09). Neither is the other's
+/// caller: the tray reads the registry it is handed and calls the same
+/// operations the window does, so a hidden window changes what the tray can
+/// see, never what it can do.
+///
+/// The tray half is wired here rather than after the registry is managed
+/// because [`FanoutSink`] is a sink, not a listener registry — it is built
+/// with the core and cannot be reopened afterwards. `TraySink` therefore looks
+/// the core up through the app handle when an event arrives, and events cannot
+/// arrive before `manage`, because registration publishes none.
 pub fn bootstrap<R: Runtime>(app: AppHandle<R>) -> SessionCore {
     let paths = AppPaths::from_env();
+    let sink = Arc::new(FanoutSink::new(vec![
+        Arc::new(TauriSink::new(app.clone())) as Arc<dyn EventSink>,
+        Arc::new(TraySink::new(app)),
+    ]));
     let core = match &paths {
-        Some(paths) => SessionCore::new(Arc::new(TauriSink::new(app)))
-            .with_log_roots(LogRoots::from_app_paths(paths)),
-        None => SessionCore::new(Arc::new(TauriSink::new(app))),
+        Some(paths) => SessionCore::new(sink).with_log_roots(LogRoots::from_app_paths(paths)),
+        None => SessionCore::new(sink),
     };
     register_configured(
         &core,
