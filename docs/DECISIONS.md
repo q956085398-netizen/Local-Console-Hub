@@ -650,6 +650,37 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
 
 ---
 
+## D-027：`purpose` 与 `close_impact` 是两种会话类型共有的字段，不是服务的特权
+
+**状态：Accepted（2026-09-29，#38 落地时签认）**
+
+原 §4 的字段归属表把 `purpose` 与 `close_impact` 划给 `type: service`，验证器因此在终端上
+**拒绝**这两个字段。但 V2 终端参考图 `assets/ui/ui-v2-terminal.png` 画的恰恰是一个带用途行
+和「关闭影响」提示条的交互终端——而头部 callout 与详情页的「能不能关」卡片都不看会话类型，
+只念 `close_impact`。于是同一个 `SessionView` 的两个来源不一致，且**真实窗口**那一侧才是
+对不上参考图的那一侧（fixture 工作区对得上，是因为 `src/state/fixtures.ts` 在替终端编造
+这两个字段）。
+
+1. **这两个字段改为两种类型共有**，验证器不再在终端上拒绝它们：`config::validate` 的
+   `reject_cross_type_fields` 只留下 `command` / `url` / `port` 属于服务专有，
+   `shell` / `initial_command` 属于终端专有。
+2. **没有为此新增任何行为。** 两者是纯文本展示字段，没有运行时含义：头部、详情页与搜索
+   过滤（本来就匹配 `purpose`）对两种类型用的是同一段代码，所以改动只落在「配置能不能写」
+   这一层。
+3. **不给终端生成默认文案。** 更省事的做法是替终端编一句「仅结束本终端」，但 T11 的验收
+   条件明确要求关闭影响是**会话自己的文本**而不是通用填充；写了才算写了，没写就渲染 `—`。
+
+用户可见行为：`config.yaml` 里的交互终端现在可以写这两项，运行中的终端头部因此显示配置里
+的用途与关闭影响，与 `assets/ui/ui-v2-terminal.png` 一致；不写的终端仍然渲染 `—`
+（`fixtures/verification-config.yaml` 的 `term-manual` 就是这种）。
+
+运维：`fixtures/verification-config.yaml` 的 `term-pwsh` 带上了参考图里的那两句，
+`config::tests::verification_fixture_loads_cleanly_and_covers_the_matrix` 钉住它们，
+使「终端头部对得上参考图」这条手工验收是视觉比对而不是照着图重新打一遍字；
+`tests/mvp_matrix.rs` 从配置文件一路断言到 Session Core 的配置。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：

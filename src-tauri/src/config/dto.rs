@@ -28,8 +28,10 @@ pub struct EffectiveLoggingDto {
 
 /// One validated session as exposed to the frontend.
 ///
-/// Only service fields or only terminal fields are present, depending on
-/// `session_type` (validation guarantees the other side is absent).
+/// The type-owned fields are present for their own type only (validation
+/// guarantees the other side is absent). `purpose` and `closeImpact` belong to
+/// both types (D-027) and reach the header and the Details card the same way
+/// either way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfigDto {

@@ -132,9 +132,9 @@ pub struct RawSessionConfig {
     pub url: Option<String>,
     /// Service: TCP port shown in the session header.
     pub port: Option<u16>,
-    /// Service: short description of what this session is for.
+    /// Either type: short description of what this session is for.
     pub purpose: Option<String>,
-    /// Service: what closing/stopping it will cost the user.
+    /// Either type: what closing/stopping it will cost the user.
     pub close_impact: Option<String>,
     /// Terminal: shell executable, e.g. `powershell`.
     pub shell: Option<String>,
@@ -168,9 +168,11 @@ pub struct EffectiveLogging {
 
 /// A fully validated session configuration.
 ///
-/// Only service fields or only terminal fields are populated, depending on
-/// [`SessionConfig::session_type`]; the cross-type fields are guaranteed
-/// absent by validation.
+/// The fields that only one type owns are populated for that type alone and
+/// guaranteed absent on the other by validation. `purpose` and `close_impact`
+/// belong to both types (D-027): they describe a session in words, so a
+/// terminal states why it exists and what stopping it costs just as a service
+/// does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionConfig {
     pub id: String,
@@ -183,9 +185,9 @@ pub struct SessionConfig {
     pub url: Option<String>,
     /// Service only; 1..=65535.
     pub port: Option<u16>,
-    /// Service only.
+    /// Either type; free-text, no runtime meaning.
     pub purpose: Option<String>,
-    /// Service only.
+    /// Either type; free-text, no runtime meaning.
     pub close_impact: Option<String>,
     /// Terminal only.
     pub shell: Option<String>,

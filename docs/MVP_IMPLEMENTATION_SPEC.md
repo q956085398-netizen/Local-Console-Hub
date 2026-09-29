@@ -113,20 +113,28 @@ Required fields:
 - name
 - type: service or terminal
 
-Optional service fields:
+Optional fields both types own:
 
 - cwd
+- purpose
+- close_impact
+
+Optional service fields:
+
 - command
 - url
 - port
-- purpose
-- close_impact
 
 Optional terminal fields:
 
 - shell
-- cwd
 - initial command
+
+`purpose` and `close_impact` are free text with no runtime meaning: they say
+what a session is for and what stopping it costs, and the header, the Details
+card and the search filter read them without consulting the session type
+(D-027). Every other field belongs to exactly one type; validation rejects it
+on the other rather than dropping it quietly.
 
 Logging fields follow LOGGING.md.
 

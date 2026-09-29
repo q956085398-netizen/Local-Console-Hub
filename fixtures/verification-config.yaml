@@ -97,11 +97,20 @@ sessions:
   # Rows: "PowerShell starts", "commands can be typed", "Unicode works",
   # "Ctrl+C interrupts a long-running command", "resize works", "a terminal
   # creates no log file" (LOGGING.md 场景 A), "stdin is not persisted".
+  #
+  # The `purpose` and `close_impact` below are the two sentences
+  # `assets/ui/ui-v2-terminal.png` shows in this session's header, so the
+  # "terminal header matches the V2 reference" row is a visual comparison and
+  # not a re-typing exercise. Both fields are free text either type may carry
+  # (D-027); a terminal that omits them renders `—`, which is what
+  # `term-manual` shows.
   - id: term-pwsh
     name: PowerShell
     type: terminal
     shell: powershell
     cwd: .
+    purpose: 日常交互终端，跑一次性命令与 REPL。
+    close_impact: 仅结束本终端；不会停止其它受管服务。
     logging:
       mode: off
       source: none

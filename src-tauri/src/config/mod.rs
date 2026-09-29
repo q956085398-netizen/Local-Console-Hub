@@ -346,6 +346,62 @@ mod tests {
         let loaded = load_from_str(&config(&[terminal_with_command]));
         assert_eq!(loaded.errors[0].field.as_deref(), Some("command"));
         assert!(loaded.errors[0].message.contains("type: service"));
+
+        // `purpose` and `close_impact` are *not* cross-type: they describe any
+        // session in words and carry no runtime meaning (D-027), so a terminal
+        // keeping the rest of the service-only fields rejected is the whole
+        // rule.
+        let terminal_with_port =
+            session_yaml("mixed3", "terminal", "shell: powershell\nport: 8000");
+        let loaded = load_from_str(&config(&[terminal_with_port]));
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("port"));
+        assert!(loaded.errors[0].message.contains("type: service"));
+    }
+
+    #[test]
+    fn a_terminal_may_carry_purpose_and_close_impact() {
+        let entry = session_yaml(
+            "term",
+            "terminal",
+            "shell: powershell\npurpose: 日常交互终端，跑一次性命令与 REPL。\n\
+             close_impact: 仅结束本终端；不会停止其它受管服务。",
+        );
+        let loaded = load_from_str(&config(&[entry]));
+        assert!(
+            loaded.errors.is_empty(),
+            "unexpected errors: {:?}",
+            loaded.errors
+        );
+        let term = &loaded.sessions[0];
+        assert_eq!(
+            term.purpose.as_deref(),
+            Some("日常交互终端，跑一次性命令与 REPL。")
+        );
+        assert_eq!(
+            term.close_impact.as_deref(),
+            Some("仅结束本终端；不会停止其它受管服务。")
+        );
+    }
+
+    #[test]
+    fn a_terminal_that_omits_purpose_or_close_impact_keeps_them_absent() {
+        let entry = session_yaml("term", "terminal", "shell: powershell");
+        let loaded = load_from_str(&config(&[entry]));
+        assert!(
+            loaded.errors.is_empty(),
+            "unexpected errors: {:?}",
+            loaded.errors
+        );
+        assert_eq!(loaded.sessions[0].purpose, None);
+        assert_eq!(loaded.sessions[0].close_impact, None);
+    }
+
+    #[test]
+    fn an_empty_terminal_purpose_is_actionable() {
+        let entry = session_yaml("term", "terminal", "shell: powershell\npurpose: '   '");
+        let loaded = load_from_str(&config(&[entry]));
+        assert!(loaded.sessions.is_empty());
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("purpose"));
     }
 
     #[test]
@@ -611,6 +667,22 @@ mod tests {
         // 场景 A) and the `manual` policy the Logs tab's controls act on.
         assert_eq!(by_id("term-pwsh").logging.mode, EffectiveLogMode::Off);
         assert_eq!(by_id("term-manual").logging.mode, EffectiveLogMode::Manual);
+
+        // "close impact is visible before destructive actions" (UI_STYLE_GUIDE
+        // §5/§13): a terminal states why it exists and what stopping it costs,
+        // exactly as a service does (D-027). `term-pwsh` carries the two
+        // sentences the V2 terminal reference shows, so the checklist's
+        // terminal rows reproduce `assets/ui/ui-v2-terminal.png` in the live
+        // window instead of falling back to `关闭影响 —`.
+        let terminal = by_id("term-pwsh");
+        assert_eq!(
+            terminal.purpose.as_deref(),
+            Some("日常交互终端，跑一次性命令与 REPL。")
+        );
+        assert_eq!(
+            terminal.close_impact.as_deref(),
+            Some("仅结束本终端；不会停止其它受管服务。")
+        );
 
         // Every command and shell must run on a machine with nothing
         // installed, or the checklist stops being repeatable. `powershell` is

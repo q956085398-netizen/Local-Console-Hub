@@ -478,6 +478,33 @@ describe("headerCallout", () => {
     });
   });
 
+  it("shows a terminal's configured close impact the same way (D-027)", () => {
+    const callout = headerCallout(
+      config({
+        sessionType: "terminal",
+        command: undefined,
+        url: undefined,
+        port: undefined,
+        shell: "powershell",
+        closeImpact: "仅结束本终端；不会停止其它受管服务。",
+      }),
+      runtime(),
+    );
+    expect(callout).toEqual({
+      kind: "impact",
+      title: "关闭影响",
+      text: "仅结束本终端；不会停止其它受管服务。",
+    });
+  });
+
+  it("renders an em dash when the session carries no close impact", () => {
+    const callout = headerCallout(
+      config({ sessionType: "terminal", closeImpact: undefined }),
+      runtime(),
+    );
+    expect(callout).toEqual({ kind: "impact", title: "关闭影响", text: "—" });
+  });
+
   it("shows the last error instead once stopped", () => {
     const callout = headerCallout(
       config(),
@@ -673,6 +700,8 @@ describe("filterSessions / groupSessions", () => {
         url: undefined,
         port: undefined,
         shell: "pwsh",
+        purpose: "日常交互终端，跑一次性命令与 REPL。",
+        closeImpact: "仅结束本终端；不会停止其它受管服务。",
         logging: { mode: "off", source: "none" },
       }),
       group: "debug",
@@ -687,6 +716,9 @@ describe("filterSessions / groupSessions", () => {
       "sillytavern",
     ]);
     expect(filterSessions(sessions, "terminal").map((s) => s.config.id)).toEqual(["pwsh"]);
+    // A terminal's `purpose` is searchable the same way a service's is
+    // (D-027): the field is the session's own words, not a type's privilege.
+    expect(filterSessions(sessions, "REPL").map((s) => s.config.id)).toEqual(["pwsh"]);
     expect(filterSessions(sessions, "").length).toBe(4);
   });
 
