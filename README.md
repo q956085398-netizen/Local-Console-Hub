@@ -4,7 +4,7 @@
 
 Local Console Hub 的目标不是再造一个普通终端模拟器，也不是只做一个“进程查看器”。它希望把 **dekit/mprocs 式的多会话管理**、**Launcher 式的按钮操作**、**可交互终端**、**服务状态与用途说明**、**有策略的日志管理** 和 **系统托盘常驻** 合并到一个轻量工具中。
 
-当前仓库处于 **设计与 MVP 落地阶段**。
+当前为 **v0.1.0 release candidate**。实现、自动化检查、原生窗口验收和安装包验收分别记录；当前状态见下方及对应验收文档。
 
 ## 为什么需要它
 
@@ -266,9 +266,10 @@ Local Console Hub 更关注的是：
 
 ## 状态
 
-🚧 **v0.1.0 release candidate。** MVP（`docs/ROADMAP.md` 的 Phase 1–2，外加 Phase 3 的端口
-与基础健康信号）已实现、通过端到端验证，并产出可安装的 Windows 包（未签名，
-首次运行会有 SmartScreen 提示）。距公开发布还差
-[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7 列出的三件事：交互终端在配置里的
-`purpose` / `close_impact`（#38，`MVP_IMPLEMENTATION_SPEC.md` §17 的完成定义因此
-未全部满足）、安装版上的手工验收、以及 MSI 那一份的实装验证。
+🚧 **v0.1.0 release candidate。** Windows MVP（`docs/ROADMAP.md` 的 Phase 1–2，外加 Phase 3
+的端口与基础健康信号）已有实现和分范围的验证记录；这不代表所有后续复核修复或发布验收均已完成。
+截至 2026-09-29，#52–#55 的 MVP 复核修复仍未完成，本文不把它们列作已实现。终端配置可以为两种会话类型
+设置 `purpose` / `close_impact`（D-027、#38）；仍待在真实窗口完成 T-11 视觉确认。独立的 Windows 桌面记录
+已确认托盘 R-1 至 R-8 通过。安装验收仍有 I-7 图标外观、I-8 MSI 安装、尚未执行的 I-15，以及 I-16 / I-17
+中需要真实窗口与交互的部分待完成或待确认；细节见 [v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7、
+[端到端验证记录](docs/VERIFICATION.md) §6–§7 和 [安装验收记录](docs/RELEASE.md) §4–§5。
