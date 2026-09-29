@@ -27,6 +27,11 @@ NSIS 的安装模式写死在配置里而不是留给默认值，理由见 §3�
 用户自己的 `%LOCALAPPDATA%` 下，正是它让「卸载删掉安装目录」这件事**碰不到**用户数据
 成为一条可以在本机跑一遍的规则，而不是一句设计意图。
 
+两个包都**没有代码签名**：`bundle.windows.certificateThumbprint` 之类的字段留空，
+CI 也不产出安装包。后果是第一次运行时 Windows SmartScreen 会拦一句「未知发布者」，
+用户要点「更多信息 → 仍要运行」。签名需要一张代码签名证书，属于要凭据的决定，
+所以 T12 只把它记成已知限制（`RELEASE_NOTES_v0.1.0.md` §6 第 1 条），不在这里实现。
+
 两者共用同一套图标（`src-tauri/icons/`，源文件 `assets/brand/app-icon.svg`，
 经 `scripts/generate-icon.mjs` + `npx tauri icon` 生成，D-013），以及同一份
 `bundle` 元数据：`publisher` / `copyright` / `category` / `shortDescription` /
@@ -63,11 +68,12 @@ NSIS 的安装模式写死在配置里而不是留给默认值，理由见 §3�
 `src-tauri/src/release.rs` 的 `the_install_directory_can_never_be_the_app_data_directory`
 静态守着——`cargo test` 就会红，不需要有人在 review 里想起来。
 
-同文件还守着另外三件与发布有关、但没有任何编译器会比对的事：三份 manifest 的版本号一致
+同文件还守着另外五件与发布有关、但没有任何编译器会比对的事：三份 manifest 的版本号一致
 （`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`）、
 `productName` 与 `ipc::APP_NAME` 是同一个字符串、`identifier` 没有被悄悄改掉
 （Tauri 由它推导 WiX upgrade code 与 NSIS 卸载注册表项，改了不是改名，是发布成第二个
-无法覆盖升级的应用程序）。
+无法覆盖升级的应用程序）、两个安装目标都还在、WebView2 的安装模式没有被改成别的
+（§1 与 `RELEASE_NOTES_v0.1.0.md` 的已知限制都建立在它之上）。
 
 ### 2.2 第三处落盘：WebView2 的用户数据目录，以及卸载器那个复选框
 
@@ -121,7 +127,7 @@ npm run tauri build
 | # | 步骤 | 期望 |
 | --- | --- | --- |
 | I-1 | 记录 `%APPDATA%\LocalConsoleHub` 与 `%LOCALAPPDATA%\LocalConsoleHub` 的现状（文件清单 + 大小） | 作为后面几条的哨兵；**整个流程不修改它们** |
-| I-2 | 静默安装 NSIS 包（`…-setup.exe /S`） | 无 UAC 提示；退出码 0 |
+| I-2 | 静默安装 NSIS 包（`…-setup.exe /S`） | 无 UAC 提示；退出码 0。**双击安装**（非静默）时 Windows 会先弹 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」继续——包没有签名，这是 §1 的已知限制。静默安装不经过这个提示，所以这一句**未经本机实测**，归人眼 |
 | I-3 | 看 `%LOCALAPPDATA%\Local Console Hub` | 只有两个文件：`local-console-hub.exe`（程序本体，图标编在资源里）与 `uninstall.exe`；**没有** `config.yaml`、`logs\`、`metadata\`（验收项「用户配置 / 日志在安装目录之外」） |
 | I-4 | 从安装目录启动 exe | 进程起来并**持续存活**（不是启动即崩）；窗口标题是 `Local Console Hub` 且 `Responding = True`；托盘图标出现（托盘那半**人眼**）（验收项「干净安装能启动」） |
 | I-5 | 启动后重看 I-1 的两个目录 | 与安装前**逐字节一致**——安装与启动都没有在数据目录里写东西，也都没有往安装目录里写日志 |
@@ -170,7 +176,8 @@ I-16 / I-17 中「窗口里能敲命令」这一半只能在桌面上做：agent
 
 ### 2026-09-29 — T12 首次打包与安装验收
 
-环境：Windows 11 Pro（10.0.26200），主检出 `main` @ `1518d75` 加本分支的改动；
+环境：Windows 11 Pro（10.0.26200），主检出（非 worktree），二进制基于 `25e9e03`
+（`main` 的 HEAD，也是本分支的 merge-base）加本分支的改动；
 Rust 1.98.1 / Node 25.2.1；WiX 3.14 与 NSIS 用的是既有缓存（`%LOCALAPPDATA%\tauri`）。
 
 **构建（§3）。** `npm run tauri build` 退出码 0，release profile 编译 2m50s，两个包都出：

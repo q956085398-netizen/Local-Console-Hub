@@ -608,11 +608,11 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
 而是「用户装完之后还能不能拿回自己的东西」这个问题的一部分。
 
 1. **NSIS 的 `installMode` 显式写成 `currentUser`。** 默认值本来就是它，但这里不靠默认：
-   `currentUser` 把程序装进 `%LOCALAPPDATA%\Local Console Hub`，卸载器删除的正是这个
-   目录，而用户的配置与日志在 `%APPDATA%\LocalConsoleHub` 与
-   `%LOCALAPPDATA%\LocalConsoleHub`——**另一个目录**。安装范围因此不只是「少一次 UAC」，
-   它是「卸载删不掉用户数据」这条验收项成立的前提。MSI 保持 per-machine，
-   两份产物装到两个范围，用户按需要选。
+   `currentUser` 把程序装进 `%LOCALAPPDATA%\Local Console Hub`，不需要管理员，
+   而且让「卸载器只删自己的安装目录」这件事可以在任何一台机器上直接跑一遍验证。
+   MSI 保持 per-machine（装进 `Program Files`，要管理员），两份产物装到两个范围，
+   用户按需要选。**注意真正让用户数据活下来的不是安装范围，而是第 2 条那条名字不变量**——
+   per-machine 的安装目录同样碰不到数据目录，这一点两条路径一样。
 2. **安装目录名与数据目录名必须不同，且由测试守着。**
    `%LOCALAPPDATA%\Local Console Hub` 与 `%LOCALAPPDATA%\LocalConsoleHub` 今天只差空格。
    把产品名缩成 `LocalConsoleHub` 会让两者重合，卸载就会带走用户的 `config.yaml` 与

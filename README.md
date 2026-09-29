@@ -267,6 +267,8 @@ Local Console Hub 更关注的是：
 ## 状态
 
 🚧 **v0.1.0 release candidate。** MVP（`docs/ROADMAP.md` 的 Phase 1–2，外加 Phase 3 的端口
-与基础健康信号）已实现、通过端到端验证，并产出可安装的 Windows 包。距公开发布还差
-[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7 列出的两件事：交互终端在配置里的
-`purpose` / `close_impact`（#38），以及安装版上的手工验收。
+与基础健康信号）已实现、通过端到端验证，并产出可安装的 Windows 包（未签名，
+首次运行会有 SmartScreen 提示）。距公开发布还差
+[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7 列出的三件事：交互终端在配置里的
+`purpose` / `close_impact`（#38，`MVP_IMPLEMENTATION_SPEC.md` §17 的完成定义因此
+未全部满足）、安装版上的手工验收、以及 MSI 那一份的实装验证。

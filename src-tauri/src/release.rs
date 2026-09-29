@@ -22,8 +22,6 @@
 //! bundled*, and reading it at test time means the assertion is about the
 //! working tree rather than about a copy frozen at compile time.
 
-#![cfg(test)]
-
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -66,8 +64,8 @@ fn the_three_manifests_agree_on_one_version() {
 }
 
 /// The name on the installer, the tray tooltip and the exit confirmation is
-/// one name: `bundle.productName` and `ipc::APP_NAME` are two spellings of the
-/// same application.
+/// one name: the `productName` at the top of `tauri.conf.json` and
+/// `ipc::APP_NAME` are two spellings of the same application.
 #[test]
 fn the_bundled_product_name_is_the_name_the_app_reports() {
     let product_name = manifest("tauri.conf.json")["productName"].clone();
@@ -95,7 +93,7 @@ fn the_bundled_product_name_is_the_name_the_app_reports() {
 #[test]
 fn the_install_directory_can_never_be_the_app_data_directory() {
     let value = manifest("tauri.conf.json")["productName"].clone();
-    let product_name = value.as_str().expect("bundle.productName is a string");
+    let product_name = value.as_str().expect("productName is a string");
 
     assert_ne!(
         product_name.to_ascii_lowercase(),
