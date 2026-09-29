@@ -101,9 +101,9 @@ sessions:
   # The `purpose` and `close_impact` below are the two sentences
   # `assets/ui/ui-v2-terminal.png` shows in this session's header, so the
   # "terminal header matches the V2 reference" row is a visual comparison and
-  # not a re-typing exercise. Both fields are free text either type may carry
-  # (D-027); a terminal that omits them renders `—`, which is what
-  # `term-manual` shows.
+  # not a re-typing exercise. Both are free text either type may carry
+  # (D-027), and both are optional: `term-manual` below writes neither, so its
+  # header has no purpose line and its close-impact callout reads `—`.
   - id: term-pwsh
     name: PowerShell
     type: terminal
