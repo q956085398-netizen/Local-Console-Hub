@@ -4781,14 +4781,12 @@ mod tests {
     /// goes, what the offsets an attached view reads actually promise, and what
     /// happens to the shell when the session is stopped.
     ///
-    /// Windows-only, for the same reason the PTY layer's own suite is: off
-    /// Windows there is no ConPTY backend to host a shell — `pty::unsupported`
-    /// answers every operation with `UnsupportedPlatform` — so nothing in this
-    /// module could pass there. Declaring that here is what keeps the suite
-    /// honest about what it can run. The predicate is spelled exactly as the
-    /// PTY suite's, `test` included even though the enclosing module is
-    /// already `#[cfg(test)]`, so that one grep finds every suite that needs
-    /// Windows (#30).
+    /// Windows-only: off Windows there is no ConPTY backend to host a shell
+    /// (`pty::unsupported` answers every operation with `UnsupportedPlatform`),
+    /// so every test in this module would fail there. The predicate is spelled
+    /// exactly as the PTY suite's — `test` included, though the enclosing
+    /// module is already `#[cfg(test)]` — so one grep finds every suite in the
+    /// crate that needs Windows (#30).
     #[cfg(all(test, windows))]
     mod terminal_tests {
         use super::*;
