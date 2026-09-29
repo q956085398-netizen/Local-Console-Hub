@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
+use crate::health::ServiceHealth;
 use crate::logging::BufferSummary;
 
 use super::state::SessionStatus;
@@ -174,6 +175,17 @@ pub struct SessionRuntime {
     /// §8). Present whatever the logging policy is: `mode: off` decides what
     /// reaches the disk, never whether the session has a buffer.
     pub buffer: BufferSummary,
+    /// The last health reading, for a service that names a port and has a run
+    /// in flight (spec §12, T08). `None` everywhere else: a session nobody has
+    /// probed reports no reading rather than a closed port, because those are
+    /// two different claims.
+    ///
+    /// Deliberately beside `status` rather than folded into it: a reading says
+    /// whether the *service* answers, and `SessionStatus` says what the
+    /// lifecycle is doing. A service whose port is not answering is still
+    /// `Running`, and the UI has to be able to show both at once (D-008,
+    /// `docs/PRODUCT_SPEC.md` §3).
+    pub health: Option<ServiceHealth>,
     pub last_error: Option<SessionErrorInfo>,
 }
 
@@ -194,6 +206,7 @@ impl SessionRuntime {
             pty_attached: false,
             logging,
             buffer: BufferSummary::default(),
+            health: None,
             last_error: None,
         }
     }
@@ -384,6 +397,28 @@ mod tests {
             "lastError should be null: {value}"
         );
         assert_eq!(value["sessionId"], serde_json::json!("comfyui"));
+        // A session nobody has probed reports no reading — not a closed port.
+        // "We did not check" and "we checked and nothing was listening" are
+        // different claims, and the UI is built on the difference (T08 §12).
+        assert!(value["health"].is_null(), "health should be null: {value}");
+    }
+
+    /// The reading the UI reads: both facts, in the casing the frontend mirror
+    /// is written against (`src/types/runtime.ts`).
+    #[test]
+    fn a_health_reading_rides_the_snapshot_beside_the_status() {
+        let mut runtime = SessionRuntime::stopped("comfyui", captured_logging());
+        runtime.status = SessionStatus::Running;
+        runtime.health = Some(ServiceHealth {
+            process_alive: true,
+            port_open: false,
+        });
+
+        let value = serde_json::to_value(&runtime).expect("snapshot serializes");
+
+        assert_eq!(value["status"], serde_json::json!("running"));
+        assert_eq!(value["health"]["processAlive"], serde_json::json!(true));
+        assert_eq!(value["health"]["portOpen"], serde_json::json!(false));
     }
 
     /// The id becomes a file-name component, so the function that actually

@@ -10,10 +10,11 @@
 //! - Tray actions call the same Session Core APIs as the main window;
 //! - Session Core is the single source of lifecycle truth.
 //!
-//! Modules other than `ipc`, `config`, `process`, `pty`, `session`, `logging`
-//! and `shell` are intentionally empty placeholders: they exist so later
-//! tickets fill the right boundaries instead of inventing parallel subsystems.
-//! No fake process/session/logging behavior lives here (T00 out-of-scope).
+//! Modules other than `ipc`, `config`, `process`, `pty`, `session`, `logging`,
+//! `shell` and `health` are intentionally empty placeholders: they exist so
+//! later tickets fill the right boundaries instead of inventing parallel
+//! subsystems. No fake process/session/logging behavior lives here (T00
+//! out-of-scope).
 
 mod app;
 pub mod config;
@@ -50,6 +51,8 @@ pub fn run() {
             ipc::session::stop_session,
             ipc::session::force_stop_session,
             ipc::session::restart_session,
+            ipc::session::open_session_url,
+            ipc::session::open_session_cwd,
             ipc::terminal::attach_terminal,
             ipc::terminal::terminal_write,
             ipc::terminal::terminal_resize,

@@ -71,6 +71,21 @@ export interface SessionErrorInfoDto {
   message: string;
 }
 
+/**
+ * One reading of a running service's health (`src-tauri/src/health/mod.rs`,
+ * spec §12).
+ *
+ * Two facts from the moment of the probe, not a conclusion about the session:
+ * whether the run's process was alive, and whether the port its config names
+ * was accepting connections. They are separate on purpose — `docs/PRODUCT_SPEC.md`
+ * §3 requires the UI to distinguish "the process is alive" from "the service is
+ * available", and `docs/DECISIONS.md` D-008 forbids reducing one to the other.
+ */
+export interface ServiceHealthDto {
+  processAlive: boolean;
+  portOpen: boolean;
+}
+
 /** Everything the UI needs to render one session right now. */
 export interface SessionRuntimeDto {
   sessionId: string;
@@ -86,6 +101,10 @@ export interface SessionRuntimeDto {
   ptyAttached: boolean;
   logging: RuntimeEffectiveLoggingDto;
   buffer: BufferSummaryDto;
+  /** The last health reading, for a service that names a port and has a run in
+   * flight; `null` when nothing has been probed. `null` is not "the port is
+   * closed" — it is "we did not check", and the UI shows nothing for it. */
+  health?: ServiceHealthDto | null;
   lastError?: SessionErrorInfoDto | null;
 }
 
@@ -213,8 +232,30 @@ export function isSessionRuntimeDto(value: unknown): value is SessionRuntimeDto 
     typeof candidate.ptyAttached === "boolean" &&
     isRuntimeEffectiveLoggingDto(candidate.logging) &&
     isBufferSummaryDto(candidate.buffer) &&
+    isServiceHealthDtoOrAbsent(candidate.health) &&
     isSessionErrorInfoDtoOrAbsent(candidate.lastError)
   );
+}
+
+/** Runtime guard for a health reading. */
+export function isServiceHealthDto(value: unknown): value is ServiceHealthDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.processAlive === "boolean" && typeof candidate.portOpen === "boolean";
+}
+
+/**
+ * A health reading, `null`, or absent.
+ *
+ * Both spellings, for the reason `isPresent` gives: the backend writes `null`
+ * and a fixture or a hand-written payload may leave the key out. A guard that
+ * accepted only one would drop a whole snapshot the frontend could have
+ * rendered.
+ */
+function isServiceHealthDtoOrAbsent(value: unknown): boolean {
+  return value === undefined || value === null || isServiceHealthDto(value);
 }
 
 function isSessionErrorInfoDtoOrAbsent(value: unknown): boolean {

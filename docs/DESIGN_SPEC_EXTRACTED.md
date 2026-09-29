@@ -114,7 +114,11 @@
   左 2px 琥珀竖线 + `--color-impact` 底。停止态改为 `上次错误`(红) 显示 `lastError`。
 - **元数据行**：`PID <n>` · `port :<n>` · `up <时长>` · `cwd <路径>` · `log <值>`；
   等宽 11，label 用次要色 70% 透明，value 用主文字 80%。`up` 仅 running 时出现。
-  `log` 值：`buffer only`（source none）/ `external` / 模式词。
+  `log` 值**全小写**：`buffer only`（source none）/ `external` / 小写模式词
+  （`off` / `always` / `on error` / `manual`）。**与侧栏 chip 的句首大写刻意不同**
+  （chip 为 `Always` / `On error` / `Manual`）：这一行是策略 token 条，不是标签条；
+  参考图两张均可印证（`log always`、`log buffer only`），上游源码该行直接渲染
+  `session.logging.mode` 原始值。
 - **终端面板**：`#090a0d` + 1px 描边阴影；顶部条左 `ConPTY · interactive`（terminal）
   或 `PTY attached · stdin 可用`（service），右 `connected` / 状态词；正文等宽 12.5/行高 1.55；
   行类型着色：sys 次要色、in `#c5ccd6`、err 红、out `#d7d8d4`；
@@ -155,3 +159,7 @@
    （启动命令、Run、退出码、PTY、内存缓冲），身份与路径并入「它是谁」卡片。
 5. 参考图两处的计时字面值（`3h 23m` vs `3h 12m`、`23m 47s` vs `12m 5s`）在实现中由
    fixture 相对时间生成，时间点不同属正常。
+6. **元数据行的 `on_error` 拼作 `on error`**：上游原型把原始枚举整值塞进该行，
+   `log on_error` 会带着下划线出现在界面上（参考图未出现该会话，故无图可证）。实现改为
+   小写模式词 `on error`，与同行手写值 `buffer only`、`external` 同级，不泄漏线上枚举值。
+   其余模式（`off` / `always` / `manual`）两种写法本就一致。

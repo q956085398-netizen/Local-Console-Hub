@@ -2,9 +2,10 @@
 //!
 //! The OS's own mechanism — the Hub never guesses at a handler, picks a text
 //! editor, or writes a shortcut. No console window is created: `ShellExecuteW`
-//! hands the path straight to the shell, which is what makes it preferable to
-//! `cmd /c start` for a GUI process (that would flash a console, and would put
-//! a path through a command-line parser it does not need to go through).
+//! hands the target straight to the shell, which is what makes it preferable to
+//! `cmd /c start` for a GUI process (that would flash a console, and would put a
+//! path — or a URL — through a command-line parser it does not need to go
+//! through).
 //!
 //! COM note: `ShellExecuteW` is documented to work without an explicit
 //! `CoInitialize`, and the call arrives on the Tauri IPC thread — the same
@@ -24,17 +25,34 @@ const OPEN: *const u16 = std::ptr::null();
 /// Hand the path to the shell.
 ///
 /// Whether the path exists is [`super::open_path`]'s check, not this one: the
-/// two callers that matter (a log file, a log folder) are resolved from session
-/// state and want the same answer about a path that is not there.
+/// callers that matter (a log file, a log folder, a session's working
+/// directory) are resolved from session state and want the same answer about a
+/// path that is not there.
 pub fn open_path(path: &Path, operation: &str) -> Result<(), ShellError> {
     let wide = wide(path);
-    // The return value is an `HINSTANCE` for historical reasons: anything above
-    // 32 is success, and anything at or below it is one of the `SE_ERR_*`
-    // codes. It is not an error code `GetLastError` could explain.
-    //
-    // No parent window is passed: this is not a dialog the Hub owns, and a
-    // modal box anchored to a window the user may have hidden would be worse
-    // than one the shell places itself.
+    execute(&wide, operation, &path.display().to_string())
+}
+
+/// Hand the URL to the shell's protocol handler.
+///
+/// The same call as a path: `ShellExecuteW` resolves the target by its form,
+/// and a URL goes to whatever the user's machine associates with that scheme.
+/// Whether the scheme may be handed over is [`super::open_url`]'s check.
+pub fn open_url(url: &str, operation: &str) -> Result<(), ShellError> {
+    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    execute(&wide, operation, url)
+}
+
+/// Run `ShellExecuteW`'s default verb on an already-encoded target.
+///
+/// The return value is an `HINSTANCE` for historical reasons: anything above 32
+/// is success, and anything at or below it is one of the `SE_ERR_*` codes. It is
+/// not an error code `GetLastError` could explain.
+///
+/// No parent window is passed: this is not a dialog the Hub owns, and a modal
+/// box anchored to a window the user may have hidden would be worse than one the
+/// shell places itself.
+fn execute(wide: &[u16], operation: &str, target: &str) -> Result<(), ShellError> {
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -50,7 +68,7 @@ pub fn open_path(path: &Path, operation: &str) -> Result<(), ShellError> {
     if code > 32 {
         Ok(())
     } else {
-        Err(ShellError::new(operation, path, describe_failure(code)))
+        Err(ShellError::new(operation, target, describe_failure(code)))
     }
 }
 

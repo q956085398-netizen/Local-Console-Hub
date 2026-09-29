@@ -11,6 +11,7 @@ import {
   filterSessions,
   groupSessions,
   initialSelectedSessionId,
+  isReady,
   liveCounts,
   sidebarSummaryText,
   titlebarSummaryText,
@@ -102,18 +103,16 @@ export default function App() {
   /**
    * What a session control was asked for.
    *
-   * The lifecycle actions are Session Core's named operations; the rest are
-   * either this shell's own business (copying a path, or a new session: there is
-   * no config writer yet) or a later ticket's (opening a URL or a directory
-   * needs a backend command, T08/T10), and saying so is better than a button
-   * that appears to work.
+   * Every one of these but two is a named Session Core operation (T08 #9 added
+   * the two "open" actions); a new session needs a config writer that does not
+   * exist yet, so it says so rather than being a button that appears to work.
    *
-   * 复制路径 is answered before the connection check, because it is the one
-   * action that reads nothing from the backend: the path is already in the
-   * config this header renders, so the preview workspace can serve it too —
-   * what it copies is exactly what the metadata line is showing. The gate that
-   * matters is `availableActions`': a session with no `cwd` is never offered
-   * the control.
+   * 复制路径 is the other exception, and the only action that reads nothing from
+   * the backend: the path is already in the config this header renders. It is
+   * answered before the connection check so the preview workspace can serve it
+   * too — what it copies is exactly what the metadata line is showing. The gate
+   * that matters is `availableActions`': a session with no `cwd` is never
+   * offered the control.
    */
   const onSessionAction = (action: SessionAction) => {
     const label = SESSION_ACTION_LABELS[action];
@@ -141,6 +140,12 @@ export default function App() {
         break;
       case "force-stop":
         registry.forceStop(selected.config.id);
+        break;
+      case "open-url":
+        registry.openUrl(selected.config.id);
+        break;
+      case "open-directory":
+        registry.openDirectory(selected.config.id);
         break;
       default:
         setNotice(`「${label}」尚未接入`);
@@ -209,7 +214,7 @@ export default function App() {
             config={selected.config}
             runtime={selected.runtime}
             busy={selected.busy ?? false}
-            ready={selected.ready ?? false}
+            ready={isReady(selected.runtime)}
             now={now}
             onAction={onSessionAction}
             onFocusTerminal={() => setTab("terminal")}

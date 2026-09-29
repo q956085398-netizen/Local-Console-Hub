@@ -11,11 +11,13 @@ use serde::Serialize;
 
 /// MVP lifecycle states (spec §4).
 ///
-/// §4 also lists optional `busy`/`ready` runtime flags. Neither exists yet —
-/// nothing produces them until there is a health signal to derive them from
-/// (§12, T08's) — so they are absent from both this enum and the runtime
-/// snapshot. What matters for the state machine is the rule they must obey
-/// when they arrive: they supplement lifecycle state and never replace it.
+/// §4 also lists optional `busy`/`ready` runtime flags, and neither is a status
+/// here — deliberately, and permanently. Since T08 there *is* a health signal
+/// (`SessionRuntime::health`, §12), and `ready` is derived from it on the side
+/// that reads it; `busy` has no source at all in the MVP. What matters for this
+/// table is the rule they obey: they supplement lifecycle state and never
+/// replace it, which is why a service whose port is not listening is still
+/// `Running` and no transition exists for "unhealthy".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
