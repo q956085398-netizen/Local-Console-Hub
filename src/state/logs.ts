@@ -66,25 +66,38 @@ export function currentLogPath(status: LogStatusDto): string | undefined {
   return (status.source === "external" ? status.externalLog : status.logFile) ?? undefined;
 }
 
+/**
+ * The current run's file, and whether it is on disk (`docs/DECISIONS.md`
+ * D-022).
+ *
+ * The card's half of [`LogFileFacts`]: the path is [`currentLogPath`]'s, the
+ * file answer is the status's own — asked of the filesystem when the status
+ * was read, so the card and a run row answer one question one way.
+ */
+export function currentLogFile(status: LogStatusDto): LogFileFacts {
+  return { path: currentLogPath(status), present: status.logFilePresent };
+}
+
 /** Which of the tab's actions this session's policy actually offers. */
 export interface LogActionAvailability {
-  /** Open/reveal/copy the *current* run's file. */
-  openCurrent: boolean;
   /** Commit an `on_error` run's buffer now (`LOGGING.md` §3). */
   saveRunLog: boolean;
   /** Switch a `manual` run's recording, or `null` when the mode is not manual. */
   recording: "start" | "stop" | null;
 }
 
-/** Derive the action set from the effective policy, not from what renders. */
+/**
+ * Derive the action set from the effective policy, not from what renders.
+ *
+ * The file actions are deliberately *not* here: they belong to the file
+ * ([`fileActions`]), and both the card and a run row read them from it.
+ */
 export function logActionAvailability(status: LogStatusDto): LogActionAvailability {
-  const current = currentLogPath(status) !== undefined;
   // `manual` reads its own switch state off the state badge: `capturing` means
   // this run is being recorded right now (`docs/LOGGING.md` §3).
   const recording =
     status.mode === "manual" ? (status.state === "capturing" ? "stop" : "start") : null;
   return {
-    openCurrent: current,
     // Offered whenever the policy *could* produce a file on request. A run
     // that has none yet is the case this exists for, and the backend answers
     // with the reason when there is no run to save — better than a button that
@@ -106,14 +119,43 @@ export function showsSourceBadge(status: LogStatusDto): boolean {
   return !(status.state === "external" && status.source === "external");
 }
 
+/**
+ * What a slot says about a file that is named and not on disk (`DECISIONS.md`
+ * D-022).
+ *
+ * One sentence, used by the card's path row and by a run row alike, so the two
+ * halves of the tab cannot describe the same state in two ways. It states the
+ * fact and stops: neither slot can tell a swept log from an `external`
+ * application's file that has not been written yet, and naming a cause it
+ * never observed is the invention the rest of the tab is built to avoid.
+ */
+const FILE_NOT_ON_DISK = "日志文件不在磁盘上（运行记录保留）";
+
+/**
+ * A named file's path slot: where the file is, or the fact that it is not on
+ * disk (`docs/DECISIONS.md` D-022).
+ *
+ * One expression for both slots — the card's row for the current run and a run
+ * row in the history — so the two halves of the tab cannot describe one state
+ * in two ways. D-022's rule is why the second says only what it knows: neither
+ * slot can tell a swept log from an `external` application's file that has not
+ * been written yet, and naming a cause it never observed would be the
+ * invention the rest of the tab is built to avoid.
+ */
+function filePathText(path: string, present: boolean): string {
+  return present ? path : `${FILE_NOT_ON_DISK} · ${path}`;
+}
+
 /** Path rows for the policy card, in the order a user asks about them. */
 export function logPathEntries(status: LogStatusDto): Array<{ label: string; value: string }> {
   const entries: Array<{ label: string; value: string }> = [];
-  const current = currentLogPath(status);
-  if (current !== undefined) {
+  const current = currentLogFile(status);
+  if (current.path !== undefined) {
     entries.push({
       label: status.source === "external" ? "应用日志" : "当前运行",
-      value: current,
+      // The card's answer to "is the file there?", which is the same answer the
+      // run history gives for the row of the run this card is showing.
+      value: filePathText(current.path, current.present),
     });
   }
   if (isPresent(status.sessionLogDir)) {
@@ -204,18 +246,6 @@ export function runLogPresent(run: RunHistoryEntryDto): boolean {
 }
 
 /**
- * Whether the log a run's record names was there and is gone.
- *
- * The one row state that needs saying out loud: the file the record points at
- * is no longer on disk, so nothing about this row can be opened. Left
- * deliberately neutral — a swept log is retention working as designed, not a
- * lifecycle failure, and colour is lifecycle truth (UI_STYLE_GUIDE §10).
- */
-export function runLogGone(run: RunHistoryEntryDto): boolean {
-  return runHasLog(run) && !runLogPresent(run);
-}
-
-/**
  * Which of one run row's file actions that run actually offers
  * (`docs/LOGGING.md` §9/§10).
  */
@@ -229,21 +259,45 @@ export interface RunFileActions {
 }
 
 /**
- * The file actions one run's row offers.
+ * A file a session's actions act on, and whether it is on disk.
  *
- * Read from the file answer rather than from what happens to render: a run that
- * left no log offers nothing, and a run whose log is not on disk keeps only the
- * folder — the directory survives a sweep, while "open log" and "copy path"
- * would act on a file that is gone. The rule lives here, next to
- * [`logActionAvailability`], so both the session's actions and a row's are
- * asserted without a DOM.
+ * The one shape both call sites read: a run-history row builds it from
+ * `RunHistoryEntryDto` ([`runLogFile`]), the current-run card from
+ * `LogStatusDto` ([`currentLogFile`]). The rule below is written once against
+ * this, so the card and the rows cannot answer "which file actions does this
+ * run offer?" differently — which is what they did while the card asked only
+ * whether a path was named.
  */
-export function runFileActions(run: RunHistoryEntryDto): RunFileActions {
-  if (!runHasLog(run)) {
+export interface LogFileFacts {
+  /** The path the actions act on, when the run names one. */
+  path: string | undefined;
+  /** Whether `path` is a file on disk *right now* (D-022: asked, never stored). */
+  present: boolean;
+}
+
+/**
+ * The file actions a run offers, read from its file facts and nothing else.
+ *
+ * A run that names no file offers nothing, and a run whose file is not on disk
+ * keeps only the folder — the directory survives a sweep, while "open log" and
+ * "copy path" would act on a file that is gone. Never read from the policy or
+ * the state badge: those answer a different question (is this session being
+ * persisted?), and inferring one from the other would make an `off` session
+ * look like a broken one.
+ *
+ * The rule lives here rather than in the panel so both the card's actions and
+ * a row's are asserted without a DOM.
+ */
+export function fileActions(file: LogFileFacts): RunFileActions {
+  if (!isPresent(file.path)) {
     return { open: false, copy: false, folder: false };
   }
-  const gone = runLogGone(run);
-  return { open: !gone, copy: !gone, folder: true };
+  return { open: file.present, copy: file.present, folder: true };
+}
+
+/** A run-history row's file facts. */
+export function runLogFile(run: RunHistoryEntryDto): LogFileFacts {
+  return { path: run.logFile ?? undefined, present: run.logFilePresent };
 }
 
 /**
@@ -251,19 +305,14 @@ export function runFileActions(run: RunHistoryEntryDto): RunFileActions {
  * open there (`docs/LOGGING.md` §9/§10).
  *
  * Three states, one string each — a row with a file, a run that wrote none
- * (§1.2), and a run whose file is not on disk. The wording of the third states
- * the fact and stops: this slot cannot tell a swept log from one an `external`
- * application has not written yet, and naming a cause it did not observe would
- * be the invention the rest of the tab is built to avoid.
+ * (§1.2), and a run whose file is not on disk, in the words the card's path row
+ * uses for the same state ([`filePathText`]).
  */
 export function runFilePathNote(run: RunHistoryEntryDto): string {
   if (!isPresent(run.logFile)) {
     return "未落盘";
   }
-  if (!runLogPresent(run)) {
-    return `日志文件不在磁盘上（运行记录保留） · ${run.logFile}`;
-  }
-  return run.logFile;
+  return filePathText(run.logFile, runLogPresent(run));
 }
 
 /** Run history, newest first, whatever order the source listed it in. */
@@ -291,14 +340,25 @@ export function previewLogStatus(session: SessionView): LogStatusDto {
   const currentRun =
     session.runs.find((run) => run.runId === session.runtime.runId) ??
     runsNewestFirst(session.runs)[0];
+  // The Hub writes no file for an `external` session (D-005), so its current
+  // file is the application's — reported through `externalLog`, never here.
+  const hubWrittenFile = logging.source === "external" ? undefined : currentRun?.logFile;
+  // The file the card acts on, chosen in [`currentLogPath`]'s order: the Hub's
+  // own when there is one, the linked application log otherwise. It is the one
+  // the file answer below has to be about.
+  const cardFile = hubWrittenFile ?? logging.external_path;
   return {
     sessionId: session.config.id,
     mode: logging.mode,
     source: logging.source,
     state: policyState(logging.source, logging.mode),
-    // The Hub writes no file for an `external` session (D-005), so its current
-    // file is the application's — reported through `externalLog`, never here.
-    logFile: logging.source === "external" ? undefined : currentRun?.logFile,
+    logFile: hubWrittenFile,
+    // A fixture run that names a file has one unless the fixture says its file
+    // was swept (`SessionRun.logFilePresent`) — the rule `previewRuns` applies
+    // to the rows. An `external` session's file belongs to the application, so
+    // there is nothing here to ask: a fixture that links one is taken at its
+    // word, exactly as the live path offers the file the config names.
+    logFilePresent: isPresent(cardFile) && currentRun?.logFilePresent !== false,
     externalLog: logging.external_path,
     sessionLogDir: undefined,
     recordsInput: false,

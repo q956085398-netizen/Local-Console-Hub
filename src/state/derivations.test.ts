@@ -271,6 +271,19 @@ describe("availableActions", () => {
     expect(availableActions(terminal, runtime()).directory).toBe(true);
   });
 
+  it("offers 复制路径 on the same gate as the directory it copies", () => {
+    // 目录/打开目录 and 复制路径 act on one thing, so there is one answer to
+    // "is there a directory": a session with no `cwd` shows neither, rather
+    // than a control whose only possible answer is "there is no working
+    // directory".
+    expect(availableActions(config(), runtime()).copyPath).toBe(true);
+    expect(availableActions(config({ cwd: undefined }), runtime()).copyPath).toBe(false);
+    // The gate is the directory's, not the session type's: a shell has a path
+    // to copy too, and needs no URL to be offered one.
+    const shell = config({ sessionType: "terminal", url: undefined, shell: "pwsh" });
+    expect(availableActions(shell, runtime()).copyPath).toBe(true);
+  });
+
   it("scopes force stop to the live window, including Stopping", () => {
     expect(availableActions(config(), runtime()).forceStop).toBe(true);
     expect(availableActions(config(), runtime({ status: "stopping" })).forceStop).toBe(true);

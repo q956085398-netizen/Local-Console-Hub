@@ -215,6 +215,17 @@ pub struct LogStatus {
     pub state: LogState,
     /// The file the Hub writes for the current run, if it is writing one.
     pub log_file: Option<String>,
+    /// Whether the file this status names for the current run is on disk *right
+    /// now* (`docs/DECISIONS.md` D-022).
+    ///
+    /// The same question the run history answers per entry, asked of the file
+    /// the Logs tab's actions would act on: a `captured` session's is
+    /// [`LogStatus::log_file`], and an `external` session's is the
+    /// application's own ([`LogStatus::external_log`], D-005) — the file a
+    /// log action resolves to when it names the current run. Asked on read and
+    /// never written down, so a log removed by hand is answered exactly like
+    /// one retention swept.
+    pub log_file_present: bool,
     /// The application-owned log this session is linked to.
     pub external_log: Option<String>,
     /// Where this session's Hub-written logs live, so the folder can be opened

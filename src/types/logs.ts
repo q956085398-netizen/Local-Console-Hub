@@ -56,6 +56,19 @@ export interface LogStatusDto {
   state: LogStateValue;
   /** The file the Hub writes for the current run, if it is writing one. */
   logFile?: string | null;
+  /**
+   * Whether the file this card names for the current run is on disk right now
+   * (`docs/DECISIONS.md` D-022).
+   *
+   * The same question the run history answers per entry, asked of the file the
+   * card's actions act on — which for an `external` session is
+   * `externalLog`, the application's own (`D-005`), not a Hub-written file it
+   * does not have. Read from the filesystem when the status is read and never
+   * stored, so a log removed by hand is answered exactly like one retention
+   * swept. `false` when the session names no file at all, which is why the
+   * reading rule is "a path **and** this".
+   */
+  logFilePresent: boolean;
   /** The application-owned log this session is linked to (`source: external`). */
   externalLog?: string | null;
   /** Where this session's Hub-written logs live, so the folder can be found
@@ -149,6 +162,7 @@ export function isLogStatusDto(value: unknown): value is LogStatusDto {
     LOG_SOURCES.includes(candidate.source as LogSourceValue) &&
     LOG_STATES.includes(candidate.state as LogStateValue) &&
     optionalString(candidate, "logFile") &&
+    typeof candidate.logFilePresent === "boolean" &&
     optionalString(candidate, "externalLog") &&
     optionalString(candidate, "sessionLogDir") &&
     typeof candidate.recordsInput === "boolean" &&
