@@ -57,6 +57,14 @@ pub const WINDOW_WAIT: Duration = Duration::from_secs(5);
 /// How often the window wait looks again.
 const WINDOW_POLL: Duration = Duration::from_millis(50);
 
+/// How many tree readings in a row may fail before the watcher gives up.
+///
+/// A job object the Hub holds cannot normally fail to answer, so this is the
+/// bound on the "cannot happen" path: enough readings (30 s at [`TREE_TICK`])
+/// that a transient failure does not end the watch, few enough that a real one
+/// does not leave a thread polling forever (D-009).
+const MAX_UNREADABLE_TREE_READINGS: u32 = 60;
+
 /// State shared between the handle and its watcher thread.
 #[derive(Debug)]
 struct Shared {
@@ -404,11 +412,33 @@ impl Shared {
             .spawn(move || {
                 watch_exit_handle(&shared.child, &shared.own_exit);
                 let exit = *lock(&shared.own_exit);
+
                 // Own process gone: the run is over when its tree is, and a
                 // launcher's child can outlive it by hours.
-                while !matches!(backend::tree_pids(&shared.tree), Ok(ref pids) if pids.is_empty()) {
+                //
+                // A tree that cannot be *read* is not an empty one — saying the
+                // run ended there would be a claim nothing confirmed — so the
+                // loop treats it as "not over yet". It does not treat it as
+                // "wait forever" either: readings that keep failing stop the
+                // watcher rather than leave a thread polling for the life of
+                // the Hub (D-009). Settling then falls to whoever asks next,
+                // because `exit_status` reads the process object and the tree
+                // itself; what is lost is the wait, not the answer.
+                let mut unreadable = 0;
+                loop {
+                    match backend::tree_pids(&shared.tree) {
+                        Ok(pids) if pids.is_empty() => break,
+                        Ok(_) => unreadable = 0,
+                        Err(_) => {
+                            unreadable += 1;
+                            if unreadable >= MAX_UNREADABLE_TREE_READINGS {
+                                return;
+                            }
+                        }
+                    }
                     std::thread::sleep(TREE_TICK);
                 }
+
                 *lock(&shared.ended) = Some(exit.unwrap_or(ExitStatus { code: None }));
                 shared.ended_signal.notify_all();
             });

@@ -1144,6 +1144,94 @@ fn a_standalone_application_keeps_its_window_and_outlives_the_hub() {
     kill_tree(pid);
 }
 
+/// A standalone GUI application: the Hub finds the window it opened, and the
+/// application ends itself by that window being closed (#66, spec #59 decisions
+/// 11 and 12; the controllable-GUI half of H10/H12/H13).
+///
+/// This is the shape the mode exists for. The application has a window of its
+/// own, so the Hub renders nothing for it and embeds nothing of it; the run it
+/// started is the thing it can point at, and the window is found through that
+/// run rather than through a name or a title. Closing the window is the
+/// application ending *itself* — the one lifecycle action an unmanaged entry
+/// has — and the Hub reports what happened instead of pretending it did it.
+#[test]
+fn a_standalone_gui_application_is_found_by_its_run_and_ends_through_its_own_window() {
+    // A GUI program every Windows installation ships, with a top-level window
+    // of its own and no save prompt on close. Absolute, like `POWERSHELL`
+    // above, so the test does not depend on how `PATH` is set — and with
+    // forward slashes, because this path lands in a YAML double-quoted scalar,
+    // where a backslash is an escape (Windows accepts either separator).
+    const GUI_APP: &str = "C:/Windows/System32/charmap.exe";
+
+    let work = StandaloneWork::new("gui");
+    let config = format!(
+        "sessions:\n  - id: gui-app\n    name: 字符映射表\n    type: service\n    \
+         cwd: {cwd}\n    command: \"{GUI_APP}\"\n    display: window\n",
+        cwd = work
+            .cwd()
+            .display()
+            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/"),
+    );
+    let fixture = Fixture::new(&config);
+
+    fixture
+        .core
+        .activate("gui-app")
+        .expect("the application opens");
+    let pid = fixture.pid("gui-app");
+
+    // The window it opened belongs to the run the Hub is holding — found by
+    // process, not by title, and reported with the facts a caller can act on.
+    let deadline = Instant::now() + STARTUP;
+    let window = loop {
+        match fixture
+            .core
+            .application_window("gui-app", Duration::from_millis(500))
+        {
+            Some(window) => break window,
+            None if Instant::now() < deadline => continue,
+            None => panic!("the GUI application never presented a window"),
+        }
+    };
+    assert_eq!(
+        window.pid, pid,
+        "the window belongs to the run's own process"
+    );
+    assert!(window.visible, "it is on screen: {window:?}");
+    assert!(!window.owned, "a top-level window is owned by nothing");
+
+    // Bringing it forward is a real request with a real answer; Windows may
+    // refuse the foreground change, and a refusal is an answer, not a failure.
+    let outcome = window.focus();
+    assert!(
+        matches!(
+            outcome,
+            local_console_hub_lib::window::FocusOutcome::Focused
+                | local_console_hub_lib::window::FocusOutcome::Refused
+        ),
+        "{outcome:?}"
+    );
+
+    // Closing the application's own window is the application ending itself.
+    assert!(window.close(), "the close request is delivered");
+
+    fixture.wait_until("the application to end itself", || {
+        !is_alive(pid) && fixture.status("gui-app") != SessionStatus::Running
+    });
+    assert!(
+        matches!(
+            fixture.status("gui-app"),
+            SessionStatus::Exited | SessionStatus::Error
+        ),
+        "a run that ends on its own is Exited (or Error with a failing code), saw {:?}",
+        fixture.status("gui-app")
+    );
+    // Nothing was left behind by the ending: the tree is gone as well.
+    assert!(!is_alive(pid));
+    kill_tree(pid);
+}
+
 /// A standalone entry the user asked the Hub to manage is the Hub's to stop —
 /// and one they did not is not.
 #[test]
@@ -1274,6 +1362,11 @@ impl StandaloneWork {
             cwd = path(self.dir.clone()),
             command = path(self.dir.join("launcher.cmd")),
         )
+    }
+
+    /// The scratch directory a configured command runs in.
+    fn cwd(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// A whole config file with this fixture's launcher as its only entry.

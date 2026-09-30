@@ -27,6 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::DisplayMode;
+use crate::session::core::split_command;
 
 /// What the Hub can say about one launch method.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,12 +57,28 @@ enum LaunchKind {
 
 /// Advise a display mode for `command`, resolved against `cwd` and `PATH`.
 pub fn advise(command: &str, cwd: Option<&str>) -> DisplayAdvice {
-    let Some(token) = first_token(command) else {
+    if command.trim().is_empty() {
         return DisplayAdvice {
             recommended: None,
             reason: "还没有填写启动命令；填写后这里会说明 Hub 能否确认它自带控制台。".to_owned(),
             program: None,
         };
+    }
+
+    // Split the way a *start* splits it (`session::core::split_command`), so
+    // the advice is about the program that would actually run rather than about
+    // what a second tokenizer here believed it read.
+    let token = match split_command(command) {
+        Ok((program, _)) => program.to_string_lossy().into_owned(),
+        Err(reason) => {
+            return DisplayAdvice {
+                recommended: None,
+                reason: format!(
+                    "还无法确认这条命令的启动方式（{reason}）；两种显示方式都可以，请按需要选择。"
+                ),
+                program: None,
+            }
+        }
     };
 
     let Some(program) = resolve(&token, cwd) else {
@@ -106,35 +123,6 @@ pub fn advise(command: &str, cwd: Option<&str>) -> DisplayAdvice {
             program: Some(shown),
         },
     }
-}
-
-/// The first word of a command line, with the same quoting rule the session
-/// layer splits with (`session::core::split_command`).
-///
-/// Only the first word: the program is what decides whether a console appears,
-/// and the arguments after it are the program's business.
-fn first_token(command: &str) -> Option<String> {
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut in_token = false;
-    for character in command.trim().chars() {
-        match character {
-            '"' => {
-                quoted = !quoted;
-                in_token = true;
-            }
-            c if c.is_whitespace() && !quoted => {
-                if in_token {
-                    return Some(current);
-                }
-            }
-            c => {
-                current.push(c);
-                in_token = true;
-            }
-        }
-    }
-    in_token.then_some(current)
 }
 
 /// Where the command's program is, as the OS would find it.
@@ -307,6 +295,33 @@ mod tests {
 
         assert_eq!(advice.recommended, None, "{advice:?}");
         assert!(advice.reason.contains("两种显示方式"), "{advice:?}");
+    }
+
+    /// A command the session layer could not split is one it could not start,
+    /// so there is nothing to be confirmed about its display either — and the
+    /// advice says which of the two it is.
+    #[test]
+    fn a_command_that_cannot_be_split_advises_nothing() {
+        let advice = advise("\"unclosed start.cmd", None);
+
+        assert_eq!(advice.recommended, None, "{advice:?}");
+        assert_eq!(advice.program, None);
+        assert!(advice.reason.contains("还无法确认"), "{advice:?}");
+    }
+
+    /// The program is resolved along `PATH` for a bare name, not only as a path
+    /// relative to the working directory — which is how a user writes
+    /// `python main.py` or `cmd.exe /c run.bat`.
+    #[test]
+    fn a_bare_name_is_resolved_on_the_path() {
+        let advice = advise("cmd.exe /c run.bat", None);
+
+        assert_eq!(advice.recommended, Some(DisplayMode::Window), "{advice:?}");
+        let program = advice.program.expect("a resolved program is reported");
+        assert!(
+            program.to_ascii_lowercase().ends_with("cmd.exe"),
+            "the resolved file is named: {program}"
+        );
     }
 
     /// A command whose program cannot be found advises nothing rather than

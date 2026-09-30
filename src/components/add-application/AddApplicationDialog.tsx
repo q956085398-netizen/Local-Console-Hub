@@ -179,6 +179,20 @@ export function loggingFor(
 }
 
 /**
+ * The logging policy a display mode can carry, given the one in hand.
+ *
+ * A policy that captures Hub-side output cannot survive a switch to a mode
+ * with no Hub console: the config layer refuses that combination, so the form
+ * must not be left holding it (spec #59 decision 8 — an option that would be
+ * rejected is not an option). Switching back to `internal` keeps whatever is
+ * selected, because every policy is legal there.
+ */
+export function legalPolicyFor(mode: DisplayModeValue, policy: string): string {
+  const legal = logPoliciesFor(mode);
+  return legal.some((option) => option.value === policy) ? policy : legal[0].value;
+}
+
+/**
  * The "添加应用" form (#64, spec #59 decision 7).
  *
  * The secondary entry, deliberately apart from "新建 PowerShell": that one
@@ -258,8 +272,15 @@ export default function AddApplicationDialog({
         if (cancelled) return;
         setAdvice(next);
         setAdvisedFor(settled);
-        if (next?.recommended !== undefined) {
-          setDisplay((current) => (displayTouched ? current : next.recommended!));
+        if (next?.recommended !== undefined && !displayTouched) {
+          // The recommendation moves the mode the same way a click would, so
+          // it owes the same consequence: a policy the new mode cannot carry
+          // has to go with it. Skipping that would leave `source: captured`
+          // selected on a mode whose save the config layer refuses — the
+          // "press does nothing" the choice exists to avoid.
+          const recommended = next.recommended;
+          setDisplay(recommended);
+          setPolicy((current) => legalPolicyFor(recommended, current));
         }
       });
     }, RECOMMEND_DEBOUNCE_MS);
@@ -273,12 +294,7 @@ export default function AddApplicationDialog({
   const chooseDisplay = (mode: DisplayModeValue) => {
     setDisplayTouched(true);
     setDisplay(mode);
-    if (mode === "window" && !logPoliciesFor(mode).some((option) => option.value === policy)) {
-      // A policy that captures Hub-side output cannot survive the switch: the
-      // config layer refuses it for this mode, and the file must not be asked
-      // for something it will be rejected for.
-      setPolicy(LOG_POLICIES[0].value);
-    }
+    setPolicy((current) => legalPolicyFor(mode, current));
     if (mode === "internal") setManageLifecycle(false);
   };
 

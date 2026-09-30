@@ -390,6 +390,22 @@ fn resolve_logging(
     // omitted logging block and `mode: auto` cannot diverge.
     let mode = raw.mode.unwrap_or(LogMode::Auto);
 
+    // The two things a standalone entry's own console decides, stated once
+    // rather than as guards on the arms below (#66). It cannot be captured
+    // from — the Hub has no console of that application's — and its `auto`
+    // resolves to "record nothing" instead of the service default, which is
+    // `on_error` with Hub-captured output. Everything else about its logging
+    // (an external log, an explicit contradiction) is the same table as any
+    // other service's.
+    if owns_console {
+        if raw.source == Some(LogSource::Captured) {
+            return Err(owns_its_console(index, id));
+        }
+        if mode == LogMode::Auto && raw.source != Some(LogSource::External) {
+            return Ok(off_none());
+        }
+    }
+
     let effective = match (raw.source, mode) {
         // External: the application owns the log; the Hub only links it.
         (Some(LogSource::External), LogMode::Always | LogMode::Auto) => {
@@ -432,9 +448,6 @@ fn resolve_logging(
             ));
         }
         // Captured: the Hub persists stdout/stderr by policy.
-        (Some(LogSource::Captured), LogMode::Auto) if owns_console => {
-            return Err(owns_its_console(index, id))
-        }
         (Some(LogSource::Captured), LogMode::Auto) => {
             if session_type == SessionType::Terminal {
                 return Err(SessionConfigError::field(
@@ -457,9 +470,6 @@ fn resolve_logging(
                  `source: none`",
             ));
         }
-        (Some(LogSource::Captured), _mode) if owns_console => {
-            return Err(owns_its_console(index, id))
-        }
         (Some(LogSource::Captured), mode) => EffectiveLogging {
             mode: effective_mode(mode),
             source: LogSource::Captured,
@@ -468,7 +478,6 @@ fn resolve_logging(
         // Explicit none, or no source at all with `mode: off`: no
         // persistence either way.
         (Some(LogSource::None), LogMode::Off) | (None, LogMode::Off) => off_none(),
-        (Some(LogSource::None), LogMode::Auto) if owns_console => off_none(),
         (Some(LogSource::None), LogMode::Auto) => {
             if session_type == SessionType::Service {
                 return Err(SessionConfigError::field(
@@ -495,7 +504,6 @@ fn resolve_logging(
             ));
         }
         // Source unspecified: per-type defaults from `docs/LOGGING.md` §3.
-        (None, LogMode::Auto) if owns_console => off_none(),
         (None, LogMode::Auto) => {
             if session_type == SessionType::Service {
                 service_default()

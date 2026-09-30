@@ -321,6 +321,7 @@ restart_session
 create_temporary_terminal
 remove_session
 add_application
+recommend_display
 activate_session
 attach_terminal
 terminal_write

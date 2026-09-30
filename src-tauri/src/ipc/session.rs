@@ -250,15 +250,15 @@ impl From<crate::app::activation::OpenOutcome> for ActivationDto {
         use crate::app::activation::WindowStep;
 
         let window = outcome.window.map(|step| {
-            let (outcome, window) = match &step {
+            let (outcome, found) = match &step {
                 WindowStep::Focused(window) => (WindowOutcomeDto::Focused, Some(window)),
                 WindowStep::Refused(window) => (WindowOutcomeDto::Refused, Some(window)),
                 WindowStep::NoWindow => (WindowOutcomeDto::NoWindow, None),
             };
             WindowStepDto {
                 outcome,
-                title: window.map(|window| window.title.clone()),
-                pid: window.map(|window| window.pid),
+                title: found.map(|window| window.title.clone()),
+                pid: found.map(|window| window.pid),
                 notice: step.notice(),
             }
         });

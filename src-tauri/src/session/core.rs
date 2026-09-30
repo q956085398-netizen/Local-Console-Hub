@@ -295,7 +295,7 @@ impl Run {
     /// The terminal this run hosts, for the operations only a terminal has
     /// (typing into it, resizing it). `None` for a supervised process, which
     /// has no attached stdin in the MVP, and for a standalone application,
-    /// whose console belongs to the application (`docs/DECISIONS.md` D-033).
+    /// whose console belongs to the application (`docs/DECISIONS.md` D-034).
     fn as_terminal(&self) -> Option<&Arc<Pty>> {
         match self {
             Run::Process(_) => None,
@@ -702,7 +702,7 @@ fn removable(temporary: bool, status: SessionStatus, owns_run: bool) -> bool {
 
 /// Refuse a lifecycle action on a run the Hub does not own (#66).
 ///
-/// The lifecycle owner is a property of the entry (`docs/DECISIONS.md` D-033),
+/// The lifecycle owner is a property of the entry (`docs/DECISIONS.md` D-034),
 /// and an `independent` one means exactly this: the Hub started the
 /// application, and the application ends itself. Saying so is the answer rather
 /// than a hidden button, because the two ways out — closing the application's
@@ -3221,6 +3221,10 @@ fn process_spec(
 
 /// Split a configured command line into a program and its arguments.
 ///
+/// `pub(crate)` since #66: the "添加应用" form's display recommendation asks
+/// which program a command would start, and asking a *second* tokenizer would
+/// let the advice be about a program the launch would not run.
+///
 /// The command is run directly rather than through `cmd.exe /C`. That keeps
 /// the run's process id the service's own id — which is what the session
 /// header shows and what the user will find in Task Manager — instead of a
@@ -3231,7 +3235,7 @@ fn process_spec(
 /// is what makes a path like `"C:\Program Files\node\node.exe"` usable. There
 /// is no escape handling beyond that: a literal quote inside an argument is
 /// not expressible yet, and is refused rather than silently mis-split.
-fn split_command(command: &str) -> Result<(PathBuf, Vec<String>), String> {
+pub(crate) fn split_command(command: &str) -> Result<(PathBuf, Vec<String>), String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut quoted = false;

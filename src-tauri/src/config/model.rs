@@ -83,19 +83,14 @@ impl Default for DisplayMode {
 /// appear", lifecycle ownership answers "who ends it", and neither can be
 /// derived from the other — nor from whether output happens to be captured or
 /// whether a port happens to be configured (spec #59 decision 8).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleOwner {
     /// The Hub's rules apply: Stop All and Exit include the run, and stop,
     /// force stop and restart are the same operations they are for a service.
-    ///
-    /// The `Default` because it is what an entry that says nothing about
-    /// lifecycle ownership means (`LifecycleOwner::default_for` is the
-    /// per-display answer, and this is the answer for the Hub-hosted one).
-    #[default]
     Managed,
     /// The application owns its run. `Stop All` and `Exit` leave it alone, and
-    /// the Hub refuses to end it (`docs/DECISIONS.md` D-033).
+    /// the Hub refuses to end it (`docs/DECISIONS.md` D-034).
     Independent,
 }
 

@@ -2,7 +2,7 @@
 //! it (#66).
 //!
 //! An entry configured as `display: window` keeps the window its application
-//! provides (`docs/DECISIONS.md` D-033). The Hub's job then is the one it can
+//! provides (`docs/DECISIONS.md` D-034). The Hub's job then is the one it can
 //! actually do: remember which run it started, find that run's window again
 //! when the user asks for it a second time, and say honestly what happened when
 //! it cannot.

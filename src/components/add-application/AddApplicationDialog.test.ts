@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import AddApplicationDialog, {
   displayHint,
   errorPlacement,
+  legalPolicyFor,
   logPoliciesFor,
   loggingFor,
 } from "./AddApplicationDialog";
@@ -130,6 +131,29 @@ describe("logPoliciesFor", () => {
       "manual",
       "external",
     ]);
+  });
+});
+
+describe("legalPolicyFor", () => {
+  /// The one policy that cannot survive a switch to a standalone entry has to
+  /// go with it — whether the user clicked the mode or the recommendation moved
+  /// it for them. Leaving `on_error`/`always`/`manual` selected would send a
+  /// payload the config layer refuses, which is the "option that does not work"
+  /// the display choice exists to avoid.
+  it("drops a capturing policy when the mode can no longer carry it", () => {
+    for (const capturing of ["on_error", "always", "manual"]) {
+      expect(legalPolicyFor("window", capturing)).toBe("");
+    }
+  });
+
+  it("keeps every policy a standalone entry can carry", () => {
+    for (const legal of ["", "off", "external"]) {
+      expect(legalPolicyFor("window", legal)).toBe(legal);
+    }
+  });
+
+  it("keeps the selection when the Hub-internal mode is chosen again", () => {
+    expect(legalPolicyFor("internal", "on_error")).toBe("on_error");
   });
 });
 

@@ -27,7 +27,7 @@ use crate::session::state::SessionStatus;
 /// A bulk action is the Hub acting on its own behalf, so what it may act on is
 /// exactly the set of entries configured to be the Hub's: a standalone-window
 /// application nobody asked the Hub to manage is left out of Stop All and Exit
-/// (`docs/DECISIONS.md` D-033, spec #59 decision 12).
+/// (`docs/DECISIONS.md` D-034, spec #59 decision 12).
 ///
 /// This is a property of the *entry*, not of the session's state: an
 /// independent application that happens to be stopped is still not the Hub's to
