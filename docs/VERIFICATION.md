@@ -919,6 +919,13 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
 | 前端 `AddApplicationDialog.test.ts`（11 条） | 三个必填项与五个可选项；不出现「独立窗口」字样，只陈述「Hub 内显示」；`loggingFor` 的每种策略都是配置层接受的组合、未指定时不写 `logging:` 块；`errorPlacement` 把后端给字段名落在对应输入框上、没有字段或表单没有这个输入框时退回 banner（含 `logging.path` 只在外部日志策略下才落位） |
 | 前端 `Sidebar.test.ts`（1 条） | 两个入口并存，且不再出现被决策 7 取消的混合文案 |
 
+**CI 上的第一次运行失败在 #65 的用例上（已修，记录在案）。** 本 PR 的第一次 CI
+（`Windows build check`）在 `a_saved_terminal_joins_a_real_config_and_keeps_its_run`
+上失败：它按字节比较保存前后的滚动缓冲，而**活着的 shell 会在命令跑完后补画一次提示符** ——
+那段提示符出现在两次读取之间是 shell 自己的时机，不是保存做了什么。改成比较「到用户当时正在
+读的那一行标记为止」的内容（并保留 `assert_kept` 对 run 与 pid 的判断），保存前后必须一致。
+本地复跑该用例 3 次、整份集成用例 4 次、全量两次均通过。该用例来自 #65，不是本片引入。
+
 **一次偶发失败（不是本片引入，记录在案）。** 一次全量 `cargo test` 里
 `process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree` 失败过一次；该用例与
 本片改动无关（`process` 模块未被本片触碰），随后单独复跑 3 次与全量复跑 8 次全部通过，因此

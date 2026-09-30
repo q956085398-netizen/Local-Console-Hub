@@ -1107,9 +1107,26 @@ fn a_saved_terminal_joins_a_real_config_and_keeps_its_run() {
     assert_eq!(saved.id, id);
     terminal.assert_kept(&fixture);
     assert_eq!(fixture.status(&id), SessionStatus::Running);
+
+    // …and the same output on screen. Compared up to the marker rather than
+    // byte-for-byte: a live shell repaints its prompt as soon as the command
+    // it just ran finishes, so the buffer can gain a prompt at any moment —
+    // including between the two readings here — and that is the shell's
+    // timing, not something saving did. What saving could have changed is
+    // everything up to and including what the user was reading when they
+    // saved it, and that has to be identical. (A duplicate would show up as a
+    // second marker, and a restart as a different run and process — which
+    // `assert_kept` above and this comparison together rule out.)
+    let through_marker = |text: &str| {
+        let end = text
+            .find("LCH-T65-LIVE")
+            .map(|at| at + "LCH-T65-LIVE".len())
+            .expect("the marker the terminal printed before the save");
+        text[..end].to_owned()
+    };
     assert_eq!(
-        fixture.scrollback(&id),
-        scrollback_before,
+        through_marker(&fixture.scrollback(&id)),
+        through_marker(&scrollback_before),
         "the output the user was reading belongs to the run that produced it"
     );
     service.assert_kept(&fixture);
