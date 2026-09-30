@@ -35,6 +35,18 @@
 //! nothing to deliver to) the run falls through to the timeout and then to the
 //! force path.
 //!
+//! ## The run's console
+//!
+//! A run is a console application, and the console it is given is one the
+//! desktop is never asked to show: a console allocated for a run whose parent
+//! has none of its own is handed to whatever the machine uses as its default
+//! terminal application, which puts a stray window on screen titled after the
+//! program being run — one per run (`docs/DECISIONS.md` D-035). The run
+//! therefore shares the Hub's console when the Hub has one, and is started with
+//! `CREATE_NO_WINDOW` when it does not. What the run keeps is a console: it is
+//! what the graceful request above travels through, and removing it would take
+//! the stop ladder's first rung with it.
+//!
 //! A [`ManagedProcess`] owns its run completely: dropping the handle terminates
 //! whatever is left of the run, so a session cannot outlive the supervisor that
 //! accounts for it.
@@ -932,6 +944,32 @@ mod tests {
                 "pid {pid} survived the stop of its run"
             );
         }
+    }
+
+    #[test]
+    fn a_graceful_stop_still_reaches_a_run_whose_console_has_no_window() {
+        // The stop ladder's first rung is a `CTRL_BREAK` aimed at the run's
+        // process group (D-007), and a `CTRL_BREAK` only travels inside one
+        // console. What every run is given is therefore a console — one it
+        // shares with the Hub where the Hub has one, and a windowless one of its
+        // own where it does not (D-035). This pins the half of that trade the
+        // flag could have broken: a requested stop still arrives, and arrives by
+        // the graceful path rather than by the timeout.
+        let run = start();
+
+        let report = run.stop(STOP_TIMEOUT).expect("the run stops");
+
+        assert!(
+            report.graceful_delivered,
+            "the request never reached the run: {report:?}"
+        );
+        assert_eq!(
+            report.outcome,
+            StopOutcome::Exited,
+            "a delivered request must end the run without the force path: {report:?}"
+        );
+        assert!(!run.is_running());
+        assert!(managed_tree(&run).is_empty());
     }
 
     #[test]

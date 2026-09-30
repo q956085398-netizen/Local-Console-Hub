@@ -1087,6 +1087,77 @@ H08 里「托盘退出」这条路径仍未走过（本轮用结束进程代替�
 （端口 24120 无监听）；调试用的应用进程已结束。CDP 脚本与截图留在
 `%TEMP%\lch-65-verification\`，不在仓库里（`git status` 干净）。
 
+### 2026-10-01 — #82 托管 run 不再给桌面留下控制台窗口（D-035）
+
+**做了什么。** 修掉桌面上真的出现过的一个缺陷：一次 agent 会话跑完 `session::core` 的日志用例
+后，留下了 28 个标题为 `C:\WINDOWS\system32\cmd.exe` 的窗口，其中一个写着
+`启动 "cmd.exe" /c echo where-am-i 时 出现错误 2147942632 (0x800700e8)`——那条命令只由受监督
+run 执行。改动只有 `src-tauri/src/process/win.rs`：run 的创建 flag 现在取决于 **Hub 自己有没有
+控制台**（Hub 有时继承，没有时加 `CREATE_NO_WINDOW`）。工作环境为 Windows 11 Pro
+（10.0.26300）、真实用户会话 `q9560`、worktree `silly-perlman-2e920e`；本机的默认终端应用是
+Windows Terminal（`HKCU:\Console\%%Startup` 未设置，实测由它接管新分配的控制台）。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `cargo fmt --all --check` | 通过 |
+| `cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **465 lib + 14 `tests/mvp_matrix.rs`，0 failed**（基线 462 + 14） |
+
+本片新增 3 条用例：`process::win::tests::a_run_gets_no_console_window_only_when_it_has_no_console_to_inherit`
+钉住 flag 规则（有/无 Hub 控制台各两条断言）、`having_a_console_is_read_from_the_consoles_membership`
+钉住「有没有控制台」的读法与 `GetConsoleProcessList` 一致、`process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window`
+钉住优雅停止仍能到达 run 且 `graceful_delivered` 不说谎。
+
+**先复现，再改（本机原生读数）。** 复现要造出报告里的条件——**runner 自己没有控制台**。直接用
+`DETACHED_PROCESS` 跑 `cargo test` 不够：cargo 自己也是控制台程序，窗口会记在 `cargo.exe`
+头上（实测到，属测量噪声）。所以固化下来的工具是
+`scripts/verify-supervised-console-windows.ps1`：它用 `CreateProcessW` + `DETACHED_PROCESS`
+直接跑**测试二进制**，并在整个运行期间轮询桌面上的可见控制台宿主窗口（`EnumWindows` + class 为
+`ConsoleWindowClass` / `CASCADIA_HOSTING_WINDOW_CLASS` + `IsWindowVisible`）。同一个脚本、
+同一条用例的两次运行：
+
+| 运行 | `appeared_visible_console_windows` | 逐条出现记录 |
+| --- | --- | --- |
+| flag 临时改成无条件（= 改动前的行为） | **2** | `WindowsTerminal…title=[Terminal]`、`WindowsTerminal…title=[C:\WINDOWS\system32\cmd.exe]` |
+| 本片改动后 | **0** | 无 |
+
+两次的 `test_result` 都是 `1 passed; 0 failed`（用例本身在两种状态下都通过——泄漏的不是测试的
+结论，而是测试运行期间桌面上的窗口），`runner_exit=0`。`C:\WINDOWS\system32\cmd.exe` 这个标题
+与报告里那 28 个窗口一致。
+
+ConPTY 那条跑了整个 `pty::tests::` 时出现过 4 个窗口，逐个用例隔离后确认是**测试自己的裸
+`std::process::Command` 辅助进程**（`pty/mod.rs` 里的 `taskkill` 与 `powershell`）造成的，单独的
+`an_idle_unread_terminal_stays_alive` 全程 0 个——伪控制台不分配真控制台，本片不动它。
+
+**为决定 flag 做的三组测量（都是本机原生读数，不是推断）。**
+
+1. **控制台归属。** 用 `CreateProcessW` 造两种子进程并读父进程的 `GetConsoleProcessList`：
+   `CREATE_NEW_PROCESS_GROUP` 的子进程**在**父进程的控制台里；再加 `CREATE_NO_WINDOW` 之后
+   **不在**——它拿到自己的一个控制台。子进程自报的读数也一致：`attached=True`、
+   `members=[自己]`、`console_window=0`。所以这个 flag 去掉的是窗口，不是控制台。
+2. **attach 的时序。** 刚 spawn 完立刻 `AttachConsole(子进程)` 失败（`ERROR_INVALID_HANDLE`），
+   等 2 秒后成功；两种 flag 表现相同。停止发生在 run 存活若干秒之后，因此这条不影响交付路径，
+   但它是「不要照抄一个新用例里立刻 attach 的写法」的理由。
+3. **无条件加 flag 的反例（本片最值得记的一条）。** 把 flag 改成无条件后，
+   `a_graceful_stop_still_reaches_a_run_whose_console_has_no_window` 变红，读数是
+   `StopReport { outcome: Forced, exit: 1, graceful_delivered: true }`：事件只在调用者自己的
+   控制台里产生，`GenerateConsoleCtrlEvent` 却报成功，于是报告替一次**没有到达**的请求签了字。
+   这正是 D-035 第 2 条要求 flag 看 Hub 形态、而不是无脑加的原因。
+
+**未执行 / 留待。** 本片**没有启动真实的 Hub 进程**去看桌面：复现用的是「无控制台的测试二进制」
+这一等价形态，没有驱动托盘、任务栏或窗口装饰。因此 H01 与 #69 的组合原生轮次不受影响，也**不**
+记为通过。此外没有在「默认终端应用是 conhost」的机器上复测（那台机器上同样的分配会画一个
+conhost 窗口，而不是 Windows Terminal）；`display: window` 的独立窗口应用（#66/D-034）不在本
+分支、本片未触碰、未测量。前端没有任何改动，`npm` 系列检查本轮未跑。
+
+**清理。** 测量过程只枚举窗口，**没有关闭或移动过任何窗口**（报告里那 28 个是上一次会话手工用
+`WM_CLOSE` 收掉的）；受监督 run 由用例自身结束，每次运行结束后可见控制台宿主窗口都回到 0。
+工具留在仓库里（`scripts/verify-supervised-console-windows.ps1`，与 `verify-shortcut-entry.ps1`
+同一层），每次运行的测试输出在 `%TEMP%\lch-console-windows-<pid>.log`；临时探针与中间读数写在
+worktree 的 `scratch/`，提交前删除（`git status` 干净）。
+
 ---
 
 ## 7. 当前已知缺口与验收边界

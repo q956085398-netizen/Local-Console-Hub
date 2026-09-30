@@ -1103,6 +1103,58 @@ Hub 自己的入口仍然只恢复窗口；系统、IDE 和 AI Agent 起的 Powe
 
 ---
 
+## D-035：托管 run 的控制台不让桌面显示；Hub 有控制台时 run 与它共用
+
+**状态：Accepted（2026-10-01，#82 落地时签认）**
+
+2026-10-01 的一次 agent 会话在跑过 `session::core` 的日志用例后发现桌面上留下 28 个标题为
+`C:\WINDOWS\system32\cmd.exe` 的窗口，其中一个写着「启动 "cmd.exe" /c echo where-am-i 时出现
+错误 2147942632 (0x800700e8)」——那条命令只由 `process` 层的受监督 run 执行。本机复现确认：
+**一个自己没有控制台的进程启动控制台子进程时，Windows 会为它分配一个控制台**，而本机（以及
+默认安装的 Windows 11）把它交给「默认终端应用程序」，于是每次受监督启动都在桌面上留下一个
+标题是「正在运行的程序」的窗口；当 run 在终端程序接管之前就退出（`cmd /c echo` 正是如此）时，
+那个窗口还会以错误对话框的形式留在屏幕上。
+
+因此：
+
+1. **run 不要的是控制台的窗口，不是控制台。** 用 `CREATE_NO_WINDOW`：它的进程仍被分配一个
+   控制台，只是没有窗口。`DETACHED_PROCESS` 会连控制台一起去掉，那样 `CTRL_BREAK` 就没有
+   可投递的地方，D-007 的优雅阶梯会从第一级开始失效——这正是不能选它的理由。
+2. **加不加这个 flag，取决于 Hub 自己有没有控制台。** 实测（`console-shape.ps1` 的
+   `GetConsoleProcessList` 读数）：父进程有控制台时，`CREATE_NEW_PROCESS_GROUP` 的 run 会
+   **继承**那个控制台；加上 `CREATE_NO_WINDOW` 之后 run 不再继承，而是拿到自己的一个无窗口
+   控制台。继承是优雅停止唯一被实测走通的形态（Hub 与 run 共用控制台时
+   `GenerateConsoleCtrlEvent` 直接命中；换成私有控制台后必须靠 `AttachConsole` 兜底，而本机
+   实测**没有一次**用这条路真的结束过 run）。所以规则是：**Hub 有控制台就让 run 继承它**
+   （此时本来就不会多出窗口，`CREATE_NO_WINDOW` 反而会把 run 挪走），**Hub 没有控制台才加
+   `CREATE_NO_WINDOW`**（此时新的控制台本来就会被分配，去掉窗口是纯收益）。
+3. **不改的东西写在这里，免得下次顺手改掉。** `request_graceful_stop` 的机制未动（同控制台
+   直接投递，否则 attach 到 run 的控制台）；D-007 的阶梯未动（超时后仍是强制结束，此时
+   `graceful_delivered` 如实为 `false`）；`display: window` 的独立窗口应用（D-034）**故意**
+   要一个自己的控制台，它不走这条路径。
+4. **第一次验证过的反例值得记住。** 无条件加 `CREATE_NO_WINDOW` 时，
+   `process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window` 会红，
+   而且红得很有教育意义：`StopReport { outcome: Forced, graceful_delivered: true }`——事件
+   只在调用者自己的控制台里产生，`GenerateConsoleCtrlEvent` 却报成功，于是报告替一次没有到达
+   的请求签了字。这条用例因此同时钉住「立刻能到」和「报告不说谎」两件事。
+5. **未变的既有可靠性边界。** attach 到刚创建的控制台会失败（实测 `ERROR_INVALID_HANDLE`），
+   要等控制台就绪后才行——停止发生在 run 存活若干秒之后，所以这不是新引入的限制；`FreeConsole`
+   会废掉调用进程已获得的控制台标准句柄（实测：之后连 `Command::spawn` 都失败），这也是第 3 条
+   不动交付路径的原因之一。
+
+用户可见行为：常驻托盘的 Hub 启动/重启服务时，桌面上不会再出现标题是程序名的控制台窗口；停止
+的语义与顺序完全不变（优雅优先、超时转强制、报告如实）。交互终端（ConPTY 伪控制台）本来就不
+分配真控制台，实测不产生这类窗口，本决策不涉及它。
+
+运维：`process::win::tests::a_run_gets_no_console_window_only_when_it_has_no_console_to_inherit`
+钉住 flag 规则本身（两种 Hub 形态各一条断言），
+`process::win::tests::having_a_console_is_read_from_the_consoles_membership` 钉住「有没有
+控制台」的读法，`process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window`
+钉住优雅停止仍能到达且 `graceful_delivered` 不说谎；原生 before/after（无控制台 runner 下
+可见控制台窗口 2 → 0）与未运行项记在 `docs/VERIFICATION.md` §6。
+
+---
+
 ## 如何修改这些决策
 
 如果实现阶段发现某条决策需要改变：
