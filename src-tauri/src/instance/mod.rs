@@ -111,11 +111,18 @@ impl HandOff {
     /// thing: the user asked for something and it did not happen, and this
     /// process is about to exit either way.
     ///
-    /// A retry of the same delivery is idempotent for the one operation that
-    /// exists today — restoring a window twice is restoring it once. The moment
-    /// an operation is *not* idempotent (spec §3, "相同交付的重试避免重复执行"),
-    /// it is this signature that grows the identity a retry is recognised by;
-    /// inventing one now would be inventing it for a request nobody sends.
+    /// A delivery is attempted **once**, and that is what keeps "相同交付的重试
+    /// 避免重复执行" (spec §3) true now that an operation is not idempotent:
+    /// restoring a window twice is restoring it once, but adding a terminal
+    /// twice is two terminals, so a caller must not retry on this process's
+    /// behalf. Nobody does — the call is made once and its outcome decides the
+    /// exit code — and the sentence a timeout produces says the *Hub* did not
+    /// answer rather than that nothing happened, because a request the Hub took
+    /// and answered too late has already been carried out.
+    ///
+    /// Should a retry ever be wanted, it is this signature that grows the
+    /// identity a retry is recognised by; inventing one now would be inventing
+    /// it for a request nobody sends.
     pub fn deliver(&self, request: Request) -> Result<Response, InstanceError> {
         platform::deliver(&self.pipe_name, request, self.timeout)
     }

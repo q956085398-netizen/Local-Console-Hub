@@ -1,12 +1,27 @@
 //! Launch requests — the app layer's half of "one Hub, and later launches hand
-//! off to it" (#60).
+//! off to it" (#60, #63).
 //!
 //! The instance layer settles *whether* this process is the Hub and carries a
 //! later launch's request to it ([`crate::instance`]); this module is what the
-//! Hub answers with. The answer is deliberately short: the one operation that
-//! exists today restores the window, and it does it with the tray's own
-//! operation, so there is a single definition of what "bring the Hub back"
-//! means (spec §2: "窗口、快捷方式与托盘使用同一应用操作边界").
+//! Hub answers with. Both answers are short. A normal open restores the window,
+//! and it does it with the tray's own operation, so there is a single
+//! definition of what "bring the Hub back" means (spec §2: "窗口、快捷方式与托盘
+//! 使用同一应用操作边界"). A new-terminal request adds a terminal through the
+//! same Session Core call the in-app entry uses (#62), so the shortcut and the
+//! button produce terminals by one path and not two — and it puts the window on
+//! the terminal it just made, which is the half of "新建 PowerShell" that only
+//! the window can do.
+//!
+//! ## Why the Hub makes the terminal itself
+//!
+//! The request could have been handed to the window to carry out, and that
+//! would have been less code. It would also make the answer a lie: the process
+//! that asked would be told "delivered" before a shell existed, and a shortcut
+//! clicked while the page was still loading would be dropped on the floor
+//! (spec §3: 冷启动期间有界接收并等待服务可用，不能静默丢弃). Creating the terminal
+//! here means the answer is about something that really happened — and a
+//! directory that is not there comes back as the reason, to the process whose
+//! user asked for it.
 //!
 //! ## The wait, and why it is not a poll
 //!
@@ -24,9 +39,11 @@
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Wry};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::instance::{Request, RequestHandler, Response};
+use crate::session::core::SessionCore;
 
 /// How long a launch request waits for the Hub to finish starting.
 ///
@@ -36,8 +53,30 @@ use crate::instance::{Request, RequestHandler, Response};
 /// start is this Hub's answer rather than that process's timeout.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// `session-opened` — a launch request made a terminal and the window is to
+/// put the user in it (#63).
+///
+/// A request to the window, not a session event: it says what the user asked
+/// for and carries no lifecycle claim. It is deliberately *not* the tray's
+/// `session-focus-requested` (`crate::tray`), even though both make the window
+/// show a session — a tray row means "let me look at this one", and this means
+/// "the entry you clicked made a terminal; land on it". The window does less
+/// for the first and more for the second.
+pub const SESSION_OPENED: &str = "session-opened";
+
+/// Payload of [`SESSION_OPENED`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOpened {
+    pub session_id: String,
+}
+
 /// What a launch is told when the Hub never got as far as being able to answer.
-const NOT_READY: &str = "已经有一个 Hub 在运行，但它还没有完成启动，未能恢复窗口。\n\n\
+///
+/// Deliberately about the *request* rather than about the window: it answers
+/// both operations now (#63), and a sentence that promised a restore to a
+/// shortcut that asked for a terminal would misdescribe what did not happen.
+const NOT_READY: &str = "已经有一个 Hub 在运行，但它还没有完成启动，未能处理本次请求。\n\n\
                          请稍后重试；本次启动不会另开一个 Hub。";
 
 /// What a launch is told when the running Hub has no window to restore.
@@ -109,6 +148,73 @@ impl<T: Clone> Ready<T> {
     }
 }
 
+/// The session the window has been asked to show, and has not been told about.
+///
+/// A type of its own rather than a field on [`Hub`], and that is not tidiness:
+/// it is the one part of this module a test can reach without dragging the
+/// Tauri application handle — and, through it, the whole window stack — into
+/// the test binary. `cargo test` links that stack into an executable with no
+/// comctl32 v6 manifest, and the loader then refuses the image outright
+/// (`STATUS_ENTRYPOINT_NOT_FOUND`, measured on Windows 11 10.0.26300). A test
+/// that names `Hub` costs every test in the crate its run, so the state worth
+/// asserting is kept where tests can hold it without naming `Hub` at all.
+#[derive(Default)]
+pub struct PendingFocus {
+    state: Mutex<FocusState>,
+}
+
+/// What [`PendingFocus`] holds, behind one lock.
+///
+/// One lock rather than two flags, so "has a window attached" cannot be read
+/// before the ask and written after it — the interleaving that would leave a
+/// value nobody takes.
+#[derive(Default)]
+struct FocusState {
+    /// The ask, until the window that was starting takes it.
+    pending: Option<String>,
+    /// Whether a window has taken one at least once.
+    attached: bool,
+}
+
+impl PendingFocus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask for `session_id` to be shown, until a window has attached.
+    ///
+    /// Replacing rather than queueing: a window that is not attached yet has
+    /// one page load coming, and the last terminal the user asked for is the
+    /// one it should land on.
+    ///
+    /// Not kept once a window has attached, and that is what makes [`take`]'s
+    /// promise true rather than approximate. The window subscribes and *then*
+    /// reads (see `ipc::launch`), so a window that has read is one that will
+    /// hear the next event — keeping a copy for it as well would mean the next
+    /// page load selected a terminal nobody asked about. The narrow case this
+    /// leaves open is a launch that lands while a page is loading *after* an
+    /// earlier page already attached (a WebView reload): the ask is neither
+    /// stored nor heard, so the terminal is made and shown without being
+    /// selected. That is the rarer of the two, and the quieter one — the Hub
+    /// still opens on the terminal the user asked for.
+    ///
+    /// [`take`]: Self::take
+    fn ask(&self, session_id: &str) {
+        let mut state = lock(&self.state);
+        if !state.attached {
+            state.pending = Some(session_id.to_owned());
+        }
+    }
+
+    /// The ask, taken rather than copied — and the window is attached from here
+    /// on, whether or not there was anything to take.
+    pub fn take(&self) -> Option<String> {
+        let mut state = lock(&self.state);
+        state.attached = true;
+        state.pending.take()
+    }
+}
+
 /// The running Hub, as the instance layer's request handler.
 ///
 /// Built before the app exists and published into as the app starts, because
@@ -117,6 +223,11 @@ impl<T: Clone> Ready<T> {
 /// the launches that arrive during its own start-up.
 pub struct Hub {
     ready: Ready<AppHandle<Wry>>,
+    /// The terminal the most recent launch request asked the window to show.
+    ///
+    /// See [`Hub::open_session`] for why an ask that is *also* published as an
+    /// event has to be kept here as well.
+    focus: PendingFocus,
 }
 
 impl Default for Hub {
@@ -129,6 +240,7 @@ impl Hub {
     pub fn new() -> Self {
         Hub {
             ready: Ready::new(),
+            focus: PendingFocus::new(),
         }
     }
 
@@ -140,6 +252,69 @@ impl Hub {
     /// dishonest one.
     pub fn publish(&self, app: AppHandle<Wry>) {
         self.ready.publish(app);
+    }
+
+    /// The session the window has been asked to show and has not been told
+    /// about yet.
+    pub fn take_pending_focus(&self) -> Option<String> {
+        self.focus.take()
+    }
+
+    /// What a new-terminal request does once the Hub can act on it.
+    fn new_terminal(&self, directory: Option<String>) -> Response {
+        let Some(app) = self.ready.wait(READY_TIMEOUT) else {
+            return Response::failed(NOT_READY);
+        };
+        // Unreachable in the running app — the core is managed before
+        // `publish`, and `ready` yields only after it — but answered rather
+        // than assumed: the alternative is a request answered with a hopeful
+        // `delivered` for a terminal that was never made.
+        let Some(core) = app.try_state::<SessionCore>() else {
+            return Response::failed(NOT_READY);
+        };
+
+        match core.create_temporary_terminal(directory.as_deref()) {
+            Ok(created) => {
+                self.open_session(&app, &created.config.id);
+                Response::delivered()
+            }
+            Err(error) => {
+                // The window comes forward even so: the user clicked an entry
+                // and is owed the sight of the Hub whatever it has to say, and
+                // the sentence itself is carried back to the process that
+                // asked (`lib.rs` shows it when this Hub is the one that
+                // answered its own start-up request).
+                crate::tray::show_window(&app);
+                Response::failed(format!("新建终端失败：{}", error.message))
+            }
+        }
+    }
+
+    /// Open the window on `session_id`, and keep the ask for a window that
+    /// cannot hear it yet.
+    ///
+    /// The event is what a window that is already listening acts on — the
+    /// shortcut clicked while the Hub sits in the tray, and the second click of
+    /// a pair. It is not enough on its own: a shortcut that *starts* the Hub is
+    /// answered from `setup`, before the page has loaded, and an event
+    /// published to a page that has no listener yet is simply gone. So the ask
+    /// is stored first and published second, which covers both orders — a
+    /// window that subscribes and then reads ([`crate::ipc::launch`]) is caught
+    /// by whichever half it arrives between.
+    ///
+    /// [`SESSION_OPENED`] rather than the tray's event, because the two asks are
+    /// not the same size: a tray row means "let me look at this session", while
+    /// this means "put me in the terminal you just made" — and the window acts
+    /// on them differently (see `src/app/App.tsx`).
+    fn open_session(&self, app: &AppHandle<Wry>, session_id: &str) {
+        self.focus.ask(session_id);
+        crate::tray::show_window(app);
+        let _ = app.emit(
+            SESSION_OPENED,
+            SessionOpened {
+                session_id: session_id.to_owned(),
+            },
+        );
     }
 }
 
@@ -162,6 +337,10 @@ impl RequestHandler for Hub {
                 }
                 None => Response::failed(NOT_READY),
             },
+            // A normal open must stay a normal open: this arm is the whole of
+            // what a shortcut asking for a shell does differently (stories 10
+            // and 12, and H01's "no terminal comes with an open").
+            Request::NewTerminal { directory } => self.new_terminal(directory),
         }
     }
 }
@@ -234,6 +413,55 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "the wait has to end: {elapsed:?}"
+        );
+    }
+
+    /// Nothing has been asked for on a window that has just opened. The window
+    /// reads this on every start, so an invented id here would move the
+    /// selection on a plain launch.
+    #[test]
+    fn nothing_is_pending_until_something_is_asked_for() {
+        assert_eq!(PendingFocus::new().take(), None);
+    }
+
+    /// The ask is *taken*, not copied: it belongs to the window that was
+    /// starting when the terminal was made, and a value that survived a second
+    /// read would drag the next page load onto an old terminal.
+    #[test]
+    fn a_pending_focus_is_taken_once() {
+        let focus = PendingFocus::new();
+        focus.ask("terminal-1");
+
+        assert_eq!(focus.take().as_deref(), Some("terminal-1"));
+        assert_eq!(focus.take(), None, "the second read has to find nothing");
+    }
+
+    /// The latest ask wins: a window that is not attached yet has one page load
+    /// coming, and the terminal made last is the one it should land on.
+    #[test]
+    fn the_latest_ask_replaces_the_earlier_one() {
+        let focus = PendingFocus::new();
+        focus.ask("terminal-1");
+        focus.ask("terminal-2");
+
+        assert_eq!(focus.take().as_deref(), Some("terminal-2"));
+        assert_eq!(focus.take(), None);
+    }
+
+    /// Once a window has taken an ask, later asks are not kept for it: it
+    /// hears them as events, and a copy left behind would be taken by the next
+    /// page load and move the selection to a terminal nobody asked about.
+    #[test]
+    fn an_ask_after_the_window_attached_is_not_kept() {
+        let focus = PendingFocus::new();
+
+        assert_eq!(focus.take(), None, "the first read attaches the window");
+        focus.ask("terminal-1");
+
+        assert_eq!(
+            focus.take(),
+            None,
+            "a window that has already read hears the event instead"
         );
     }
 

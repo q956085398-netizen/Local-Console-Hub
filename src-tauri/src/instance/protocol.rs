@@ -20,6 +20,16 @@
 //!
 //! The serializer escapes newlines inside strings, so a frame's `\n` is
 //! unambiguous even when a message spans lines.
+//!
+//! ## Two spellings, one grammar
+//!
+//! A request reaches the app in one of two ways: a shortcut starts the process
+//! and the process reads its own command line, or a running Hub reads a frame
+//! off its pipe (#63). Both are the same request, so both are spelled by
+//! [`Request`] and parsed here — a second grammar for the command line would be
+//! a second place for `--new-terminal` to mean something slightly different.
+
+use std::ffi::OsString;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,10 +46,13 @@ const TERMINATOR: u8 = b'\n';
 /// What a later invocation is asking the running Hub to do.
 ///
 /// The enum is the extension point the spec asks for (§3, "显式区分三类启动
-/// 请求"): #62 adds the temporary terminal, #63 the directory it starts in, and
-/// #64–#67 the configured application. Until then there is exactly one
-/// operation, and the Hub rejects anything else by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 请求"): #62 added the temporary terminal and #63 the directory it starts in;
+/// #64–#67 add the configured application. Anything else is rejected by name.
+///
+/// The two spellings of a request — command line and frame — are both checked
+/// against this type, so an operation cannot exist in one and be missing from
+/// the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "camelCase")]
 pub enum Request {
     /// Bring the Hub's window back, in the state it was hidden in.
@@ -48,6 +61,112 @@ pub enum Request {
     /// asked for. It restores — it does not start a session, and it does not
     /// restart or duplicate anything the Hub is already running.
     Open,
+
+    /// Add an interactive terminal to the Hub and put the user in it (#63).
+    ///
+    /// This is what the user's own PowerShell shortcut asks for: the entry was
+    /// not "open the Hub", it was "give me a shell", and the Hub is where that
+    /// shell should live rather than a taskbar of its own (spec §17).
+    ///
+    /// `directory` is the entry's working directory, kept apart from the
+    /// request rather than folded into a command string: it is a *parameter*
+    /// (spec §5), so a path with a space or a CJK name in it is one value and
+    /// not something a shell has to re-split. `None` means the entry named no
+    /// directory, and the terminal opens in the user's home directory — never
+    /// in whatever directory the Hub happens to have been started from.
+    NewTerminal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
+}
+
+/// The command-line flag that asks for [`Request::NewTerminal`] (#63).
+pub const NEW_TERMINAL_FLAG: &str = "--new-terminal";
+
+/// The command-line flag that names the directory the terminal opens in.
+pub const DIRECTORY_FLAG: &str = "--directory";
+
+/// The request this process was started with, from the real command line.
+///
+/// The program name is dropped: what a request is about is never the exe.
+pub fn request_from_env() -> Result<Request, String> {
+    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    from_command_line(&arguments)
+}
+
+/// The request a command line asks for (`argv[0]` already removed).
+///
+/// The shortcut that starts the Hub is a *second* spelling of the pipe's
+/// grammar (module doc), so the flags are handled with the same care the frame
+/// reader shows them: an argument this build does not know stops the launch
+/// with a sentence naming it, rather than being ignored. Ignoring it would be
+/// the worst of the available answers — the user asked their shortcut for a
+/// terminal and got a Hub window instead, with nothing saying why.
+///
+/// Arguments arrive as [`OsString`] because Windows hands a process UTF-16 that
+/// a path with a CJK name survives, and turning it into text is the one step
+/// that can still go wrong: a directory that is not valid Unicode cannot travel
+/// in a JSON frame, so it is refused by its own name rather than lossily
+/// converted into a path that does not exist.
+pub fn from_command_line(arguments: &[OsString]) -> Result<Request, String> {
+    let mut new_terminal = false;
+    let mut directory: Option<String> = None;
+
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = text(&arguments[index])?;
+        match argument.as_str() {
+            NEW_TERMINAL_FLAG => new_terminal = true,
+            DIRECTORY_FLAG => {
+                index += 1;
+                let value = arguments.get(index).ok_or_else(|| {
+                    format!(
+                        "启动参数 `{DIRECTORY_FLAG}` 后面缺少目录。\n\n\
+                         本次启动已停止；请修正快捷方式的目标后再试。"
+                    )
+                })?;
+                directory = Some(text(value)?);
+            }
+            other => {
+                return Err(format!(
+                    "无法理解启动参数 `{other}`。\n\n\
+                     本次启动已停止；请修正快捷方式的目标后再试。\
+                     普通打开不需要任何参数。"
+                ))
+            }
+        }
+        index += 1;
+    }
+
+    match (new_terminal, directory) {
+        (true, directory) => Ok(Request::NewTerminal { directory }),
+        // No flags at all: the entry was clicked and nothing else was asked
+        // for. This is the ordinary open, and it stays the ordinary open.
+        (false, None) => Ok(Request::Open),
+        // A directory on its own has no operation to belong to. Reading it as
+        // "open" would drop what the user asked for; reading it as a terminal
+        // would invent a request nobody sent.
+        (false, Some(_)) => Err(format!(
+            "启动参数 `{DIRECTORY_FLAG}` 只在 `{NEW_TERMINAL_FLAG}` 一起给出时才有意义。\n\n\
+             本次启动已停止；请修正快捷方式的目标后再试。"
+        )),
+    }
+}
+
+/// One argument as the text the request carries.
+///
+/// A lone surrogate in the command line would be a path no API can open, so it
+/// is refused rather than replaced: `to_string_lossy` would hand the Hub a
+/// different path from the one the shortcut names, and a shell that opened
+/// somewhere else is exactly what spec §5 forbids.
+fn text(argument: &OsString) -> Result<String, String> {
+    argument.to_str().map(str::to_owned).ok_or_else(|| {
+        format!(
+            "启动参数 `{}` 不是有效的 Unicode 文本，无法作为目录使用。\n\n\
+             本次启动已停止；请修正快捷方式的目标后再试。",
+            argument.to_string_lossy()
+        )
+    })
 }
 
 /// The Hub's answer to one [`Request`].
@@ -176,17 +295,17 @@ mod tests {
     }
 
     /// An operation this build does not know is refused *by name*, rather than
-    /// being read as the one operation it does know: a newer entry asking for a
-    /// terminal must not get a window instead (spec §3).
+    /// being read as the one operation it does know: a newer entry asking to
+    /// open a configured application must not get a window instead (spec §3).
     #[test]
     fn an_unknown_operation_is_refused_rather_than_read_as_open() {
-        let error = decode_request(br#"{"request":"newTerminal"}"#).expect_err("it is refused");
+        let error = decode_request(br#"{"request":"openApp"}"#).expect_err("it is refused");
 
         let FrameError::Malformed(reason) = error else {
             panic!("an unknown operation is malformed, not {error:?}");
         };
         assert!(
-            reason.contains("newTerminal"),
+            reason.contains("openApp"),
             "the refusal has to name what was asked for: {reason}"
         );
     }
@@ -230,6 +349,153 @@ mod tests {
             decode_request(&frame),
             Err(FrameError::Malformed(_))
         ));
+    }
+
+    /// A command line as the process receives it, `argv[0]` already dropped.
+    fn command_line(arguments: &[&str]) -> Vec<OsString> {
+        arguments.iter().map(OsString::from).collect()
+    }
+
+    /// Clicking the Hub's own entry asks for nothing but the window (story 2,
+    /// H01): the ordinary open stays the ordinary open.
+    #[test]
+    fn a_plain_command_line_is_the_ordinary_open() {
+        assert_eq!(from_command_line(&command_line(&[])), Ok(Request::Open));
+    }
+
+    /// The daily PowerShell shortcut's request (stories 10–11, H04).
+    #[test]
+    fn the_new_terminal_flag_asks_the_hub_for_a_terminal() {
+        assert_eq!(
+            from_command_line(&command_line(&[NEW_TERMINAL_FLAG])),
+            Ok(Request::NewTerminal { directory: None })
+        );
+    }
+
+    /// Story 16 and H06 in one assertion: the directory is carried as the one
+    /// value the shortcut named, spaces and CJK included, and is not split,
+    /// trimmed or otherwise reinterpreted on the way.
+    #[test]
+    fn the_directory_flag_carries_a_path_verbatim() {
+        let directory = r"D:\工作 目录\项目 A";
+
+        assert_eq!(
+            from_command_line(&command_line(&[
+                NEW_TERMINAL_FLAG,
+                DIRECTORY_FLAG,
+                directory
+            ])),
+            Ok(Request::NewTerminal {
+                directory: Some(directory.to_owned())
+            })
+        );
+    }
+
+    /// A shortcut is built by a dialog that may write the arguments in either
+    /// order; which one it picked is not part of what the user asked for.
+    #[test]
+    fn the_flags_do_not_depend_on_their_order() {
+        let directory = r"C:\Program Files";
+
+        assert_eq!(
+            from_command_line(&command_line(&[
+                DIRECTORY_FLAG,
+                directory,
+                NEW_TERMINAL_FLAG
+            ])),
+            from_command_line(&command_line(&[
+                NEW_TERMINAL_FLAG,
+                DIRECTORY_FLAG,
+                directory
+            ]))
+        );
+    }
+
+    /// A directory with no operation to belong to is refused rather than read
+    /// as one of the two: the user asked for something specific and the honest
+    /// answer is that this build cannot tell what it was.
+    #[test]
+    fn a_directory_without_the_new_terminal_flag_is_refused() {
+        let reason = from_command_line(&command_line(&[DIRECTORY_FLAG, r"D:\Work"]))
+            .expect_err("a directory on its own is not a request");
+
+        assert!(reason.contains(DIRECTORY_FLAG), "{reason}");
+        assert!(reason.contains(NEW_TERMINAL_FLAG), "{reason}");
+    }
+
+    /// A flag whose value never arrived stops the launch by name rather than
+    /// being read as "no directory was named" — that reading would open a
+    /// terminal in the home directory while the user was looking at a
+    /// shortcut that names theirs.
+    #[test]
+    fn the_directory_flag_needs_its_value() {
+        let reason = from_command_line(&command_line(&[NEW_TERMINAL_FLAG, DIRECTORY_FLAG]))
+            .expect_err("a flag without its value is not a request");
+
+        assert!(reason.contains(DIRECTORY_FLAG), "{reason}");
+    }
+
+    /// An argument this build does not know is refused *by name*, like an
+    /// unknown frame: newer entries exist, and silently ignoring half of one
+    /// would open the wrong thing.
+    #[test]
+    fn an_unknown_flag_stops_the_launch_by_name() {
+        let reason = from_command_line(&command_line(&["--open-app", "comfyui"]))
+            .expect_err("this build has no such request");
+
+        assert!(reason.contains("--open-app"), "{reason}");
+    }
+
+    /// The wire form of the new request, asserted where a rename would be
+    /// caught: `newTerminal`, and the directory under its own key.
+    #[test]
+    fn a_new_terminal_request_carries_its_directory_on_the_wire() {
+        let request = Request::NewTerminal {
+            directory: Some(r"D:\Work".to_owned()),
+        };
+
+        let frame = encode(&request).expect("a request encodes");
+        assert_eq!(
+            std::str::from_utf8(&frame[..frame.len() - 1]).expect("frames are UTF-8"),
+            r#"{"request":"newTerminal","directory":"D:\\Work"}"#
+        );
+        assert_eq!(
+            decode_request(&frame[..frame.len() - 1]).expect("it decodes back"),
+            request
+        );
+    }
+
+    /// An entry that named no directory says nothing about one, rather than
+    /// saying `null`: the two ends of the pipe are different builds on a
+    /// machine where the app has just been replaced, and an absent field is
+    /// the shape both of them read.
+    #[test]
+    fn a_new_terminal_request_without_a_directory_carries_no_directory() {
+        let frame = encode(&Request::NewTerminal { directory: None }).expect("a request encodes");
+
+        assert_eq!(
+            std::str::from_utf8(&frame[..frame.len() - 1]).expect("frames are UTF-8"),
+            r#"{"request":"newTerminal"}"#
+        );
+        assert_eq!(
+            decode_request(&frame[..frame.len() - 1]).expect("it decodes back"),
+            Request::NewTerminal { directory: None }
+        );
+    }
+
+    /// A terminal request and a window request are told apart on the wire —
+    /// the whole point of the second operation (stories 10 and 12: the same
+    /// shortcut must not be read as "just open the Hub").
+    #[test]
+    fn the_two_operations_are_not_confused_on_the_wire() {
+        let terminal = encode(&Request::NewTerminal { directory: None }).expect("it encodes");
+        let open = encode(&Request::Open).expect("it encodes");
+
+        assert_ne!(terminal, open);
+        assert_ne!(
+            decode_request(&terminal[..terminal.len() - 1]).expect("it decodes"),
+            decode_request(&open[..open.len() - 1]).expect("it decodes")
+        );
     }
 
     #[test]

@@ -40,14 +40,23 @@ pub fn run() {
     // `manage` lives on the `Manager` trait, not on `App` itself.
     use tauri::Manager;
 
-    use instance::{Request, RequestHandler};
+    // The trait, not the type: what this launch asks for is parsed from the
+    // command line, and the request itself is only ever handed on.
+    use instance::RequestHandler;
 
-    // What this launch is asking for. Today the entry can only be *opened*, so
-    // this is a constant rather than a parse of the command line: the
-    // operations that need arguments (#62's temporary terminal, #63's working
-    // directory) are the ones that will decide what their arguments mean, and
-    // guessing at a grammar now would invent a contract nobody sends.
-    let request = Request::Open;
+    // What this launch is asking for. The entry decides: the Hub's own shortcut
+    // opens it, and the user's PowerShell shortcut (#63) asks for a terminal —
+    // possibly in the directory that shortcut names. An argument this build
+    // does not understand stops the launch with the reason, rather than being
+    // ignored: the user asked for something specific and would otherwise get a
+    // window and no explanation.
+    let request = match instance::protocol::request_from_env() {
+        Ok(request) => request,
+        Err(reason) => {
+            dialog::report(&reason);
+            std::process::exit(instance::EXIT_NOT_DELIVERED);
+        }
+    };
 
     // Before anything else — before a registry, a window or a supervisor
     // exists. A process that is not the Hub must never start supervising the
@@ -90,6 +99,11 @@ pub fn run() {
             let (core, config_report) = app::bootstrap(app.handle().clone());
             app.manage(core);
             app.manage(config_report);
+            // The window reads the launch request's selection from this same
+            // value (`ipc::launch`), whichever process made the request: a
+            // hand-off arriving on the pipe and this process's own start-up
+            // both land in this one hub.
+            app.manage(Arc::clone(&hub));
             // After `manage`, so the tray's first menu is built from the real
             // registry instead of briefly showing an empty one.
             tray::install(app.handle())?;
@@ -100,11 +114,25 @@ pub fn run() {
             // This launch's own request, through the same path a handed-off one
             // takes. It is the first thing the pipeline does for real, and the
             // reason the pipeline is not dead code until a second click.
-            let _ = hub.handle(request);
+            //
+            // A request this Hub could not carry out is reported here, because
+            // there is no other process to report it: a normal open has nothing
+            // to fail at, and a terminal the shortcut asked for can fail on the
+            // directory it named or on a machine with no PowerShell. The window
+            // is already up at this point (the request above brought it
+            // forward), so what the user gets is the Hub plus the reason
+            // (story 17, H06).
+            let response = hub.handle(request);
+            if !response.delivered {
+                if let Some(message) = response.message {
+                    dialog::report(&message);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ipc::ping,
+            ipc::launch::take_launch_focus,
             ipc::session::get_config_report,
             ipc::session::list_sessions,
             ipc::session::list_session_configs,

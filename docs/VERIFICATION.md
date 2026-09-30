@@ -883,6 +883,50 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
 **清理。** 临时终端随应用结束，用户配置先备份后原样还原（sha256 一致，备份已删），
 `npm run dev` 的 dev server 已停。
 
+### 2026-10-01 — #63 日常 PowerShell 快捷方式进入 Hub（D-032）
+
+**做了什么。** 用户自己的 PowerShell 快捷方式变成一条命令行请求（`--new-terminal`、
+`--directory <目录>`），由 Hub 自己创建终端并回答请求方；窗口侧「选中并聚焦」由事件与一次
+启动读取共同保证。安装方式是 `scripts/install-powershell-shortcut.ps1`（只改点名的那一个
+`.lnk`，改前备份、`-Restore` 放回、目标不是 shell 或目录不存在时拒绝）。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check` | 通过 |
+| `npm test` | **241 passed / 16 files**（基线 231） |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **403 lib + 11 `tests/mvp_matrix.rs`，0 failed**（基线 389 + 11） |
+
+本片新增 14 条 Rust 用例：`instance::protocol::tests` 的 10 条钉住两种拼写的语法与拒绝路径
+（认识的参数、缺值的 `--directory`、单给目录、不认识的参数、真值往返、无目录时不写 `null`、
+两种操作在线上不被混淆），`app::launch::tests` 的 4 条钉住待选中值的语义（初始为空、取走一次、
+后到覆盖先到、窗口读过之后不再留存）；前端新增 `types/launch.test.ts` 的 9 条钉住新事件的
+载荷守卫。
+
+**第 2 层（原生 Windows）。** `scripts/verify-shortcut-entry.ps1` 用安装脚本在临时目录里造一个
+入口，**29 项 29 PASS**：安装结果与「真实入口形状」（把机器上真实 PowerShell 快捷方式的副本
+交给安装脚本，`%HOMEDRIVE%%HOMEPATH%` 被展开成真实目录，原文件未被改动）、冷启动 / 已运行 /
+托盘隐藏三种状态各新增一个 shell 且全程只有一个 Hub、40 ms 间隔的两次独立点击各新增一个
+shell、无效目录得到含该路径的消息框且 `exit code 1`、无效目录在冷启动时零 shell、普通入口
+只恢复窗口不建终端、外部 PowerShell 未被接管、收尾零残留。逐项实测值见
+`docs/SHORTCUT_ENTRY_ACCEPTANCE.md` §3。
+
+**窗口内证据（DevTools 协议）。** 冷启动（Hub 未运行，直接带 `--new-terminal`）与托盘隐藏后
+再点入口两条，读数都是 `selected` = 刚建出来的那个会话（`PowerShell 1` / `PowerShell 2`）、
+`tab="终端"`、活动元素是 `TEXTAREA.xterm-helper-textarea`，即**终端拿到了键盘**。冷启动那条
+正是「事件发给还没有监听者的页面」的场景，实测证明 `take_launch_focus` 的启动读取补上了它。
+这条路径走的是本片新增的 `session-opened`；托盘的 `session-focus-requested` 保持只选中，
+交付时的行为没有被顺手改掉（D-032 第 3 条）。
+
+**实测踩到、值得记住的一条。** 裸的 `cargo build --release` 不带 `custom-protocol` 特性，
+产物会去加载 `devUrl`，窗口内容是连接错误页——进程与窗口计数不受影响，但要代表产品的那一轮
+必须用 `npm run tauri build`（§3 的构建说明写明了）。
+
+**未执行 / 留待。** 被测入口是临时目录里的入口，不是用户桌面上的那一个（脚本反向断言了用户
+自己的快捷方式未被改动）；图标一致性、安装版复测与组合流程归 #69。
+
 ---
 
 ## 7. 当前已知缺口与验收边界
@@ -899,6 +943,10 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
   通过 WebView2 的 DevTools 通道驱动了真实窗口（真实 IPC 与真实 ConPTY），因此 H03 与
   H05/H07/H08 的主体有了窗口内证据；但输入不是 OS 级 `SendInput`，托盘与任务栏未参与，
   H14/H15/H16 仍归 #69 的组合原生验收，且该轮出现过两个无法归因的额外临时终端（见 §6）。
+- **#63 的快捷方式入口已在临时入口上验完，用户自己的入口未动。** 2026-10-01 那一轮用安装脚本
+  在临时目录里造入口，测到 27/27 通过（冷启动 / 已运行 / 托盘隐藏 / 近乎同时 / 无效目录），
+  并在真实窗口上读到新终端被选中且拿到键盘。用户桌面上那个入口**故意没被改动**，安装脚本只
+  断言它未被改动；图标一致性与安装版复测归 #69，见 §6。
 - **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
   一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
   DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。
