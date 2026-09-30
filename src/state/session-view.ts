@@ -89,6 +89,29 @@ export const LIVE_GROUP: WorkloadGroup = {
   hint: "config.yaml",
 };
 
+/**
+ * The group temporary terminals are filed under (#62).
+ *
+ * The first thing in the product that a live session can be grouped by, and it
+ * is not a classification the config invented: a temporary terminal really did
+ * come from somewhere else, and the difference is the one the user acts on —
+ * these are the rows that go away. The wording is the approved V2 reference's
+ * `TEMPORARY` / 用完即走的终端, which the fixture workspace already used.
+ */
+export const TEMPORARY_GROUP: WorkloadGroup = {
+  id: "temporary",
+  label: "Temporary",
+  hint: "用完即走的终端",
+};
+
+/** The workload group a session belongs to. */
+export function groupForConfig(config: SessionConfigDto): string {
+  return config.temporary ? TEMPORARY_GROUP.id : LIVE_GROUP.id;
+}
+
+/** The groups a live workspace declares, in rail order. */
+export const LIVE_GROUPS: readonly WorkloadGroup[] = [LIVE_GROUP, TEMPORARY_GROUP];
+
 /** The snapshot a registered session reports before it has ever been read. */
 export function stoppedRuntime(config: SessionConfigDto): SessionRuntimeDto {
   return {
@@ -126,6 +149,6 @@ export function sessionsFromLive(
     config,
     runtime: byId.get(config.id) ?? stoppedRuntime(config),
     runs: [],
-    group: LIVE_GROUP.id,
+    group: groupForConfig(config),
   }));
 }

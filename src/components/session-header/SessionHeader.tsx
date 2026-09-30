@@ -183,6 +183,21 @@ export default function SessionHeader({
                   </MenuItem>
                 )}
                 <div className="more-menu__separator" role="separator" />
+                {config.temporary === true && (
+                  <MenuItem
+                    destructive
+                    disabled={!actions.remove}
+                    title={
+                      actions.remove ? "从列表去掉这个临时终端及它保留的输出" : "先结束终端再移除"
+                    }
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("remove-session");
+                    }}
+                  >
+                    移除临时终端
+                  </MenuItem>
+                )}
                 <MenuItem
                   destructive
                   disabled={!actions.forceStop}

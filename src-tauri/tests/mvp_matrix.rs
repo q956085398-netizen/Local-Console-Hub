@@ -841,3 +841,94 @@ fn a_sessions_log_path_is_resolved_from_the_session_not_from_a_caller() {
         "the folder the log lived in is still openable: {folder:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The quick entry (#62)
+// ---------------------------------------------------------------------------
+
+/// "新建 PowerShell" on top of a workspace that came from a config file.
+///
+/// The composition this file exists for: a real config file goes through the
+/// bootstrap path, a temporary terminal is created *on top of it* and runs a
+/// real shell, and removing it takes the workspace back to exactly what the
+/// file says — including after a fresh load, which is what "真正退出不恢复未保存
+/// 的临时终端" means for a session that was never written down (stories 6–9,
+/// 21–23).
+#[test]
+fn the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    let config_before =
+        std::fs::read(&fixture.paths.config_file).expect("the config file is readable");
+
+    let created = fixture
+        .core
+        .create_temporary_terminal(Some(&fixture.root.to_string_lossy()))
+        .expect("the quick entry creates a terminal");
+    let id = created.config.id.clone();
+
+    // A real shell, in the registry, alongside the configured sessions.
+    assert_eq!(created.runtime.status, SessionStatus::Running);
+    assert_eq!(
+        created.config.cwd.as_ref(),
+        Some(&fixture.root),
+        "the directory the entry named is the one the shell opened in"
+    );
+    let entries = fixture.core.entries();
+    assert_eq!(
+        entries.len(),
+        4,
+        "three configured sessions and the new one"
+    );
+    let entry = entries
+        .iter()
+        .find(|entry| entry.config.id == id)
+        .expect("the created session is in the registry");
+    assert!(entry.temporary, "the row is the removable kind");
+    assert_eq!(
+        entries.iter().filter(|entry| !entry.temporary).count(),
+        3,
+        "the configured sessions did not become temporary"
+    );
+
+    // And it is a terminal the user can actually work in (story 18).
+    fixture.send(&id, &marker("LCH-T62", "LIVE"));
+    fixture.expect_in_scrollback(&id, "LCH-T62-LIVE");
+
+    fixture.send(&id, "exit");
+    fixture.wait_until("the temporary shell to end", || {
+        fixture.status(&id) == SessionStatus::Exited
+    });
+    assert!(
+        fixture.scrollback(&id).contains("LCH-T62-LIVE"),
+        "an ended temporary terminal keeps the output of its run"
+    );
+
+    fixture
+        .core
+        .remove_session(&id)
+        .expect("an ended temporary terminal is removable");
+    assert_eq!(fixture.core.snapshots().len(), 3);
+    assert!(
+        fixture.core.terminal_buffer(&id).is_none(),
+        "a removed terminal's scrollback is released"
+    );
+
+    // The workspace is what the file says: nothing was written to it, and a
+    // fresh load of the same file does not bring the temporary terminal back.
+    assert_eq!(
+        std::fs::read(&fixture.paths.config_file).expect("the config file is readable"),
+        config_before,
+        "the quick entry must not touch the config file"
+    );
+    let reloaded = load_from_file(&fixture.paths.config_file).expect("the config file is readable");
+    let restored = SessionCore::without_listener();
+    for session in reloaded.sessions {
+        restored.register(session).expect("the config registers");
+    }
+    assert_eq!(
+        restored.entries().len(),
+        3,
+        "a temporary terminal is never restored"
+    );
+    assert!(restored.entries().iter().all(|entry| !entry.temporary));
+}

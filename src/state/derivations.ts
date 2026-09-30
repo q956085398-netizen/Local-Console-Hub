@@ -197,6 +197,15 @@ export interface ActionAvailability {
    * Available for the whole live window, including Stopping: skipping the
    * grace period is exactly what this action is for. */
   forceStop: boolean;
+  /**
+   * Remove this session from the list (#62).
+   *
+   * A temporary terminal's own action, offered once its run has ended: that is
+   * when there is nothing left to own and the row is only holding scrollback
+   * (story 22). A configured session never gets it — it lives in the config
+   * file, and Session Core refuses the removal anyway.
+   */
+  remove: boolean;
 }
 
 /** Derive the header action set for the current lifecycle state. */
@@ -219,6 +228,7 @@ export function availableActions(
     directory: hasDirectory,
     copyPath: hasDirectory,
     forceStop: isLive(runtime.status),
+    remove: config.temporary === true && idle,
   };
 }
 

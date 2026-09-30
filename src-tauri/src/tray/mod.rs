@@ -182,14 +182,19 @@ impl<R: Runtime> EventSink for TraySink<R> {
 
 /// Whether an event can change what the tray shows.
 ///
-/// The tray renders sessions and their counts, so exactly two of §9's events
-/// matter. A run record or a batch of terminal output says nothing the tray
-/// displays, and rebuilding a menu per output batch would spend §14's idle
-/// budget on a surface that did not change.
+/// The tray renders sessions and their counts, so four of §9's events matter:
+/// a session's state, the counts, and — since the registry's membership can
+/// change while the app runs (#62) — a session entering or leaving it. A run
+/// record or a batch of terminal output says nothing the tray displays, and
+/// rebuilding a menu per output batch would spend §14's idle budget on a
+/// surface that did not change.
 pub fn changes_the_tray(event: &SessionEvent) -> bool {
     matches!(
         event,
-        SessionEvent::StateChanged(_) | SessionEvent::AppSummaryChanged(_)
+        SessionEvent::StateChanged(_)
+            | SessionEvent::Created(_)
+            | SessionEvent::Removed(_)
+            | SessionEvent::AppSummaryChanged(_)
     )
 }
 
@@ -454,8 +459,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
-    use crate::session::event::{AppSummary, AppSummaryChanged, RunRecordUpdated, TerminalOutput};
+    use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource, SessionConfigDto};
+    use crate::session::event::{
+        AppSummary, AppSummaryChanged, RunRecordUpdated, SessionCreated, SessionRemoved,
+        TerminalOutput,
+    };
     use crate::session::runtime::{RunId, RunRecord, SessionRuntime, Timestamp};
     use crate::session::terminal::OutputBatch;
 
@@ -470,17 +478,48 @@ mod tests {
         )
     }
 
-    /// The tray is rebuilt for the two events it can render from, and for
-    /// nothing else — the difference between a tray that tracks the registry
-    /// and one that redraws itself on every terminal keystroke (§14).
+    fn created_config() -> SessionConfigDto {
+        SessionConfigDto {
+            id: "terminal-1".to_owned(),
+            name: "PowerShell 1".to_owned(),
+            session_type: "terminal".to_owned(),
+            cwd: Some(r"C:\Users\example".to_owned()),
+            command: None,
+            url: None,
+            port: None,
+            purpose: None,
+            close_impact: None,
+            shell: Some("powershell".to_owned()),
+            initial_command: None,
+            logging: crate::config::EffectiveLoggingDto {
+                mode: "off".to_owned(),
+                source: "none".to_owned(),
+                external_path: None,
+            },
+            temporary: true,
+        }
+    }
+
+    /// The tray is rebuilt for the events it can render from, and for nothing
+    /// else — the difference between a tray that tracks the registry and one
+    /// that redraws itself on every terminal keystroke (§14).
     #[test]
-    fn only_state_and_summary_events_reach_the_tray() {
+    fn only_registry_and_state_events_reach_the_tray() {
         assert!(changes_the_tray(&SessionEvent::StateChanged(
             crate::session::event::SessionStateChanged {
                 session_id: "comfyui".to_owned(),
                 runtime: runtime(),
             }
         )));
+        // #62: a temporary terminal appearing or leaving changes the tray's
+        // session list, and its summary line, with no state event to follow.
+        assert!(changes_the_tray(&SessionEvent::Created(SessionCreated {
+            session_id: "terminal-1".to_owned(),
+            config: created_config(),
+        })));
+        assert!(changes_the_tray(&SessionEvent::Removed(SessionRemoved {
+            session_id: "terminal-1".to_owned(),
+        })));
         assert!(changes_the_tray(&SessionEvent::AppSummaryChanged(
             AppSummaryChanged {
                 summary: AppSummary {

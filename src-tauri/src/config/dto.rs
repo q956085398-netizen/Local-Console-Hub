@@ -71,6 +71,31 @@ pub struct SessionConfigDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_command: Option<String>,
     pub logging: EffectiveLoggingDto,
+    /// Whether this session lives only in memory (#62): created from the
+    /// window rather than loaded from the config file, removable once it has
+    /// ended, and never restored after the app exits.
+    ///
+    /// Omitted when false — a configured session's payload does not change,
+    /// and every reader keeps the meaning it already had for it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub temporary: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl SessionConfigDto {
+    /// The same DTO, marked as describing a temporary session.
+    ///
+    /// A builder rather than a conversion from the session layer: the flag is
+    /// registry provenance, not a property of the configuration, so the
+    /// config layer is told which one it is describing instead of having to
+    /// ask a layer above it.
+    pub fn temporary(mut self) -> Self {
+        self.temporary = true;
+        self
+    }
 }
 
 /// One actionable configuration problem for the frontend to surface.
@@ -126,6 +151,10 @@ impl From<&SessionConfig> for SessionConfigDto {
             shell: config.shell.clone(),
             initial_command: config.initial_command.clone(),
             logging: EffectiveLoggingDto::from(&config.logging),
+            // Provenance is the registry's to state, not the configuration's:
+            // a config loaded from the file is never a temporary session, and
+            // the one place that registers a temporary one says so.
+            temporary: false,
         }
     }
 }
@@ -224,6 +253,23 @@ mod tests {
         assert_eq!(value["mode"], "always");
         assert_eq!(value["source"], "external");
         assert_eq!(value["externalPath"], "D:/Tools/app/data/access.log");
+    }
+
+    /// A temporary session says so (`#62`); a configured one does not, so its
+    /// payload is exactly what every existing reader already expects.
+    #[test]
+    fn only_a_temporary_session_carries_the_flag() {
+        let configured = serde_json::to_value(SessionConfigDto::from(&sample_session()))
+            .expect("dto serializes");
+        assert!(
+            configured.get("temporary").is_none(),
+            "a configured session must not claim to be temporary: {configured}"
+        );
+
+        let temporary = serde_json::to_value(SessionConfigDto::from(&sample_session()).temporary())
+            .expect("dto serializes");
+        assert_eq!(temporary["temporary"], serde_json::json!(true));
+        assert_eq!(temporary["id"], serde_json::json!("sillytavern"));
     }
 
     #[test]

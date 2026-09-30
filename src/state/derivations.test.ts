@@ -34,7 +34,7 @@ import {
   typeLabel,
 } from "./derivations";
 import { FIXTURE_GROUPS } from "./fixtures";
-import type { SessionView } from "./session-view";
+import { sessionsFromLive, type SessionView } from "./session-view";
 
 function config(overrides: Partial<SessionConfigDto> = {}): SessionConfigDto {
   return {
@@ -230,7 +230,36 @@ describe("liveCounts / summaries", () => {
   });
 });
 
+describe("sessionsFromLive", () => {
+  it("files a temporary terminal under its own group, and nothing else there", () => {
+    const views = sessionsFromLive(
+      [config({ id: "svc" }), config({ id: "term", sessionType: "terminal", temporary: true })],
+      [],
+    );
+
+    expect(views.map((view) => view.group)).toEqual(["configured", "temporary"]);
+    // A session whose snapshot has not been read is rendered stopped, which is
+    // what makes a row that just appeared renderable before its first state
+    // event lands (`stoppedRuntime`).
+    expect(views[1]?.runtime.status).toBe("stopped");
+  });
+});
+
 describe("availableActions", () => {
+  // Removing is a temporary terminal's action, and only once it has ended
+  // (#62): a running one still owns a process tree, and a configured one
+  // belongs to the config file.
+  it("offers removal for an ended temporary terminal and nobody else", () => {
+    const ended = runtime({ status: "exited" });
+    expect(availableActions(config({ temporary: true }), ended).remove).toBe(true);
+    expect(availableActions(config({ temporary: true }), runtime()).remove).toBe(false);
+    expect(
+      availableActions(config({ temporary: true }), runtime({ status: "starting" })).remove,
+    ).toBe(false);
+    expect(availableActions(config(), ended).remove).toBe(false);
+    expect(availableActions(config({ temporary: false }), ended).remove).toBe(false);
+  });
+
   it("offers Start only when idle, Stop only when live", () => {
     const running = availableActions(config(), runtime());
     expect(running.start).toBe(false);

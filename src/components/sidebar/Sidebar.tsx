@@ -19,6 +19,7 @@ export interface SidebarProps {
   query: string;
   onQueryChange: (query: string) => void;
   onSelect: (sessionId: string) => void;
+  /** The quick entry (#62): one click, one interactive terminal. */
   onAdd: () => void;
 }
 
@@ -40,7 +41,13 @@ export default function Sidebar({
           <p className="sidebar__title">受管会话</p>
           <p className="sidebar__counts">{summary}</p>
         </div>
-        <button type="button" className="sidebar__add-icon" aria-label="新建会话" onClick={onAdd}>
+        <button
+          type="button"
+          className="sidebar__add-icon"
+          title="新建 PowerShell"
+          aria-label="新建 PowerShell"
+          onClick={onAdd}
+        >
           <Plus size={14} />
         </button>
       </div>
@@ -78,9 +85,13 @@ export default function Sidebar({
         {groups.length === 0 && <p className="sidebar__empty">没有匹配的受管会话。</p>}
       </div>
       <div className="sidebar__foot">
+        {/* Spec #59 decision 7 keeps the two entries apart: this one creates a
+            terminal immediately, and the form-based "添加应用" entry is a
+            different control. The reference's mixed wording is what that
+            decision cancels, so the label is the plain one. */}
         <button type="button" className="sidebar__add" onClick={onAdd}>
           <Terminal size={14} />
-          新建 PowerShell / 服务
+          新建 PowerShell
         </button>
       </div>
     </div>

@@ -85,6 +85,32 @@
   overflow-wrap: anywhere;
 }
 
+/* The empty workspace's quick entry (#62): same restrained card as the
+ * registry status above it, with the one action the screen is for. */
+.workspace__quick-entry {
+  box-sizing: border-box;
+  width: min(100%, 720px);
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  text-align: center;
+}
+
+.workspace__quick-entry-title {
+  margin: 0;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.workspace__quick-entry-hint {
+  margin: 4px 0 12px;
+  color: var(--muted-fg);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* Narrow widths: the rail becomes an overlay drawer so the terminal keeps
  * priority (UI_STYLE_GUIDE §11). */
 .app-main--narrow {

@@ -1,11 +1,19 @@
-import { isConfigReportDto, isSessionConfigDto, type ConfigReportDto } from "../types/config";
 import {
+  isConfigReportDto,
+  isSessionConfigDto,
+  type ConfigReportDto,
+  type SessionConfigDto,
+} from "../types/config";
+import {
+  isSessionCreatedDto,
+  isSessionRemovedDto,
   isSessionRuntimeDto,
   isSessionStateChangedDto,
   sessionErrorMessage,
+  type CreatedSessionDto,
   type SessionRuntimeDto,
 } from "../types/runtime";
-import { sessionsFromLive, type SessionView } from "./session-view";
+import { groupForConfig, sessionsFromLive, stoppedRuntime, type SessionView } from "./session-view";
 import { retryDelayMs } from "./retry-schedule";
 
 /** The Tauri operations needed to establish a consistent live session view. */
@@ -28,6 +36,25 @@ export interface SessionRegistrySnapshot {
   configReportError: string | null;
 }
 
+/**
+ * What a running registry watch offers besides reporting (#62).
+ *
+ * The two verbs are the ones a caller can know something the event stream has
+ * not delivered yet: a command that created a session answered with it, and
+ * one that removed a session answered that it was removed. Both are the same
+ * facts the `session-created` / `session-removed` events carry, applied
+ * idempotently — so an answer that arrives before its event, after it, or
+ * without it leaving the view in one state.
+ */
+export interface SessionRegistryController {
+  /** Stop watching. Every late result is invalidated. */
+  stop(): void;
+  /** The backend answered that this session exists. */
+  adopt(created: CreatedSessionDto): void;
+  /** The backend answered that this session is gone. */
+  forget(sessionId: string): void;
+}
+
 /** Limit on unique session events retained before the initial config is known. */
 export const MAX_BUFFERED_SESSION_EVENTS = 256;
 
@@ -39,11 +66,31 @@ export const MAX_BUFFERED_SESSION_EVENTS = 256;
  * overlaid on the snapshot, so an older response cannot undo a newer event.
  * Events are never used to invent config rows. Both the event cache and retry
  * cadence are bounded, and stopping the watch invalidates every late result.
+ *
+ * ## Sessions that appear and disappear (#62)
+ *
+ * Since the quick entry exists, the registry's *membership* changes while the
+ * app is running, and it changes from the backend's side: `session-created`
+ * and `session-removed` are how every listener learns about it. A creation
+ * carries the configuration, which is the half a state event cannot — without
+ * it a listener would have to re-read `list_session_configs` for a change it
+ * was just told about, which is the polling this protocol exists to avoid.
+ *
+ * The same three-way discipline the state events follow applies to membership:
+ * applied in arrival order once the snapshot is ready, retained and merged if
+ * it arrives while the snapshot is still coming, and dropped for a listener
+ * that has already stopped. A removal is applied last, so a session created
+ * and removed inside one initialization window does not come back.
+ *
+ * `adopt`/`forget` are the command-answer half of the same two facts. A row
+ * that arrived from an event is left alone by them: the caller's answer is a
+ * moment older than the newest event, so it may fill a gap but never overwrite
+ * one.
  */
 export function watchSessionRegistry(
   backend: SessionRegistryBackend,
   report: (snapshot: SessionRegistrySnapshot) => void,
-): () => void {
+): SessionRegistryController {
   let stopped = false;
   let generation = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -59,10 +106,17 @@ export function watchSessionRegistry(
   let configuredIds: Set<string> | null = null;
   let unlisten: (() => void) | undefined;
   const bufferedEvents = new Map<string, SessionRuntimeDto>();
-  let bufferedEventsOverflowed = false;
+  /** Configurations announced before the snapshot was ready, by id. */
+  const bufferedCreations = new Map<string, SessionConfigDto>();
+  /** Sessions announced as gone before the snapshot was ready. */
+  const bufferedRemovals = new Set<string>();
+  let bufferOverflowed = false;
 
   const publish = () =>
     report({ phase, sessions, error, sessionRevision, configReport, configReportError });
+
+  /** Whether the snapshot is settled enough to apply membership changes to. */
+  const ready = () => configuredIds !== null && phase === "ready";
 
   const remember = (runtime: SessionRuntimeDto) => {
     bufferedEvents.delete(runtime.sessionId);
@@ -70,8 +124,66 @@ export function watchSessionRegistry(
     if (bufferedEvents.size > MAX_BUFFERED_SESSION_EVENTS) {
       const oldest = bufferedEvents.keys().next().value;
       if (oldest !== undefined) bufferedEvents.delete(oldest);
-      bufferedEventsOverflowed = true;
+      bufferOverflowed = true;
     }
+  };
+
+  const rememberCreation = (config: SessionConfigDto) => {
+    bufferedRemovals.delete(config.id);
+    bufferedCreations.delete(config.id);
+    bufferedCreations.set(config.id, config);
+    if (bufferedCreations.size > MAX_BUFFERED_SESSION_EVENTS) {
+      const oldest = bufferedCreations.keys().next().value;
+      if (oldest !== undefined) bufferedCreations.delete(oldest);
+      bufferOverflowed = true;
+    }
+  };
+
+  const rememberRemoval = (sessionId: string) => {
+    bufferedCreations.delete(sessionId);
+    bufferedEvents.delete(sessionId);
+    bufferedRemovals.add(sessionId);
+    if (bufferedRemovals.size > MAX_BUFFERED_SESSION_EVENTS) {
+      const oldest = bufferedRemovals.values().next().value;
+      if (oldest !== undefined) bufferedRemovals.delete(oldest);
+      bufferOverflowed = true;
+    }
+  };
+
+  const viewOf = (config: SessionConfigDto, runtime?: SessionRuntimeDto): SessionView => ({
+    config,
+    runtime: runtime ?? stoppedRuntime(config),
+    runs: [],
+    group: groupForConfig(config),
+  });
+
+  /** Apply a creation to the rendered list, in arrival order. */
+  const addSession = (config: SessionConfigDto) => {
+    if (configuredIds === null) return;
+    const existing = sessions.findIndex((session) => session.config.id === config.id);
+    if (existing >= 0) {
+      // A repeat of the same fact (its event and its command answer) is not a
+      // change: nothing is published for it.
+      if (sessions[existing].config === config) return;
+      const next = [...sessions];
+      next[existing] = viewOf(config, sessions[existing].runtime);
+      sessions = next;
+    } else {
+      sessions = [...sessions, viewOf(config)];
+    }
+    configuredIds.add(config.id);
+    sessionRevision += 1;
+    publish();
+  };
+
+  /** Apply a removal to the rendered list. */
+  const dropSession = (sessionId: string) => {
+    if (configuredIds === null || !configuredIds.has(sessionId)) return;
+    configuredIds.delete(sessionId);
+    bufferedEvents.delete(sessionId);
+    sessions = sessions.filter((session) => session.config.id !== sessionId);
+    sessionRevision += 1;
+    publish();
   };
 
   const stopListening = (stop: (() => void) | undefined) => {
@@ -92,22 +204,43 @@ export function watchSessionRegistry(
     const isCurrent = () => !stopped && active && generation === attempt;
 
     const receive = (payload: unknown) => {
-      if (!isCurrent() || !isSessionStateChangedDto(payload)) return;
-      const { sessionId, runtime } = payload;
-      if (runtime.sessionId !== sessionId) return;
+      if (!isCurrent()) return;
 
-      if (configuredIds === null || phase !== "ready") {
-        remember(runtime);
+      // Membership first: a creation is a configuration, a removal carries
+      // nothing but its id, and both are what let a state event below find a
+      // session to belong to.
+      if (isSessionStateChangedDto(payload)) {
+        const { sessionId, runtime } = payload;
+        if (runtime.sessionId !== sessionId) return;
+        if (!ready()) {
+          remember(runtime);
+          return;
+        }
+        if (!configuredIds!.has(sessionId)) return;
+
+        const next = replaceRuntime(sessions, sessionId, runtime);
+        if (next === sessions) return;
+        sessions = next;
+        sessionRevision += 1;
+        error = null;
+        publish();
         return;
       }
-      if (!configuredIds.has(sessionId)) return;
-
-      const next = replaceRuntime(sessions, sessionId, runtime);
-      if (next === sessions) return;
-      sessions = next;
-      sessionRevision += 1;
-      error = null;
-      publish();
+      if (isSessionCreatedDto(payload)) {
+        if (!ready()) {
+          rememberCreation(payload.config);
+          return;
+        }
+        addSession(payload.config);
+        return;
+      }
+      if (isSessionRemovedDto(payload)) {
+        if (!ready()) {
+          rememberRemoval(payload.sessionId);
+          return;
+        }
+        dropSession(payload.sessionId);
+      }
     };
 
     void (async () => {
@@ -130,19 +263,34 @@ export function watchSessionRegistry(
         if (!Array.isArray(rawRuntimes) || !rawRuntimes.every(isSessionRuntimeDto)) {
           throw new Error("list_sessions 返回了无法识别的载荷");
         }
-        if (bufferedEventsOverflowed) {
+        if (bufferOverflowed) {
           throw new Error("初始化期间会话变动过多，正在重新同步");
         }
 
         configuredIds = new Set(rawConfigs.map((config) => config.id));
         let next = sessionsFromLive(rawConfigs, rawRuntimes);
+        // A session created while the lists were in flight is newer than they
+        // are: it is merged in whether or not the snapshot happened to include
+        // it, and a removal is applied last so it wins over its own creation.
+        for (const [sessionId, config] of bufferedCreations) {
+          if (!configuredIds.has(sessionId)) {
+            next.push(viewOf(config));
+          }
+          configuredIds.add(sessionId);
+        }
         for (const [sessionId, runtime] of bufferedEvents) {
           if (configuredIds.has(sessionId)) {
             next = replaceRuntime(next, sessionId, runtime);
           }
         }
+        for (const sessionId of bufferedRemovals) {
+          configuredIds.delete(sessionId);
+          next = next.filter((session) => session.config.id !== sessionId);
+        }
         bufferedEvents.clear();
-        bufferedEventsOverflowed = false;
+        bufferedCreations.clear();
+        bufferedRemovals.clear();
+        bufferOverflowed = false;
         sessions = next;
         phase = "ready";
         error = null;
@@ -155,7 +303,9 @@ export function watchSessionRegistry(
         stopListening(attemptUnlisten);
         configuredIds = null;
         bufferedEvents.clear();
-        bufferedEventsOverflowed = false;
+        bufferedCreations.clear();
+        bufferedRemovals.clear();
+        bufferOverflowed = false;
         phase = "loading";
         sessions = [];
         error = sessionErrorMessage(cause);
@@ -191,13 +341,31 @@ export function watchSessionRegistry(
   startAttempt();
   void readConfigReport();
 
-  return () => {
-    stopped = true;
-    generation += 1;
-    if (retryTimer !== undefined) clearTimeout(retryTimer);
-    if (reportRetryTimer !== undefined) clearTimeout(reportRetryTimer);
-    stopListening(unlisten);
-    unlisten = undefined;
+  return {
+    stop() {
+      stopped = true;
+      generation += 1;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      if (reportRetryTimer !== undefined) clearTimeout(reportRetryTimer);
+      stopListening(unlisten);
+      unlisten = undefined;
+    },
+    adopt(created) {
+      if (stopped) return;
+      if (!ready()) {
+        rememberCreation(created.config);
+        return;
+      }
+      addSession(created.config);
+    },
+    forget(sessionId) {
+      if (stopped) return;
+      if (!ready()) {
+        rememberRemoval(sessionId);
+        return;
+      }
+      dropSession(sessionId);
+    },
   };
 }
 
