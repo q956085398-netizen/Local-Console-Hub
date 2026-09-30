@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { AppWindow, ExternalLink, FolderOpen, MoreHorizontal, Play, RotateCw, Square } from "lucide-react";
+import {
+  AppWindow,
+  ExternalLink,
+  FolderOpen,
+  MoreHorizontal,
+  Play,
+  RotateCw,
+  Square,
+} from "lucide-react";
 import type { SessionConfigDto } from "../../types/config";
 import type { SessionRuntimeDto } from "../../types/runtime";
 import type { SessionAction } from "../../state/actions";
