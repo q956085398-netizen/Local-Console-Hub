@@ -273,6 +273,21 @@ describe("availableActions", () => {
     expect(availableActions(config({ temporary: true }), failed).start).toBe(true);
   });
 
+  // Saving a terminal's launch configuration (#65) is the one control that is
+  // offered *while the terminal runs*: it is the terminal in front of the user
+  // that is worth keeping, and ending it first would throw away the thing being
+  // saved. It is gone as soon as the session is saved, because `temporary` is
+  // the "not saved yet" flag.
+  it("offers saving for a temporary terminal in any state, and never for a saved one", () => {
+    for (const status of ["running", "stopped", "exited", "error"] as const) {
+      expect(availableActions(config({ temporary: true }), runtime({ status })).saveConfig).toBe(
+        true,
+      );
+    }
+    expect(availableActions(config(), runtime()).saveConfig).toBe(false);
+    expect(availableActions(config({ temporary: false }), runtime()).saveConfig).toBe(false);
+  });
+
   it("offers Start only when idle, Stop only when live", () => {
     const running = availableActions(config(), runtime());
     expect(running.start).toBe(false);

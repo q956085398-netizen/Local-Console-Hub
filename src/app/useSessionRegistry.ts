@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  isAddApplicationErrorDto,
-  type AddApplicationOutcome,
+  isFormErrorDto,
   type ConfigReportDto,
+  type FormSaveOutcome,
   type NewApplicationFormDto,
+  type SaveTerminalFormDto,
 } from "../types/config";
 import {
   SESSION_CREATED,
   SESSION_REMOVED,
+  SESSION_SAVED,
   SESSION_STATE_CHANGED,
   isCreatedSessionDto,
   sessionErrorMessage,
@@ -83,14 +85,20 @@ export interface SessionRegistry {
    * field it belongs to, and the dialog keeps the user's input so they can fix
    * that one box rather than retype the form.
    */
-  addApplication(form: NewApplicationFormDto): Promise<AddApplicationResult>;
+  addApplication(form: NewApplicationFormDto): Promise<FormSaveOutcome>;
+  /**
+   * Save a temporary terminal's launch configuration (#65) — "保存启动配置".
+   *
+   * Answers once the backend has written the entry *and* marked the session
+   * saved, or with the reason it was refused. The terminal is not restarted,
+   * and the session id does not change: the row the user was looking at keeps
+   * its run, its output and its place, and gains a name that survives a
+   * restart.
+   */
+  saveTerminal(sessionId: string, form: SaveTerminalFormDto): Promise<FormSaveOutcome>;
   /** Remove a temporary session that has ended (#62). */
   removeSession(sessionId: string): void;
 }
-
-/** The answer to one "添加应用" (#64). */
-export type AddApplicationResult =
-  { ok: true; sessionId: string } | { ok: false; message: string; field?: string };
 
 /** Where the rendered sessions came from. */
 export type SessionSource = "preview" | "loading" | "backend";
@@ -139,14 +147,15 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     let lastSessionRevision = 0;
     const watching = watchSessionRegistry(
       {
-        // Three event names, one listener: a session's state, its arrival and
-        // its departure are all "what the registry looks like now" (#62), and
-        // a second listener keyed to the same lifecycle would only be a second
-        // chance to get the ordering wrong.
+        // Four event names, one listener: a session's state, its arrival, its
+        // configuration changing (#65) and its departure are all "what the
+        // registry looks like now", and a second listener keyed to the same
+        // lifecycle would only be a second chance to get the ordering wrong.
         subscribe: (receive) =>
           Promise.all([
             listen<unknown>(SESSION_STATE_CHANGED, (event) => receive(event.payload)),
             listen<unknown>(SESSION_CREATED, (event) => receive(event.payload)),
+            listen<unknown>(SESSION_SAVED, (event) => receive(event.payload)),
             listen<unknown>(SESSION_REMOVED, (event) => receive(event.payload)),
           ]).then((unlisten) => () => {
             for (const stop of unlisten) stop();
@@ -236,7 +245,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
    * carries a refusal the form can place beside the field that caused it.
    */
   const addApplication = useCallback(
-    async (form: NewApplicationFormDto): Promise<AddApplicationOutcome> => {
+    async (form: NewApplicationFormDto): Promise<FormSaveOutcome> => {
       try {
         const raw = await invoke<unknown>("add_application", { form });
         if (!isCreatedSessionDto(raw)) {
@@ -245,7 +254,35 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
         controller.current?.adopt(raw);
         return { ok: true, sessionId: raw.config.id };
       } catch (cause) {
-        if (isAddApplicationErrorDto(cause)) {
+        if (isFormErrorDto(cause)) {
+          return { ok: false, message: cause.message, field: cause.field };
+        }
+        return { ok: false, message: sessionErrorMessage(cause) };
+      }
+    },
+    [],
+  );
+
+  /**
+   * "保存启动配置" (#65).
+   *
+   * The answer is the same pair a creation answers with, and `adopt` applies it
+   * the same way — which for an id the watch already has means correcting that
+   * row rather than adding one, so a run that was just saved is never listed
+   * twice. The runtime in the answer is the run the session already had, which
+   * is what makes the answer proof that the terminal was not restarted.
+   */
+  const saveTerminal = useCallback(
+    async (sessionId: string, form: SaveTerminalFormDto): Promise<FormSaveOutcome> => {
+      try {
+        const raw = await invoke<unknown>("save_terminal_config", { sessionId, form });
+        if (!isCreatedSessionDto(raw)) {
+          throw new Error("save_terminal_config 返回了无法识别的载荷");
+        }
+        controller.current?.adopt(raw);
+        return { ok: true, sessionId: raw.config.id };
+      } catch (cause) {
+        if (isFormErrorDto(cause)) {
           return { ok: false, message: cause.message, field: cause.field };
         }
         return { ok: false, message: sessionErrorMessage(cause) };
@@ -281,6 +318,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       openDirectory: (sessionId) => run("open_session_cwd", sessionId),
       createTerminal,
       addApplication,
+      saveTerminal,
       removeSession,
     }),
     [
@@ -295,6 +333,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       run,
       createTerminal,
       addApplication,
+      saveTerminal,
       removeSession,
     ],
   );

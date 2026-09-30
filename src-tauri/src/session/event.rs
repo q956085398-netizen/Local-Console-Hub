@@ -45,6 +45,21 @@ pub const SESSION_CREATED: &str = "session-created";
 /// has been told is gone is its own business — the window's is to drop it.
 pub const SESSION_REMOVED: &str = "session-removed";
 
+/// `session-saved` — a session's configuration became one the config file
+/// describes (#65).
+///
+/// The third way the registry's *description* of itself changes, and a
+/// different kind of change from the two membership events beside it: the
+/// session is already there and stays there. What moves is the configuration
+/// the window renders it from — a terminal the user saved keeps its id and its
+/// run, and gains the name the next start will load it under.
+///
+/// A listener applies it to the row it already has, so it is published at the
+/// one moment the registry and the file agree: after the entry is written and
+/// the session is marked saved, never before (spec #59 decision 15 — 只在持久
+/// 保存确认后反馈成功).
+pub const SESSION_SAVED: &str = "session-saved";
+
 /// `run-record-updated` — a run started, or ended with its result.
 pub const RUN_RECORD_UPDATED: &str = "run-record-updated";
 
@@ -125,6 +140,20 @@ pub struct SessionRemoved {
     pub session_id: String,
 }
 
+/// Payload of [`SESSION_SAVED`] (#65).
+///
+/// The same pair [`SessionCreated`] carries, and for the same reason: a
+/// listener renders a row from a configuration, and the one that changed is
+/// what it needs. A listener that already has the row replaces the
+/// configuration and keeps everything else it knows about the session; one
+/// that has never heard of the id has nothing to update and does nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSaved {
+    pub session_id: String,
+    pub config: SessionConfigDto,
+}
+
 /// Payload of [`RUN_RECORD_UPDATED`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +178,7 @@ pub enum SessionEvent {
     StateChanged(SessionStateChanged),
     Created(SessionCreated),
     Removed(SessionRemoved),
+    Saved(SessionSaved),
     RunRecordUpdated(RunRecordUpdated),
     AppSummaryChanged(AppSummaryChanged),
     TerminalOutput(TerminalOutput),
@@ -161,6 +191,7 @@ impl SessionEvent {
             SessionEvent::StateChanged(_) => SESSION_STATE_CHANGED,
             SessionEvent::Created(_) => SESSION_CREATED,
             SessionEvent::Removed(_) => SESSION_REMOVED,
+            SessionEvent::Saved(_) => SESSION_SAVED,
             SessionEvent::RunRecordUpdated(_) => RUN_RECORD_UPDATED,
             SessionEvent::AppSummaryChanged(_) => APP_SUMMARY_CHANGED,
             SessionEvent::TerminalOutput(_) => TERMINAL_OUTPUT,
@@ -173,6 +204,7 @@ impl SessionEvent {
             SessionEvent::StateChanged(event) => Some(&event.session_id),
             SessionEvent::Created(event) => Some(&event.session_id),
             SessionEvent::Removed(event) => Some(&event.session_id),
+            SessionEvent::Saved(event) => Some(&event.session_id),
             SessionEvent::RunRecordUpdated(event) => Some(&event.session_id),
             SessionEvent::AppSummaryChanged(_) => None,
             SessionEvent::TerminalOutput(event) => Some(&event.session_id),
@@ -190,6 +222,7 @@ impl SessionEvent {
             SessionEvent::StateChanged(inner) => serde_json::to_value(inner),
             SessionEvent::Created(inner) => serde_json::to_value(inner),
             SessionEvent::Removed(inner) => serde_json::to_value(inner),
+            SessionEvent::Saved(inner) => serde_json::to_value(inner),
             SessionEvent::RunRecordUpdated(inner) => serde_json::to_value(inner),
             SessionEvent::AppSummaryChanged(inner) => serde_json::to_value(inner),
             SessionEvent::TerminalOutput(inner) => serde_json::to_value(inner),
@@ -301,6 +334,31 @@ mod tests {
         assert_eq!(AppSummary::of(&[]), AppSummary::default());
     }
 
+    /// A configuration DTO, in the shape the two configuration-carrying events
+    /// publish — a temporary one for `session-created` and the same id saved
+    /// for `session-saved`.
+    fn config(temporary: bool) -> crate::config::SessionConfigDto {
+        crate::config::SessionConfigDto {
+            id: "comfyui".to_owned(),
+            name: "ComfyUI".to_owned(),
+            session_type: "service".to_owned(),
+            cwd: None,
+            command: Some("run".to_owned()),
+            url: None,
+            port: None,
+            purpose: None,
+            close_impact: None,
+            shell: None,
+            initial_command: None,
+            logging: crate::config::EffectiveLoggingDto {
+                mode: "off".to_owned(),
+                source: "none".to_owned(),
+                external_path: None,
+            },
+            temporary,
+        }
+    }
+
     fn every_event() -> Vec<SessionEvent> {
         vec![
             SessionEvent::StateChanged(SessionStateChanged {
@@ -309,25 +367,11 @@ mod tests {
             }),
             SessionEvent::Created(SessionCreated {
                 session_id: "comfyui".to_owned(),
-                config: crate::config::SessionConfigDto {
-                    id: "comfyui".to_owned(),
-                    name: "ComfyUI".to_owned(),
-                    session_type: "service".to_owned(),
-                    cwd: None,
-                    command: Some("run".to_owned()),
-                    url: None,
-                    port: None,
-                    purpose: None,
-                    close_impact: None,
-                    shell: None,
-                    initial_command: None,
-                    logging: crate::config::EffectiveLoggingDto {
-                        mode: "off".to_owned(),
-                        source: "none".to_owned(),
-                        external_path: None,
-                    },
-                    temporary: false,
-                },
+                config: config(true),
+            }),
+            SessionEvent::Saved(SessionSaved {
+                session_id: "comfyui".to_owned(),
+                config: config(false),
             }),
             SessionEvent::Removed(SessionRemoved {
                 session_id: "comfyui".to_owned(),
@@ -376,6 +420,7 @@ mod tests {
             vec![
                 "session-state-changed",
                 "session-created",
+                "session-saved",
                 "session-removed",
                 "run-record-updated",
                 "app-summary-changed",

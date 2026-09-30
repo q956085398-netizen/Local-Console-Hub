@@ -305,6 +305,7 @@ restart_session
 create_temporary_terminal
 remove_session
 add_application
+save_terminal_config
 activate_session
 attach_terminal
 terminal_write
@@ -356,6 +357,15 @@ unknown root key, an inline `sessions: []`) is refused rather than rewritten.
 nothing is running, answer with the run it already has when something is, and
 refuse while it is stopping. It is deliberately not `restart_session`.
 
+`save_terminal_config` is the other half of the quick entry (D-033): it writes
+a temporary terminal's launch method — the shell and directory it is already
+running, plus the name the user gives it — into `config.yaml` through the same
+append-and-refuse save `add_application` uses, and marks that session as saved.
+The session keeps its id and its run: no process is started or copied, nothing
+the user typed is stored, and the entry carries no `initial_command` and no
+`logging:` block, so a saved terminal persists no more than the temporary one
+did.
+
 `attach_terminal` is what a terminal view calls when it appears: it answers with
 the retained scrollback, the byte offset that scrollback reaches, and the run
 they belong to. `terminal_write` carries input bytes (base64) and
@@ -376,6 +386,7 @@ MVP event equivalents:
 ~~~text
 session-state-changed
 session-created
+session-saved
 session-removed
 run-record-updated
 app-summary-changed
@@ -388,8 +399,13 @@ Every session event includes the session id.
 cannot, and the reason a listener can render a row it has never seen before
 without re-reading a list (D-031). It is published before the session starts,
 so every lifecycle event that follows belongs to a session the listener already
-knows. `session-removed` says a session left the registry, after which nothing
-about that id is published again.
+knows. `session-saved` carries the same pair about a session that was already
+there, whose configuration became one the config file describes (D-033); a
+listener applies it to the row it has, and the two payloads are deliberately
+one shape, because the fact they ask a listener to apply is the same one. A
+save is published only after the file holds the entry. `session-removed` says a
+session left the registry, after which nothing about that id is published
+again.
 
 Terminal output should be batched enough that high-volume output does not create an expensive UI event per line.
 

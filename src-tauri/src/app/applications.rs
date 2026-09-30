@@ -31,10 +31,12 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::config::{save_session, session_ids, validate_entry, LoggingConfig, RawSessionConfig};
 use crate::session::core::{CreatedSession, SessionCore};
+
+use super::form::FormError;
 
 /// The form's fields, as the window sends them.
 ///
@@ -60,36 +62,6 @@ pub struct NewApplication {
     pub logging: Option<LoggingConfig>,
 }
 
-/// Why an application could not be added.
-///
-/// `field` names the form input to put the message beside, when there is one:
-/// every validation failure the config layer raises carries it, and a save
-/// failure does not.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddApplicationError {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
-    pub message: String,
-}
-
-impl AddApplicationError {
-    fn new(field: Option<&str>, message: impl Into<String>) -> Self {
-        AddApplicationError {
-            field: field.map(str::to_owned),
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for AddApplicationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}", self.message)
-    }
-}
-
-impl std::error::Error for AddApplicationError {}
-
 /// Validate, register and save one new application.
 ///
 /// On success the session is in the registry *and* in the config file, so the
@@ -104,9 +76,9 @@ pub fn add_application(
     core: &SessionCore,
     config_file: Option<&Path>,
     form: NewApplication,
-) -> Result<CreatedSession, AddApplicationError> {
+) -> Result<CreatedSession, FormError> {
     let Some(config_file) = config_file else {
-        return Err(AddApplicationError::new(
+        return Err(FormError::new(
             None,
             "无法确定配置文件位置；请检查系统应用数据目录后重启应用。",
         ));
@@ -117,17 +89,17 @@ pub fn add_application(
     // The entry takes the position after the last one the file defines, which
     // is the number its validation messages are indexed by.
     let config = validate_entry(occupancy.file_entries + 1, &raw)
-        .map_err(|error| AddApplicationError::new(error.field.as_deref(), error.message))?;
+        .map_err(|error| FormError::new(error.field.as_deref(), error.message))?;
 
     // The registry first: a duplicate id is refused here, while the config file
     // is still untouched.
-    let runtime = core.register(config.clone()).map_err(|error| {
-        AddApplicationError::new(None, format!("会话未能加入列表：{}", error.message))
-    })?;
+    let runtime = core
+        .register(config.clone())
+        .map_err(|error| FormError::new(None, format!("会话未能加入列表：{}", error.message)))?;
 
     if let Err(error) = save_session(config_file, &raw) {
         core.unregister(&config.id);
-        return Err(AddApplicationError::new(None, error.message(config_file)));
+        return Err(FormError::new(None, error.message(config_file)));
     }
 
     // Only now, and never before: the event says "this application exists", and
@@ -150,12 +122,12 @@ struct Occupancy {
     file_entries: usize,
 }
 
-fn occupancy(core: &SessionCore, config_file: &Path) -> Result<Occupancy, AddApplicationError> {
+fn occupancy(core: &SessionCore, config_file: &Path) -> Result<Occupancy, FormError> {
     let text = match std::fs::read_to_string(config_file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => {
-            return Err(AddApplicationError::new(
+            return Err(FormError::new(
                 None,
                 format!("无法读取配置文件 `{}`：{error}", config_file.display()),
             ))
@@ -174,11 +146,11 @@ fn occupancy(core: &SessionCore, config_file: &Path) -> Result<Occupancy, AddApp
 fn raw_entry(
     form: &NewApplication,
     taken: &BTreeSet<String>,
-) -> Result<RawSessionConfig, AddApplicationError> {
-    let required = |value: &str, field: &str, hint: &str| -> Result<String, AddApplicationError> {
+) -> Result<RawSessionConfig, FormError> {
+    let required = |value: &str, field: &str, hint: &str| -> Result<String, FormError> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(AddApplicationError::new(
+            return Err(FormError::new(
                 Some(field),
                 format!("`{field}` is empty — {hint}"),
             ));

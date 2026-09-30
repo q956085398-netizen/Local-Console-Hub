@@ -149,6 +149,7 @@ pub fn run() {
             ipc::session::create_temporary_terminal,
             ipc::session::remove_session,
             ipc::session::add_application,
+            ipc::session::save_terminal_config,
             ipc::session::activate_session,
             ipc::session::get_session,
             ipc::session::start_session,

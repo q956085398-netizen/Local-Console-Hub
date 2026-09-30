@@ -182,6 +182,21 @@ export default function SessionHeader({
                     复制路径
                   </MenuItem>
                 )}
+                {/* Saving belongs above the separator, with the context
+                    actions: it takes nothing away. The destructive tail below
+                    is removal and force-kill, and a neutral entry there would
+                    make the user read it as one of them (#65). */}
+                {actions.saveConfig && (
+                  <MenuItem
+                    title="把这个终端的 shell 和工作目录保存成一条配置，下次打开 Hub 仍可用"
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("save-config");
+                    }}
+                  >
+                    保存启动配置
+                  </MenuItem>
+                )}
                 <div className="more-menu__separator" role="separator" />
                 {config.temporary === true && (
                   <MenuItem
