@@ -1,14 +1,18 @@
 /*
- * The "添加应用" form (#64).
+ * The modal form surface (#64, #65).
  *
- * A modal surface over the workspace: the reference's visual language has no
- * permanent side panel (UI_STYLE_GUIDE §3), and the form is a momentary task
- * rather than another region to keep open. Colors come from the shared tokens
- * in `index.css`; interaction stays neutral and lifecycle color is not used
- * here, because nothing in this dialog is a session state.
+ * One stylesheet for the two entries that save a launch configuration from a
+ * form — "添加应用" and "保存启动配置" — because they are the same surface: a
+ * momentary task over the workspace rather than another region to keep open
+ * (UI_STYLE_GUIDE §3 has no permanent side panel). Colors come from the shared
+ * tokens in `index.css`; interaction stays neutral and lifecycle color is not
+ * used here, because nothing in a dialog is a session state.
+ *
+ * Two dialogs, one vocabulary: a second copy of these rules under a second
+ * prefix would be two places for the modal to drift apart.
  */
 
-.add-app__backdrop {
+.dialog__backdrop {
   position: fixed;
   inset: 0;
   z-index: 40;
@@ -20,7 +24,7 @@
   overflow-y: auto;
 }
 
-.add-app {
+.dialog {
   width: min(560px, 100%);
   display: flex;
   flex-direction: column;
@@ -31,7 +35,7 @@
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
 }
 
-.add-app__head {
+.dialog__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -39,13 +43,13 @@
   padding: 14px 16px 10px;
 }
 
-.add-app__title {
+.dialog__title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
 
-.add-app__close {
+.dialog__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -58,32 +62,32 @@
   cursor: pointer;
 }
 
-.add-app__close:hover {
+.dialog__close:hover {
   background: var(--secondary);
   color: var(--fg);
 }
 
-.add-app__lead {
+.dialog__lead {
   margin: 0;
   padding: 0 16px 12px;
   color: var(--muted-fg);
   font-size: 12px;
 }
 
-.add-app__body {
+.dialog__body {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 0 16px 4px;
 }
 
-.add-app__row {
+.dialog__row {
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 12px;
 }
 
-.add-app__foot {
+.dialog__foot {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -92,7 +96,7 @@
   border-top: 1px solid var(--border-soft);
 }
 
-.add-app__error {
+.dialog__error {
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
@@ -104,14 +108,14 @@
 
 /* One labelled input, stacked the way the header's metadata is: a quiet label
  * above the control, the message directly beneath the box it is about. */
-.add-app__field {
+.dialog__field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
 }
 
-.add-app__label {
+.dialog__label {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -119,12 +123,12 @@
   font-size: 12px;
 }
 
-.add-app__required {
+.dialog__required {
   color: var(--idle-fg);
   font-size: 11px;
 }
 
-.add-app__input {
+.dialog__input {
   height: 30px;
   padding: 0 8px;
   font: inherit;
@@ -139,25 +143,25 @@
 /* Paths, commands, ports and addresses are the values the reference sets in
  * the mono face (UI_STYLE_GUIDE §10: "monospace text for terminal and compact
  * technical metadata"). Names and prose stay in the sans face. */
-.add-app__input--mono {
+.dialog__input--mono {
   font-family: var(--font-mono);
 }
 
-.add-app__input::placeholder {
+.dialog__input::placeholder {
   color: var(--idle-fg);
 }
 
-.add-app__input:focus-visible {
+.dialog__input:focus-visible {
   outline: 1px solid var(--fg-dim);
   outline-offset: 1px;
 }
 
-.add-app__hint {
+.dialog__hint {
   color: var(--idle-fg);
   font-size: 11px;
 }
 
-.add-app__field-error {
+.dialog__field-error {
   color: var(--destructive-bright);
   font-size: 11px;
 }
@@ -167,12 +171,12 @@
  * the alternative instead of hiding it behind a dropdown. Same surface tokens
  * as the inputs, with the selected one carrying the accent border the header
  * uses for its active control. */
-.add-app__choices {
+.dialog__choices {
   display: flex;
   gap: 6px;
 }
 
-.add-app__choice {
+.dialog__choice {
   flex: 1;
   height: 30px;
   padding: 0 8px;
@@ -185,26 +189,26 @@
   cursor: pointer;
 }
 
-.add-app__choice--on {
+.dialog__choice--on {
   color: var(--fg);
   border-color: var(--fg-dim);
 }
 
-.add-app__choice:focus-visible {
+.dialog__choice:focus-visible {
   outline: 1px solid var(--fg-dim);
   outline-offset: 1px;
 }
 
 /* A checkbox field: the box and its label share one line, and the explanation
  * sits under both. */
-.add-app__field--check {
+.dialog__field--check {
   display: grid;
   grid-template-columns: auto 1fr;
   align-items: center;
   column-gap: 8px;
 }
 
-.add-app__field--check .add-app__hint,
-.add-app__field--check .add-app__field-error {
+.dialog__field--check .dialog__hint,
+.dialog__field--check .dialog__field-error {
   grid-column: 2;
 }

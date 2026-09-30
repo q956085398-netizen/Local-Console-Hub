@@ -184,18 +184,20 @@ impl<R: Runtime> EventSink for TraySink<R> {
 
 /// Whether an event can change what the tray shows.
 ///
-/// The tray renders sessions and their counts, so four of §9's events matter:
+/// The tray renders sessions and their counts, so five of §9's events matter:
 /// a session's state, the counts, and — since the registry's membership can
-/// change while the app runs (#62) — a session entering or leaving it. A run
-/// record or a batch of terminal output says nothing the tray displays, and
-/// rebuilding a menu per output batch would spend §14's idle budget on a
-/// surface that did not change.
+/// change while the app runs (#62) — a session entering or leaving it, plus a
+/// session being saved (#65), which renames a menu row without touching the
+/// counts or the membership. A run record or a batch of terminal output says
+/// nothing the tray displays, and rebuilding a menu per output batch would
+/// spend §14's idle budget on a surface that did not change.
 pub fn changes_the_tray(event: &SessionEvent) -> bool {
     matches!(
         event,
         SessionEvent::StateChanged(_)
             | SessionEvent::Created(_)
             | SessionEvent::Removed(_)
+            | SessionEvent::Saved(_)
             | SessionEvent::AppSummaryChanged(_)
     )
 }
@@ -490,7 +492,7 @@ mod tests {
     use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource, SessionConfigDto};
     use crate::session::event::{
         AppSummary, AppSummaryChanged, RunRecordUpdated, SessionCreated, SessionRemoved,
-        TerminalOutput,
+        SessionSaved, TerminalOutput,
     };
     use crate::session::runtime::{RunId, RunRecord, SessionRuntime, Timestamp};
     use crate::session::terminal::OutputBatch;
@@ -549,6 +551,17 @@ mod tests {
         })));
         assert!(changes_the_tray(&SessionEvent::Removed(SessionRemoved {
             session_id: "terminal-1".to_owned(),
+        })));
+        // #65: saving a terminal renames its row in the menu, which the
+        // membership events do not carry and the counts do not move.
+        assert!(changes_the_tray(&SessionEvent::Saved(SessionSaved {
+            session_id: "terminal-1".to_owned(),
+            config: {
+                let mut saved = created_config();
+                saved.temporary = false;
+                saved.name = "项目终端".to_owned();
+                saved
+            },
         })));
         assert!(changes_the_tray(&SessionEvent::AppSummaryChanged(
             AppSummaryChanged {

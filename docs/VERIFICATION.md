@@ -996,12 +996,106 @@ shell、无效目录得到含该路径的消息框且 `exit code 1`、无效目�
 **未执行 / 留待。** 被测入口是临时目录里的入口，不是用户桌面上的那一个（脚本反向断言了用户
 自己的快捷方式未被改动）；图标一致性、安装版复测与组合流程归 #69。
 
+### 2026-10-01 — #65 保存并复用终端启动配置（D-033）
+
+工单 #65（父规格 #59 的决策 4、6、14、15；前置 #64 已合并）。worktree
+`happy-poitras-5df6f0`，基线 `0f6bc62` + `db9c152`（#64）。环境为 Windows 11 Pro
+（10.0.26300）、真实用户会话 `q9560`、本机装了 PowerShell 7.6.6。**本轮与 #64 有一点根本不同：
+它真的写了一次用户真实的 `%APPDATA%\LocalConsoleHub\config.yaml`**（备份先行、结束前还原，
+见文末「清理」）。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check` | 通过 |
+| `npm test` | **258 passed / 18 files** |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **445 lib + 14 `tests/mvp_matrix.rs`，0 failed** |
+
+本片新增 31 条用例（lib 15、集成 2、前端 14），它们各自钉住的行为：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `app::terminals::tests`（10 条） | 运行中的终端被保存进真实配置文件，且 run id 与 pid **一个都没变**（不终止、不重启、不复制）；写出的字段恰好是启动方式 + 用户填的词，**没有** `initial_command`、**没有** `logging:`（于是终端默认 `off`/`none` 生效）、没有 `command`/`url`/`port`；已有配置的其余字节原样保留；文件损坏时拒绝且原文一字不动、会话仍是临时的、run 不变；只读文件（Windows 拒绝替换）同理；名称为空按 `name` 字段拒绝且不写文件；同一终端保存第二次被拒且不重写文件；未知 id、没有配置文件位置各自被拒；**重新加载那份文件后终端能被真的启动**（run 与 pid 都是新的），且它作为配置会话回来（`!temporary`） |
+| `session::core::tests::temporary_tests` 的 5 条 `saving_*` / `a_saved_terminal_*` | `mark_saved` 一次取锁改两件事（配置 + provenance）；run id、pid、状态与滚动缓冲全部不变，且列表里仍只有一行；`session-saved` 事件只发一条、载荷里 `temporary` 为假；保存过的会话不再可被窗口移除（`remove_session` 按配置文件拒绝）；重复保存被拒且不改名；配置里 id 与会话不符时被拒（不留下 key 与配置不一致的行）；已被移除的会话不能保存 |
+| `app::terminals` 的两次「拒绝」用例 | 保存失败时**一条 `session-saved` 都不发**（决策 15：只在持久保存确认后反馈成功），写盘失败时原文与临时文件都不留痕 |
+| 集成 `a_saved_terminal_joins_a_real_config_and_keeps_its_run` | 真实临时终端 + 真实配置文件：保存后 run id/pid/滚动缓冲不变、另一个已在运行的服务也没动、列表仍是 4 条（不是 5 条）、文件名与内容按用户填的落盘；退出（真实 shell `exit`）后重新加载文件得到第 4 条配置会话且 `!temporary`；再次启动是**新** run 与新 pid，cwd 仍是保存时那个 |
+| 集成 `a_refused_save_leaves_a_running_terminal_temporary` | 配置文件被外部改成坏 YAML 后保存被拒：原文一字不动、会话仍临时、run 与 pid 不变、名字没被改 |
+| 前端 `session-registry.test.ts` 的 3 条 | 保存事件替换同一行的配置而**不加行**、runtime 保留、组别从 `temporary` 变 `configured`；命令答复与随后到达的事件只渲染一次；保存事件在初始化期间先于快照到达时，快照里的旧配置不会把它覆盖回去 |
+| 前端 `SaveTerminalDialog.test.ts`（8 条） | 启动方式（工作目录 / shell）是**展示**而非输入（三个输入框、一个必填）；名称预填当前行名；「不保存、不重放你输入过的命令」与「终端不会重启，也不会被复制」两句在场；`errorField` 把后端给的字段落在对应输入框、`cwd`/`shell` 这种没有输入框的字段退回横幅；带引号的 shell 路径按路径显示 |
+| 前端 `derivations` / `types` 的 3 条 | 临时项在**任何状态**（含运行中）都提供保存、配置项永不提供；`isFormErrorDto` 不会把一个 `SessionError` 形状读成表单拒绝 |
+
+**第 2 层（原生窗口，本轮真的跑了）。** 做法：`npm run dev`（24120）+ 本 worktree 的 debug
+构建，以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333` 启动，用一个
+临时 Node 脚本（`%TEMP%\lch-65-verification\cdp.mjs`，Node 25 自带 WebSocket，无依赖）连上
+真实窗口的 CDP 端点，用 `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` 做真实鼠标与
+键盘事件（表单输入用 `Input.insertText`，清空用真实 Ctrl+A）。边界与 #62 那轮相同：**输入走
+WebView2 的 DevTools 通道，不是 OS 级 `SendInput`**；托盘、任务栏、窗口装饰未参与；「退出」
+是结束进程，不是托盘菜单的退出。
+
+| 条目 | 观测 | 结果 |
+| --- | --- | --- |
+| 入口 | 临时终端「更多操作」里出现 `保存启动配置`，**运行中即可用**；菜单顺序是 `打开目录 / 聚焦终端 / 查看日志策略 / 复制路径 / 保存启动配置` ——分隔线—— `移除临时终端（禁用：先结束终端再移除）/ 强制结束进程树`，即它排在破坏性尾部**之上** | 通过 |
+| 保存（H08 的保存部分） | 点开后是模态表单：只读块显示 `工作目录 C:\Users\q9560` 与 `shell C:\Program Files\PowerShell\7\pwsh.exe`（带引号的命令行走配置层，展示时去掉引号），名称已预填 `PowerShell 1`，另有用途/关闭影响与「不保存、不重放你输入过的命令」一句 | 通过 |
+| 保存不重启、不复制（H08 核对原 PID） | 改名保存后：行名变 `项目终端 LCH65`、`TEMPORARY` 组消失（该行进了 `CONFIGURED`）、滚动缓冲里保存前打出的 `LCH65-KEEP` 仍在、**PID 仍是 5324**、状态栏提示 `已保存「项目终端 LCH65」，下次打开 Hub 仍然可用` | 通过 |
+| 配置文件内容 | `config.yaml` 只在末尾多出 6 行：`id: terminal-1a0f38018cf0001` / `name: 项目终端 LCH65` / `type: terminal` / `cwd: C:\Users\q9560` / `shell: '"C:\Program Files\PowerShell\7\pwsh.exe"'`——**没有** `initial_command`、**没有** `logging:`；前缀与保存前逐字节相同（追加 159 字节） | 通过 |
+| 真正退出再打开（H08 的恢复部分） | 结束进程后重启同一构建：列表 6 条，含 `项目终端 LCH65`，**没有** `TEMPORARY` 组 | 通过 |
+| 重开后启动 | 选中并启动它：`PID 46604`（**新**进程，不是 5324）、`cwd C:\Users\q9560`、终端里是干净的 `PowerShell 7.6.6` 提示符（没有旧输出、没有命令被重放）；再敲一条命令有真实输出 | 通过 |
+| 保存失败不虚报、不影响使用 | 把一个新建的临时终端对着**只读**的 `config.yaml` 保存：对话框不关闭，横幅显示 `could not be written: 拒绝访问。 (os error 5)`；该行仍是 `TEMPORARY`、PID 24388 仍 `Ready`；关掉对话框后终端照常执行命令（`LCH65-STILL`）；`config.yaml` 的 sha256 与失败前一致 | 通过 |
+| 未保存项不恢复（复核） | 再起一次：只有配置文件里的 5 条配置会话，`TEMPORARY` 组不出现——上一个会话里创建、从未保存的临时终端没有回来 | 通过 |
+| 清理 | 结束进程后 `%APPDATA%\LocalConsoleHub\config.yaml` 已从备份还原，sha256 回到 `11b4c073…`（与开工前一致）；临时终端与那次误启动的服务随应用结束（作业对象 kill-on-close），`%LOCALAPPDATA%\LocalConsoleHub` 下没有多出任何目录 | 通过 |
+
+**代码审查后的一次复验。** 本片合并前过了一轮两轴审查，其中两条改到了可见行为，改完**重新构建**
+并复跑了同一条原生路径：
+
+- 「保存启动配置」原本排在分隔线**之下**（在 `移除临时终端` 上方），审查指出一个中性动作落在
+  破坏性尾部会被读成破坏性动作，已移到分隔线之上；复验的菜单顺序即上表那行；
+- `save_terminal_config` 原本先发布 `session-saved` 再读运行时快照，若会话在这两次取锁之间消失，
+  命令会以错误作答而窗口已经被告知「已保存」——与决策 15 的「失败不虚报」相反。已改为先读
+  快照、再发布（`mark_saved` 之后这个读是不可失败的：不再是临时项的会话 `remove_session` 会拒绝，
+  没有别的路径把会话拿出注册表）。
+
+复跑结果与上表一致：创建临时终端 → 保存（改名 `项目终端 LCH65 终验`、进 `CONFIGURED`、
+PID 4820 全程不变、状态栏提示同前）→ 真实 `config.yaml` 只多出那 6 行；随后再次从备份还原。
+另外顺手修掉一处重命名事故：`AddApplicationDialog.tsx` 的 `aria-labelledby` / `id` 在
+`add-app` → `dialog` 的类名前缀替换中被误改成 `dialoglication-title`（两侧一致所以不报错，
+但已无意义），恢复为 `add-application-title`。
+
+**第 3 层（视觉）。** 新表面是「更多操作」里的一项与一层模态表单，两者参考图里都没有对应态，
+所以比对的是视觉语言（`docs/UI_STYLE_GUIDE.md` §10）。真机截图四张（
+`%TEMP%\lch-65-verification\lch-65-0{1..5}*.png`）：
+
+- 「保存启动配置」在菜单里是**中性色**，排在分隔线之上、与「聚焦终端 / 查看日志策略 / 复制路径」
+  同列，不是 `--destructive`——它不删任何东西；破坏性的 `移除临时终端` 与 `强制结束进程树` 仍在
+  分隔线下方并带红色语义；
+- 对话框复用「添加应用」那一层：卡片 `--card` + 1px `--border` + 12px 圆角、遮罩
+  `rgba(5,6,8,0.6)`、主按钮中性、唯一带颜色的是失败横幅。它多出来的只读块（工作目录 / shell）
+  用 `--input-bg` + `--border-soft` 与 `--font-mono`，读起来是「既成事实」而不是可填的框；
+- 保存后的行进入 `CONFIGURED` 组，行内次级元数据仍是 `interactive · tty`，计时从保存前延续
+  （同一 run），没有出现第二条行。
+
+**没有 MAJOR 级差异。** 一处有意偏差已记入 `docs/DESIGN_SPEC_EXTRACTED.md` §5 第 10 条
+（模态表单本身不来自参考图；本次把「保存启动配置」并入同一条）。
+
+**未执行 / 留待。** 外部入口（`#63` 的快捷方式请求）与独立窗口模式（`#66`）不在本片范围；
+H08 里「托盘退出」这条路径仍未走过（本轮用结束进程代替，与 #61/#62 的边界相同）；H14/H15/H16
+与 H09/H10 的原生部分仍归 #69 的组合原生轮次。
+
+**清理。** 用户真实配置在开工前备份到 `%TEMP%\lch-65-verification\config.yaml.before`
+（sha256 `11b4c073…`），验收结束后原样还原并核对哈希一致；只读属性已解除；`npm run dev` 已停
+（端口 24120 无监听）；调试用的应用进程已结束。CDP 脚本与截图留在
+`%TEMP%\lch-65-verification\`，不在仓库里（`git status` 干净）。
+
 ---
 
 ### 2026-10-01 — #66 自带控制台的独立窗口应用（D-034）
 
 工单 #66（父规格 #59 的决策 8、9、11、12、16；前置 #64 已合并）。基线提交 `7e631ad`
-（含 #60–#68 与 #63），worktree `funny-saha-e740a2`。环境为 Windows 11 Pro（10.0.26300）、
+（含 #60–#68 与 #63），worktree `funny-saha-e740a2`。**下面的自动结果跑在并入 #65 之后的工作树
+上**：`#65`（保存终端启动配置）与本片改到同一批文件，两边合并时在 10 个文件上冲突，冲突解决
+保留双方意图（两个新命令都注册、两个新测试块都保留、表单的两轴改名 `dialog__*` 也套用到本片
+新增的控件上），随后全量复跑通过。环境为 Windows 11 Pro（10.0.26300）、
 真实用户会话 `q9560`。下面第 1 层里涉及真实进程、真实 Win32 窗口与 ConPTY 的用例，跑在这个
 Windows 用户环境里，不是 mock。
 
@@ -1010,9 +1104,9 @@ Windows 用户环境里，不是 mock。
 | 套件 | 结果 |
 | --- | --- |
 | `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
-| `npm test` | **266 passed / 18 files** |
+| `npm test` | **280 passed / 19 files** |
 | `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
-| `cargo test` | **482 lib + 15 `tests/mvp_matrix.rs`，0 failed** |
+| `cargo test` | **497 lib + 17 `tests/mvp_matrix.rs`，0 failed**（并入 #65 之后的工作树，见下） |
 
 本片新增 55 条用例（Rust 41、集成 3、前端 14），它们各自钉住的行为：
 
@@ -1128,6 +1222,12 @@ H05/H09/H10/H14/H15/H16 一并归 #69 的组合原生轮次。用户真实的
   安装脚本在临时目录里造入口，测到 29/29 通过（真实入口形状 / 冷启动 / 已运行 / 托盘隐藏 /
   近乎同时 / 无效目录），并在真实窗口上读到新终端被选中且拿到键盘。用户桌面上那个入口**故意
   没被改动**，安装脚本只断言它未被改动；图标一致性与安装版复测归 #69，见 §6。
+- **#65 的保存已经有真实窗口里的完整证据，但输入通道要说清。** 2026-10-01 那一轮通过 WebView2
+  的 DevTools 通道驱动了真实窗口（真实 IPC、真实 ConPTY、真实配置文件），跑完了 H08 的
+  保存—退出—重开—启动全流程：保存不重启终端（PID 不变）、配置只多出启动方式、重启后是新的
+  进程、失败时不虚报且终端照常可用。**这一轮确实写过一次用户真实的 `config.yaml`**（#64 那一轮
+  没有），备份先行、结束前按 sha256 还原。没走到的仍是「托盘退出」这条退出路径（用结束进程
+  代替）与 #63/#66 的入口；H09/H10 与 H14/H15/H16 仍归 #69。
 - **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
   一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
   DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。

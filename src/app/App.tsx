@@ -13,7 +13,8 @@ import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
 import AddApplicationDialog from "../components/add-application/AddApplicationDialog";
-import type { NewApplicationFormDto } from "../types/config";
+import SaveTerminalDialog from "../components/save-terminal/SaveTerminalDialog";
+import type { NewApplicationFormDto, SaveTerminalFormDto, SessionConfigDto } from "../types/config";
 import {
   filterSessions,
   groupSessions,
@@ -85,6 +86,8 @@ export default function App() {
   const [focusRequest, setFocusRequest] = useState(0);
   /** Whether the "添加应用" form is open (#64). */
   const [addApplicationOpen, setAddApplicationOpen] = useState(false);
+  /** The terminal whose launch configuration is being saved (#65). */
+  const [saveTerminalTarget, setSaveTerminalTarget] = useState<SessionConfigDto | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -255,6 +258,26 @@ export default function App() {
   };
 
   /**
+   * "保存启动配置" (#65): a name, then a saved launch configuration.
+   *
+   * The launch method is not on the form — it is what the terminal is already
+   * running — so the only thing asked for is what the Hub cannot know. The
+   * dialog stays open on a refusal, exactly as the add-application one does,
+   * because the input is what the user needs to fix (story 31).
+   *
+   * The row is not selected from here: it is the row the user was already
+   * looking at, and the save arrives as the same session with a new
+   * configuration, so there is nothing to move the selection to.
+   */
+  const onOpenSaveTerminal = () => {
+    if (!registry.live) {
+      onPreviewAction(SESSION_ACTION_LABELS["save-config"]);
+      return;
+    }
+    setSaveTerminalTarget(selected.config);
+  };
+
+  /**
    * What a session control was asked for.
    *
    * Every one of these but two is a named Session Core operation (T08 #9 added
@@ -319,6 +342,9 @@ export default function App() {
       case "open-directory":
         registry.openDirectory(selected.config.id);
         break;
+      case "save-config":
+        onOpenSaveTerminal();
+        break;
       case "remove-session":
         registry.removeSession(selected.config.id);
         break;
@@ -335,6 +361,30 @@ export default function App() {
       onClose={() => setAddApplicationOpen(false)}
     />
   ) : null;
+
+  /**
+   * The save form (#65), holding the terminal it was opened for.
+   *
+   * The target is captured here rather than read from the selection when the
+   * form is submitted: the workspace can move under an open dialog, and saving
+   * whichever session happened to be selected at that moment would save a
+   * terminal the user never asked about.
+   */
+  const saveTerminalDialog =
+    saveTerminalTarget === null ? null : (
+      <SaveTerminalDialog
+        config={saveTerminalTarget}
+        onSubmit={async (form: SaveTerminalFormDto) => {
+          const result = await registry.saveTerminal(saveTerminalTarget.id, form);
+          if (result.ok) {
+            setSaveTerminalTarget(null);
+            setNotice(`已保存「${form.name}」，下次打开 Hub 仍然可用`);
+          }
+          return result;
+        }}
+        onClose={() => setSaveTerminalTarget(null)}
+      />
+    );
 
   if (selected === undefined) {
     // There is no selected session while the live registry is initializing,
@@ -419,6 +469,7 @@ export default function App() {
         </div>
         <StatusBar counts={counts} connection={connection} notice={statusNotice} />
         {addApplicationDialog}
+        {saveTerminalDialog}
       </div>
     );
   }
@@ -511,6 +562,7 @@ export default function App() {
       </div>
       <StatusBar counts={counts} connection={connection} notice={statusNotice} />
       {addApplicationDialog}
+      {saveTerminalDialog}
     </div>
   );
 }

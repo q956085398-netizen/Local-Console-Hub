@@ -208,6 +208,22 @@ export interface ActionAvailability {
    * grace period is exactly what this action is for. */
   forceStop: boolean;
   /**
+   * Save this terminal's launch configuration (#65).
+   *
+   * A temporary terminal's own action, and the only one of its two that is
+   * offered while the terminal is *running*: saving is what a user does when
+   * the shell and directory in front of them turn out to be worth keeping, and
+   * asking them to end the terminal first would be asking them to give up the
+   * thing they are saving. It stays on offer after the run ends too — an ended
+   * terminal is still a launch method — and it is gone the moment the session
+   * is saved, because `temporary` is exactly the "not saved yet" flag.
+   *
+   * The backend's own gate is the same flag (`app::terminals`, and the core's
+   * `mark_saved` refuses a configured session), so this cannot offer a control
+   * that would only be refused.
+   */
+  saveConfig: boolean;
+  /**
    * Remove this session from the list (#62).
    *
    * A temporary terminal's own action, offered once its run has ended: that is
@@ -252,6 +268,7 @@ export function availableActions(
     directory: hasDirectory,
     copyPath: hasDirectory,
     forceStop: owned && isLive(runtime.status),
+    saveConfig: config.temporary === true,
     remove:
       config.temporary === true && (runtime.status === "stopped" || runtime.status === "exited"),
   };

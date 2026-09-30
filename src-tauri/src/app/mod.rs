@@ -14,8 +14,10 @@
 
 pub mod activation;
 pub mod applications;
+pub mod form;
 pub mod launch;
 pub mod recommend;
+pub mod terminals;
 
 use std::path::Path;
 use std::sync::Arc;

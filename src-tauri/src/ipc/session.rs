@@ -16,12 +16,12 @@
 use serde::Serialize;
 use tauri::State;
 
-// Aliased so the command below can keep the plain name the window calls:
-// `add_application` is a Tauri command *and* an app-layer operation, and the
-// two are the same thing one call apart.
-use crate::app::applications::{
-    add_application as register_application, AddApplicationError, NewApplication,
-};
+// Aliased so the commands below can keep the plain names the window calls:
+// `add_application` and `save_terminal_config` are each a Tauri command *and*
+// an app-layer operation, and the two are the same thing one call apart.
+use crate::app::applications::{add_application as register_application, NewApplication};
+use crate::app::form::FormError;
+use crate::app::terminals::{save_terminal_config as save_terminal, SaveTerminal};
 use crate::config::{ConfigReportDto, SessionConfigDto};
 use crate::session::core::{CreatedSession, SessionCore, SessionEntry, SessionError};
 use crate::session::runtime::SessionRuntime;
@@ -139,7 +139,7 @@ pub fn add_application(
     core: State<'_, SessionCore>,
     report: State<'_, ConfigReportDto>,
     form: NewApplication,
-) -> Result<CreatedSessionDto, AddApplicationError> {
+) -> Result<CreatedSessionDto, FormError> {
     let config_file = report.config_path.as_deref().map(std::path::Path::new);
     register_application(&core, config_file, form).map(CreatedSessionDto::configured)
 }
@@ -178,6 +178,32 @@ impl From<crate::app::recommend::DisplayAdvice> for DisplayAdviceDto {
             program: advice.program,
         }
     }
+}
+
+/// Save a running (or ended) temporary terminal's launch configuration (#65).
+///
+/// The other half of the quick entry: "新建 PowerShell" makes a terminal that no
+/// file describes, and this makes one the config file does — the shell, the
+/// directory and the name, and nothing about what was typed into it. The
+/// session is not restarted, copied or re-keyed; it becomes a configured one
+/// where it stands (`app::terminals` says why).
+///
+/// The answer is the same pair the quick entry answers with, so the window can
+/// re-render the row it just saved from the answer rather than re-reading a
+/// list that may not have caught up — and the runtime in it is the run that was
+/// already going.
+///
+/// The file to write comes from the startup report for the same reason
+/// [`add_application`] does: it records the file this process actually read.
+#[tauri::command]
+pub fn save_terminal_config(
+    core: State<'_, SessionCore>,
+    report: State<'_, ConfigReportDto>,
+    session_id: String,
+    form: SaveTerminal,
+) -> Result<CreatedSessionDto, FormError> {
+    let config_file = report.config_path.as_deref().map(std::path::Path::new);
+    save_terminal(&core, config_file, &session_id, form).map(CreatedSessionDto::configured)
 }
 
 /// Open a session: start it, or select the run it already has (#64).

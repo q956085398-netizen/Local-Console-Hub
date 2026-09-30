@@ -139,35 +139,62 @@ export interface NewApplicationFormDto {
 }
 
 /**
- * Why an application could not be added.
+ * The "保存启动配置" form, as the dialog sends it (#65,
+ * src-tauri/src/app/terminals.rs).
  *
- * `field` names the form input the message belongs to when one of the config
- * layer's validations refused it, so the dialog can put the sentence beside the
- * offending box instead of only in a banner.
+ * The launch method is deliberately absent: the shell and the working
+ * directory are read from the terminal being saved, so this form carries only
+ * the words the Hub cannot know. `name` is required — it is what the row will
+ * be called after a restart — and the two optional fields are the free text
+ * D-027 gives both session types.
  */
-export interface AddApplicationErrorDto {
+export interface SaveTerminalFormDto {
+  name: string;
+  purpose?: string;
+  closeImpact?: string;
+}
+
+/**
+ * A save from a form that was refused.
+ *
+ * Shared by the two entries that save a launch configuration (#64's "添加
+ * 应用" and #65's "保存启动配置"), because the backend answers both with one
+ * shape (src-tauri/src/app/form.rs) and two declarations of it would be two
+ * places to forget one of them. `field` names the form input the message
+ * belongs to when one of the config layer's validations refused it, so a
+ * dialog can put the sentence beside the offending box instead of only in a
+ * banner.
+ */
+export interface FormErrorDto {
   field?: string;
   message: string;
 }
 
 /**
- * The answer to one "添加应用" (#64).
+ * The answer to one form save (#64, #65).
  *
  * One type for both ends of the call — the registry hook that performs it and
  * the dialog that renders it — because the success half carries the id the
  * workspace selects and the failure half carries the field the dialog places
- * the message on. Two declarations of the same shape would be two places to
- * forget one of them.
+ * the message on.
  */
-export type AddApplicationOutcome =
+export type FormSaveOutcome =
   { ok: true; sessionId: string } | { ok: false; message: string; field?: string };
 
-/** Runtime guard for a refusal the add-application dialog can place. */
-export function isAddApplicationErrorDto(value: unknown): value is AddApplicationErrorDto {
+/**
+ * Runtime guard for a refusal a form's dialog can place.
+ *
+ * It excludes anything carrying a session-error `kind`, which a save never
+ * produces: a `SessionErrorDto` also has a string `message` and no `field`, so
+ * without the exclusion a refused lifecycle command would be read as a form
+ * refusal and shown without the operation that actually failed.
+ */
+export function isFormErrorDto(value: unknown): value is FormErrorDto {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (
     typeof candidate.message === "string" &&
+    candidate.kind === undefined &&
     (candidate.field === undefined || typeof candidate.field === "string")
   );
 }

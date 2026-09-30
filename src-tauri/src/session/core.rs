@@ -48,7 +48,7 @@ use crate::window::TopLevelWindow;
 
 use super::event::{
     AppSummary, AppSummaryChanged, RunRecordUpdated, SessionCreated, SessionEvent, SessionRemoved,
-    SessionStateChanged, TerminalOutput,
+    SessionSaved, SessionStateChanged, TerminalOutput,
 };
 use super::runtime::{RunId, RunRecord, SessionErrorInfo, SessionRuntime, Timestamp};
 use super::state::SessionStatus;
@@ -933,6 +933,27 @@ impl SessionCore {
             config: entry.config_dto(),
         }));
         self.publish_summary();
+    }
+
+    /// Announce that a session's configuration is now a saved one (#65).
+    ///
+    /// The membership counts do not move, so unlike its two neighbours this
+    /// publishes no summary: nothing about "how many sessions are there, how
+    /// many are running" changed. What changed is what one row *is*, and that
+    /// is the whole payload.
+    ///
+    /// Sent after the config file holds the entry, never before — the event is
+    /// the window's licence to render a row as saved, and a window told that
+    /// before the file agreed would be showing the user a save that a restart
+    /// would not keep.
+    pub(crate) fn publish_saved(&self, session_id: &str) {
+        let Some(entry) = self.session_entry(session_id) else {
+            return;
+        };
+        self.sink.publish(SessionEvent::Saved(SessionSaved {
+            session_id: session_id.to_owned(),
+            config: entry.config_dto(),
+        }));
     }
 
     /// Announce that a session left the registry (#62).
@@ -1875,6 +1896,74 @@ impl SessionCore {
         true
     }
 
+    /// Record that this session's configuration is now one the config file
+    /// describes (#65).
+    ///
+    /// Provenance and configuration move together, in one lock hold: the
+    /// session stops being one the window made and becomes one the file
+    /// describes — `temporary: false`, so it is no longer removable from the
+    /// list and no longer lost when the app exits, and carrying the name the
+    /// user saved it under rather than the one it was minted with.
+    ///
+    /// **Nothing about the run is touched.** The session keeps its id, its
+    /// handle, its process tree and its scrollback: saving a terminal is a
+    /// statement about where its launch configuration lives, and stating it
+    /// must not create a second process, restart the first, or replay anything
+    /// the user typed (spec #59 decision 6, story 25). The id in particular:
+    /// it is what a terminal attachment, a deep link and a log directory are
+    /// keyed by, and minting a prettier one would mean re-keying a live run.
+    ///
+    /// A session that is already configured is refused rather than re-marked.
+    /// The caller has nothing new to say about it, and a second save would
+    /// quietly rewrite what the file already holds under a name the user may
+    /// have chosen there deliberately.
+    pub(crate) fn mark_saved(
+        &self,
+        session_id: &str,
+        config: SessionConfig,
+    ) -> Result<SessionEntry, SessionError> {
+        const OPERATION: &str = "mark_saved";
+
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        let mut state = lock(&handle);
+        if !state.temporary {
+            return Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                format!(
+                    "session `{session_id}` is already a configuration saved in the config file"
+                ),
+                None,
+            ));
+        }
+        if config.id != session_id {
+            // Unreachable from the one caller: the entry it validates names the
+            // session it is saving. Refused rather than asserted, because the
+            // alternative to saying so is a registry whose key and whose
+            // configuration disagree about what this session is called.
+            return Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                format!(
+                    "the saved configuration names `{}` rather than `{session_id}`; a save has to \
+                     describe the session it was made for",
+                    config.id
+                ),
+                None,
+            ));
+        }
+
+        state.config = config;
+        state.temporary = false;
+        Ok(SessionEntry {
+            config: state.config.clone(),
+            temporary: false,
+        })
+    }
+
     /// Remove a temporary session from the registry (#62).
     ///
     /// Refused for a configured session — that one belongs to the config file,
@@ -2184,7 +2273,7 @@ impl SessionCore {
     /// The pair travel together because both halves of an answer need both:
     /// a listing that marks which rows are temporary, and the creation event
     /// that files one under the same rule.
-    fn session_entry(&self, session_id: &str) -> Option<SessionEntry> {
+    pub(crate) fn session_entry(&self, session_id: &str) -> Option<SessionEntry> {
         self.handle(session_id).map(|state| {
             let state = lock(&state);
             SessionEntry {
@@ -7069,6 +7158,194 @@ mod tests {
                 scrollback(&core, &id).contains("LCH-T62-LOG"),
                 "the output is still where a temporary terminal keeps it"
             );
+        }
+
+        /// The saved configuration of `created`, under a name the user chose.
+        fn saved_config(created: &CreatedSession, name: &str) -> SessionConfig {
+            let mut config = created.config.clone();
+            config.name = name.to_owned();
+            config
+        }
+
+        /// Stories 24–25, H08: saving a terminal states where its launch
+        /// configuration lives and touches nothing that is running.
+        #[test]
+        fn saving_a_running_terminal_keeps_its_run_its_process_and_its_output() {
+            let (core, sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            send(&core, &id, "Write-Host (\"LCH-T65-\" + \"KEPT\")");
+            wait_until("the shell to print the marker", || {
+                scrollback(&core, &id).contains("LCH-T65-KEPT")
+            });
+            let before = core.snapshot(&id).expect("the terminal is running");
+            let name_before = created.config.name.clone();
+
+            let entry = core
+                .mark_saved(&id, saved_config(&created, "项目终端"))
+                .expect("a temporary terminal can be saved");
+
+            assert!(!entry.temporary, "a saved session is not removable");
+            assert_eq!(entry.config.name, "项目终端");
+            assert_eq!(entry.config.id, id, "the session keeps its identity");
+
+            let after = core.snapshot(&id).expect("the terminal is still there");
+            assert_eq!(
+                after.run_id, before.run_id,
+                "saving must not start, restart or copy the run"
+            );
+            assert_eq!(
+                after.pid, before.pid,
+                "the process is the one that was running"
+            );
+            assert_eq!(after.status, SessionStatus::Running);
+            assert_eq!(core.snapshots().len(), 1, "one row, one process");
+            assert!(
+                scrollback(&core, &id).contains("LCH-T65-KEPT"),
+                "the output of the run survived the save"
+            );
+            assert_eq!(
+                core.configs()
+                    .into_iter()
+                    .find(|config| config.id == id)
+                    .map(|config| config.name),
+                Some("项目终端".to_owned()),
+                "the listing is the saved configuration"
+            );
+            assert_ne!(name_before, "项目终端", "the fixture renamed something");
+
+            // Announcing it is the caller's, and it happens only once the file
+            // holds the entry — `app::terminals` publishes it there, and its
+            // own tests pin that a refused save announces nothing.
+            core.publish_saved(&id);
+            let saved_events: Vec<SessionEvent> = about(&sink, &id)
+                .into_iter()
+                .filter(|event| matches!(event, SessionEvent::Saved(_)))
+                .collect();
+            match saved_events.as_slice() {
+                [SessionEvent::Saved(payload)] => {
+                    assert_eq!(payload.session_id, id);
+                    assert_eq!(payload.config.name, "项目终端");
+                    assert!(
+                        !payload.config.temporary,
+                        "a row the window still files as temporary is a row it will let the user \
+                         remove"
+                    );
+                }
+                other => panic!("exactly one save is announced, got {other:?}"),
+            }
+
+            core.stop(&id).expect("cleanup");
+        }
+
+        /// The consequence of being saved: the file owns the row now, so the
+        /// window no longer offers to remove it — the same refusal a
+        /// configured session has always had.
+        #[test]
+        fn a_saved_terminal_is_no_longer_the_windows_to_remove() {
+            let (core, _sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            core.mark_saved(&id, saved_config(&created, "项目终端"))
+                .expect("the terminal is saved");
+            send(&core, &id, "exit");
+            wait_until("the shell to end", || {
+                core.snapshot(&id).map(|runtime| runtime.status) == Some(SessionStatus::Exited)
+            });
+
+            let error = core
+                .remove_session(&id)
+                .expect_err("a saved session belongs to the config file");
+
+            assert!(error.message.contains("config file"), "{error:?}");
+            assert!(
+                core.snapshot(&id).is_some(),
+                "the row survives the refused removal"
+            );
+        }
+
+        /// A second save has nothing to say: the file already describes this
+        /// session, and re-stating it would rewrite the name the user chose
+        /// there.
+        #[test]
+        fn saving_an_already_saved_terminal_is_refused() {
+            let (core, _sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            core.mark_saved(&id, saved_config(&created, "项目终端"))
+                .expect("the first save");
+
+            let error = core
+                .mark_saved(&id, saved_config(&created, "另一个名字"))
+                .expect_err("a saved session is not saved again");
+
+            assert!(error.message.contains("already"), "{error:?}");
+            assert_eq!(
+                core.configs()
+                    .into_iter()
+                    .find(|config| config.id == id)
+                    .map(|config| config.name),
+                Some("项目终端".to_owned()),
+                "the refused save must not have renamed anything"
+            );
+
+            core.stop(&id).expect("cleanup");
+        }
+
+        /// The configuration a save records has to be *this* session's: a
+        /// registry whose key and whose configuration disagree would render
+        /// one row under another session's name.
+        #[test]
+        fn a_configuration_naming_another_session_is_refused() {
+            let (core, _sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            let mut elsewhere = created.config.clone();
+            elsewhere.id = "somewhere-else".to_owned();
+
+            let error = core
+                .mark_saved(&id, elsewhere)
+                .expect_err("a save describes the session it was made for");
+
+            assert!(error.message.contains("somewhere-else"), "{error:?}");
+            assert!(
+                core.entries()
+                    .iter()
+                    .find(|entry| entry.config.id == id)
+                    .is_some_and(|entry| entry.temporary),
+                "the refused save must leave the session temporary"
+            );
+
+            core.stop(&id).expect("cleanup");
+        }
+
+        /// A session the registry does not hold cannot be saved, and the
+        /// refusal says so rather than failing silently.
+        #[test]
+        fn saving_an_unknown_session_is_refused() {
+            let (core, _sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            let config = created.config.clone();
+            core.stop(&id).expect("cleanup");
+            core.remove_session(&id)
+                .expect("an ended terminal is removable");
+
+            let error = core
+                .mark_saved(&id, config)
+                .expect_err("a removed session cannot be saved");
+
+            assert_eq!(error.kind, SessionErrorKind::UnknownSession);
         }
     }
 }

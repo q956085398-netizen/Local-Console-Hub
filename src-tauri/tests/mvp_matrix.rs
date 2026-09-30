@@ -36,8 +36,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use local_console_hub_lib::config::{
-    load_from_file, AppPaths, DisplayMode, LifecycleOwner, LogSource, SessionConfig,
-    SessionConfigDto,
+    load_from_file, AppPaths, DisplayMode, EffectiveLogMode, LifecycleOwner, LogSource,
+    SessionConfig, SessionConfigDto, SessionType,
 };
 use local_console_hub_lib::logging::{session_run_files, BufferSummary, LogRoots, LogState};
 use local_console_hub_lib::session::core::SessionCore;
@@ -974,6 +974,8 @@ fn an_added_application_joins_a_real_config_and_opens_once() {
             close_impact: None,
             port: Some(8188),
             url: Some("http://127.0.0.1:8188/".to_owned()),
+            // Left alone: the two #66 dimensions then come out as the
+            // Hub-internal, Hub-managed entry every config had before them.
             display: None,
             lifecycle: None,
             logging: None,
@@ -1045,6 +1047,210 @@ fn an_added_application_joins_a_real_config_and_opens_once() {
 
     fixture.core.stop(&id).expect("cleanup");
     fixture.core.stop("svc").expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Saving a terminal's launch configuration (#65)
+// ---------------------------------------------------------------------------
+
+/// Save the running terminal `id` under `name`, through the app operation the
+/// command calls.
+fn save_terminal(fixture: &Fixture, id: &str, name: &str) -> SessionConfig {
+    local_console_hub_lib::app::terminals::save_terminal_config(
+        &fixture.core,
+        Some(&fixture.paths.config_file),
+        id,
+        local_console_hub_lib::app::terminals::SaveTerminal {
+            name: name.to_owned(),
+            purpose: Some("跑构建的终端".to_owned()),
+            close_impact: None,
+        },
+    )
+    .expect("the terminal is saved")
+    .config
+}
+
+/// "保存启动配置" on a workspace that came from a config file (#65, spec #59
+/// decisions 4 and 6).
+///
+/// The composition this file exists for: a temporary terminal that is really
+/// running is saved into the file the bootstrap reads, and the terminal that
+/// was running is the *same* process afterwards — same run, same pid, same
+/// scrollback, and no second row (H08's 核对原 PID). A fresh load of the file
+/// then brings back a terminal that starts again in the saved shell and
+/// directory, carrying none of what was typed into the old one (stories 24–25,
+/// H08's 保存仅保留启动方式).
+#[test]
+fn a_saved_terminal_joins_a_real_config_and_keeps_its_run() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    // A service that is already running, so "saving restarts nothing" has
+    // something else in the workspace to be about, not just the terminal.
+    fixture
+        .core
+        .start("svc")
+        .expect("the configured service starts");
+    let service = Identity::of(&fixture, "svc");
+
+    let created = fixture
+        .core
+        .create_temporary_terminal(Some(&fixture.root.to_string_lossy()))
+        .expect("the quick entry creates a terminal");
+    let id = created.config.id.clone();
+    fixture.send(&id, &marker("LCH-T65", "LIVE"));
+    fixture.expect_in_scrollback(&id, "LCH-T65-LIVE");
+    let terminal = Identity::of(&fixture, &id);
+    let scrollback_before = fixture.scrollback(&id);
+
+    let saved = save_terminal(&fixture, &id, "项目终端");
+
+    // The same session, the same run, the same process (story 25: 不复制、不重放).
+    assert_eq!(saved.id, id);
+    terminal.assert_kept(&fixture);
+    assert_eq!(fixture.status(&id), SessionStatus::Running);
+    assert_eq!(
+        fixture.scrollback(&id),
+        scrollback_before,
+        "the output the user was reading belongs to the run that produced it"
+    );
+    service.assert_kept(&fixture);
+    assert_eq!(
+        fixture.core.entries().len(),
+        4,
+        "three configured sessions and the saved terminal — not one more"
+    );
+    assert_eq!(fixture.config(&id).name, "项目终端");
+    let entry = fixture
+        .core
+        .entries()
+        .into_iter()
+        .find(|entry| entry.config.id == id)
+        .expect("the saved session is in the registry");
+    assert!(
+        !entry.temporary,
+        "a saved terminal is no longer the window's to remove"
+    );
+
+    // The user ends the shell, the app exits, and the next start reads the file
+    // and nothing else.
+    fixture.send(&id, "exit");
+    fixture.wait_until("the saved terminal to end", || {
+        fixture.status(&id) == SessionStatus::Exited
+    });
+    fixture.core.stop("svc").expect("cleanup");
+
+    let reloaded = load_from_file(&fixture.paths.config_file).expect("the config file is readable");
+    assert!(reloaded.errors.is_empty(), "{:?}", reloaded.errors);
+    let ids: Vec<&str> = reloaded.sessions.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["term-a", "term-b", "svc", id.as_str()],
+        "the saved terminal joins the file rather than replacing anything"
+    );
+    let written = reloaded
+        .sessions
+        .iter()
+        .find(|session| session.id == id)
+        .expect("the saved terminal is in the file");
+    assert_eq!(written.session_type, SessionType::Terminal);
+    assert_eq!(written.name, "项目终端");
+    assert_eq!(written.cwd.as_deref(), Some(fixture.root.as_path()));
+    assert_eq!(
+        written.initial_command, None,
+        "a saved terminal must carry nothing to replay"
+    );
+    assert_eq!(written.logging.mode, EffectiveLogMode::Off);
+    assert_eq!(written.logging.source, LogSource::None);
+
+    // And it really starts: a new run, a new process, in the saved directory.
+    let restored = SessionCore::without_listener();
+    for session in reloaded.sessions {
+        restored.register(session).expect("the config registers");
+    }
+    assert!(
+        restored
+            .entries()
+            .into_iter()
+            .find(|entry| entry.config.id == id)
+            .is_some_and(|entry| !entry.temporary),
+        "a session the file describes comes back configured, not temporary"
+    );
+    let restarted = restored
+        .start(&id)
+        .expect("the saved terminal starts again");
+    assert_eq!(restarted.status, SessionStatus::Running);
+    assert_ne!(
+        restarted.run_id.map(|run_id| run_id.to_string()).as_deref(),
+        Some(terminal.run_id.as_str()),
+        "starting again is a new run, not the old one resumed"
+    );
+    assert_eq!(
+        restored
+            .configs()
+            .into_iter()
+            .find(|config| config.id == id)
+            .and_then(|config| config.cwd),
+        Some(fixture.root.clone()),
+        "the rebuilt terminal opens where it was saved"
+    );
+    restored.stop(&id).expect("cleanup");
+}
+
+/// A save the config file refuses changes nothing (#65, decision 15).
+///
+/// The file is the user's, and it is the one thing that can refuse: while it is
+/// broken, the terminal it was going to describe has to keep running, keep its
+/// configuration, and stay removable after it ends — a refused save that marked
+/// it saved would be the "虚报已保存" the decision forbids.
+#[test]
+fn a_refused_save_leaves_a_running_terminal_temporary() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    let created = fixture
+        .core
+        .create_temporary_terminal(Some(&fixture.root.to_string_lossy()))
+        .expect("the quick entry creates a terminal");
+    let id = created.config.id.clone();
+    let terminal = Identity::of(&fixture, &id);
+
+    // Someone edits the file into something this build cannot append to.
+    let broken = "sessions: [ uh oh\n";
+    std::fs::write(&fixture.paths.config_file, broken).expect("the fixture file is writable");
+
+    let error = local_console_hub_lib::app::terminals::save_terminal_config(
+        &fixture.core,
+        Some(&fixture.paths.config_file),
+        &id,
+        local_console_hub_lib::app::terminals::SaveTerminal {
+            name: "项目终端".to_owned(),
+            purpose: None,
+            close_impact: None,
+        },
+    )
+    .expect_err("a broken file cannot be appended to");
+
+    assert!(error.message.contains("YAML"), "{}", error.message);
+    assert_eq!(
+        std::fs::read_to_string(&fixture.paths.config_file).expect("readable"),
+        broken,
+        "a refusal must leave the user's file exactly as it was"
+    );
+    terminal.assert_kept(&fixture);
+    assert_eq!(fixture.status(&id), SessionStatus::Running);
+    assert_eq!(
+        fixture.config(&id).name,
+        created.config.name,
+        "the refused save must not have renamed the terminal"
+    );
+    assert!(
+        fixture
+            .core
+            .entries()
+            .into_iter()
+            .find(|entry| entry.config.id == id)
+            .is_some_and(|entry| entry.temporary),
+        "the terminal is still the window's to remove once it ends"
+    );
+
+    fixture.core.stop(&id).expect("cleanup");
 }
 
 /// A standalone-window application, from the real config file to the process

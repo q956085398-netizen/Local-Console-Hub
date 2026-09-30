@@ -6,7 +6,7 @@ import {
   isCreatedSessionDto,
   isRunRecordDto,
   isServiceHealthDto,
-  isSessionCreatedDto,
+  isSessionConfigEventDto,
   isSessionRemovedDto,
   isSessionRuntimeDto,
   type AppSummaryDto,
@@ -244,15 +244,17 @@ function terminalConfig(id = "terminal-1a2b") {
 }
 
 describe("the membership payloads (#62)", () => {
-  it("accepts a creation that carries its configuration", () => {
+  it("accepts a configuration event that carries its session's configuration", () => {
     const config = terminalConfig();
-    expect(isSessionCreatedDto({ sessionId: config.id, config })).toBe(true);
+    expect(isSessionConfigEventDto({ sessionId: config.id, config })).toBe(true);
     // The id has to be the one the configuration is about: a listener files
     // the row by it, and two ids that disagree would file it under a session
     // that does not exist.
-    expect(isSessionCreatedDto({ sessionId: "other", config })).toBe(false);
-    expect(isSessionCreatedDto({ sessionId: config.id })).toBe(false);
-    expect(isSessionCreatedDto({ sessionId: config.id, config: { id: config.id } })).toBe(false);
+    expect(isSessionConfigEventDto({ sessionId: "other", config })).toBe(false);
+    expect(isSessionConfigEventDto({ sessionId: config.id })).toBe(false);
+    expect(isSessionConfigEventDto({ sessionId: config.id, config: { id: config.id } })).toBe(
+      false,
+    );
   });
 
   it("accepts a removal, and only a removal", () => {

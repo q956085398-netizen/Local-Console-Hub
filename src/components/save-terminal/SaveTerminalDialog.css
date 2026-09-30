@@ -1,0 +1,48 @@
+/*
+ * The "保存启动配置" form's own two blocks (#65).
+ *
+ * The modal shell itself is shared with "添加应用" (`../dialog/dialog.css`);
+ * what is only this dialog's is the launch method it *states* instead of
+ * asking for, and the sentence that says what is not being saved.
+ */
+
+/* The terminal's shell and directory: read-only facts, laid out like the
+ * header's metadata (a quiet label, the value in the mono face). Not inputs
+ * with `readonly` on them — there is nothing here to focus or select, and a
+ * disabled box would read as something the user is locked out of. */
+.save-terminal__method {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--input-bg);
+}
+
+.save-terminal__method-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.save-terminal__method-row dt {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.save-terminal__method-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.save-terminal__promise {
+  margin: 0;
+  color: var(--idle-fg);
+  font-size: 11px;
+}

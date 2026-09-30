@@ -24,7 +24,7 @@ describe("AddApplicationDialog", () => {
     }
     // Three `必填` marks, in that order: the fields the spec names as required
     // (spec #59 decision 7) and no others.
-    expect(markup.match(/add-app__required/g)).toHaveLength(3);
+    expect(markup.match(/dialog__required/g)).toHaveLength(3);
     for (const optional of ["端口", "网页地址", "用途", "关闭影响", "日志策略"]) {
       expect(markup).toContain(optional);
     }

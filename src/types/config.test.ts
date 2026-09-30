@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isConfigReportDto,
   isEffectiveLoggingDto,
+  isFormErrorDto,
   isSessionConfigDto,
   type ConfigReportDto,
 } from "./config";
@@ -170,5 +171,30 @@ describe("config DTO guards", () => {
     expect(isConfigReportDto({ ...backendReport, fileStatus: "loaded", configPath: 42 })).toBe(
       false,
     );
+  });
+});
+
+describe("the save refusal a dialog places (#64, #65)", () => {
+  it("accepts a sentence with or without a field to put it beside", () => {
+    expect(isFormErrorDto({ message: "没有配置文件位置" })).toBe(true);
+    expect(isFormErrorDto({ field: "name", message: "`name` is empty" })).toBe(true);
+    expect(isFormErrorDto({ field: 7, message: "no" })).toBe(false);
+    expect(isFormErrorDto({ field: "name" })).toBe(false);
+    expect(isFormErrorDto("boom")).toBe(false);
+    expect(isFormErrorDto(null)).toBe(false);
+  });
+
+  it("does not read a refused lifecycle command as a form refusal", () => {
+    // A session error also carries a string message and no field, so without
+    // this exclusion a failed command would be shown inside the dialog as if
+    // the form had refused it — losing the operation the message names.
+    expect(
+      isFormErrorDto({
+        kind: "unknown_session",
+        sessionId: "terminal-1a2b",
+        operation: "save_terminal_config",
+        message: "no session is registered as `terminal-1a2b`",
+      }),
+    ).toBe(false);
   });
 });
