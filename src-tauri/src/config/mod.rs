@@ -71,7 +71,10 @@ impl LoadedConfig {
 ///
 /// - An empty/whitespace document loads as an empty session list (fresh
 ///   install with no config yet is not an error).
-/// - Broken YAML yields a single file-level error entry.
+/// - Broken YAML yields a single error entry: file-level, except for the one
+///   mistake whose real cause cannot be read off the parser's own words (see
+///   [`quoted_windows_path_entry`]), which is attributed to the entry holding
+///   it and told what to change.
 /// - Each entry under `sessions:` is parsed and validated independently;
 ///   failures become per-entry errors while the remaining sessions load.
 /// - Duplicate ids reject every entry after the first, keeping the
@@ -88,14 +91,15 @@ pub fn load_from_str(text: &str) -> LoadedConfig {
     let document: serde_yaml::Value = match serde_yaml::from_str(text) {
         Ok(document) => document,
         Err(err) => {
+            let (index, message) = yaml_failure_message(text, &err);
             return LoadedConfig {
                 file_status: ConfigFileStatusDto::Loaded,
                 sessions: Vec::new(),
                 errors: vec![SessionConfigError {
-                    index: 0,
+                    index,
                     session_id: None,
                     field: None,
-                    message: format!("config file is not valid YAML: {err}"),
+                    message,
                 }],
             };
         }
@@ -303,6 +307,143 @@ fn quoted_error_field(message: &str, marker: &str) -> Option<String> {
     Some(value[..end].to_owned())
 }
 
+/// The entry number and message for a document that failed to parse.
+///
+/// Normally the failure is the file's: the document is not YAML, and the
+/// parser's own words (`<err>`) say what is wrong with it. One mistake is the
+/// exception, because its message names the mechanism rather than the thing
+/// the user wrote: a Windows path inside a `"double-quoted"` scalar. The
+/// config file is hand-written and Windows paths are the normal case here
+/// (D-010), so that failure is attributed to the entry holding it and told
+/// what to change — see [`QUOTED_WINDOWS_PATH_FIX`].
+fn yaml_failure_message(text: &str, error: &serde_yaml::Error) -> (usize, String) {
+    let Some(entry) = quoted_windows_path_entry(text, error) else {
+        return (0, format!("config file is not valid YAML: {error}"));
+    };
+    let detail = format!("{error} — {QUOTED_WINDOWS_PATH_FIX}");
+    match entry {
+        Some(index) => (
+            index,
+            format!("session entry {index} is not valid YAML: {detail}"),
+        ),
+        None => (0, format!("config file is not valid YAML: {detail}")),
+    }
+}
+
+/// The `sessions:` entry that holds a quoted Windows path, when the parse
+/// error is that mistake.
+///
+/// `None` means the failure is not this one — and so is left exactly as the
+/// parser reported it. `Some(None)` means it is this one but the entry number
+/// could not be read off the text, which leaves the error file-level rather
+/// than pointing at a guessed entry.
+fn quoted_windows_path_entry(text: &str, error: &serde_yaml::Error) -> Option<Option<usize>> {
+    let location = error.location()?;
+    let line = text.lines().nth(location.line().checked_sub(1)?)?;
+    if !has_quoted_invalid_escape(line) {
+        return None;
+    }
+    Some(entry_at(text, location.index()))
+}
+
+/// The fix for a path that the scanner reads as escape sequences.
+///
+/// Both spellings are named because both work and neither is guessable from
+/// the parser's message: single quotes are the literal style YAML has for
+/// exactly this, and forward slashes are accepted by Windows itself.
+const QUOTED_WINDOWS_PATH_FIX: &str = "a backslash inside a \"double-quoted\" YAML scalar starts \
+     an escape sequence, so the path is not read as written — write it in single quotes \
+     (`command: 'C:\\Tools\\app.exe'`) or with forward slashes (`command: C:/Tools/app.exe`)";
+
+/// Whether a line writes a path the scanner will read as escapes: a backslash
+/// inside a double-quoted scalar that YAML does not define as an escape
+/// sequence.
+///
+/// Checking the source rather than the parser's wording keeps this working
+/// for both shapes of the failure, which say different things: an undefined
+/// escape (`"C:\Tools\app.exe"` → *found unknown escape character*) and a
+/// `\U` that is not followed by the eight hex digits it requires
+/// (`"C:\Users\me"` → *did not find expected hexadecimal number*).
+fn has_quoted_invalid_escape(line: &str) -> bool {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            // A quote only opens or closes its own style; backslashes are
+            // literal in single quotes, which is the fix this looks for.
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '\\' if in_double => {
+                let Some(escape) = chars.next() else {
+                    return true;
+                };
+                if !is_yaml_escape(escape, &mut chars) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// YAML's double-quoted escape sequences (YAML 1.2 §5.7): the named ones,
+/// plus `\x`, `\u` and `\U` with their hex digits.
+fn is_yaml_escape(first: char, rest: &mut std::str::Chars<'_>) -> bool {
+    match first {
+        '0' | 'a' | 'b' | 't' | 'n' | 'v' | 'f' | 'r' | 'e' | ' ' | '"' | '/' | '\\' | 'N'
+        | '_' | 'L' | 'P' => true,
+        'x' => hex_digits(rest, 2),
+        'u' => hex_digits(rest, 4),
+        'U' => hex_digits(rest, 8),
+        _ => false,
+    }
+}
+
+fn hex_digits(rest: &mut std::str::Chars<'_>, count: usize) -> bool {
+    for _ in 0..count {
+        match rest.next() {
+            Some(ch) if ch.is_ascii_hexdigit() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// The 1-based number of the `sessions:` list item that contains the byte
+/// offset `offset`.
+///
+/// It reads the text rather than a parsed value, because there is no parsed
+/// value: the document is what failed. The items are the `-` lines carrying
+/// the indentation of the list's first one, so a list nested inside an entry
+/// is not mistaken for a sibling. `None` when no item starts before the
+/// offset or the root key is not there — the caller then says "the file"
+/// rather than naming an entry that may not be the one at fault.
+fn entry_at(text: &str, offset: usize) -> Option<usize> {
+    let mut key_seen = false;
+    let mut item_indent = None;
+    let mut entry = 0usize;
+    let mut start = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if !key_seen {
+            key_seen = trimmed == "sessions:" && !line.starts_with(char::is_whitespace);
+        } else if trimmed == "-" || trimmed.starts_with("- ") {
+            let indent = line.len() - line.trim_start().len();
+            let expected = *item_indent.get_or_insert(indent);
+            if indent == expected {
+                if start > offset {
+                    break;
+                }
+                entry += 1;
+            }
+        }
+        start += line.len() + 1;
+    }
+    (entry > 0).then_some(entry)
+}
+
 #[derive(Clone, Copy)]
 enum FieldShape {
     String,
@@ -433,6 +574,111 @@ mod tests {
         assert_eq!(loaded.errors[0].index, 0);
         assert_eq!(loaded.errors[0].field, None);
         assert!(loaded.errors[0].message.contains("YAML"));
+    }
+
+    /// A backslash inside a `"double-quoted"` scalar is an escape sequence,
+    /// so the scanner rejects the entry with a sentence about escapes and
+    /// never mentions the path. The user wrote a Windows path — the normal
+    /// case in a hand-written config (D-010) — so the error has to say which
+    /// entry it is and what to write instead.
+    #[test]
+    fn a_quoted_windows_path_names_its_entry_and_the_fix() {
+        // The two fields a Windows user writes a path into, and the two
+        // sentences the scanner produces for one: an undefined escape, and a
+        // `\U` that is not the eight hex digits it requires.
+        for path in ["C:\\Tools\\app.exe", "C:\\Users\\me\\app.exe"] {
+            for field in ["command", "cwd"] {
+                let first = session_yaml("other", "service", "command: run");
+                let second = session_yaml("app", "service", &format!("{field}: \"{path}\""));
+                let loaded = load_from_str(&config(&[first, second]));
+
+                assert!(
+                    loaded.sessions.is_empty(),
+                    "the document does not parse at all"
+                );
+                assert_eq!(loaded.errors.len(), 1);
+                let error = &loaded.errors[0];
+                assert_eq!(
+                    error.index, 2,
+                    "the error belongs to the entry holding the path"
+                );
+                assert!(error.message.contains("entry 2"), "{:?}", error.message);
+                assert!(
+                    error.message.contains("double-quoted"),
+                    "{:?}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("single quotes"),
+                    "{:?}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("forward slashes"),
+                    "{:?}",
+                    error.message
+                );
+            }
+        }
+    }
+
+    /// Both spellings the message names are what actually loads, so the
+    /// advice cannot drift away from the loader.
+    #[test]
+    fn the_fixes_the_message_names_load() {
+        let dir = TempDir::new("path-fixes");
+        let slashes = dir.0.display().to_string().replace('\\', "/");
+        let quoted = session_yaml(
+            "quoted",
+            "service",
+            &format!("command: 'C:\\Tools\\app.exe'\ncwd: {slashes}"),
+        );
+        let forward = session_yaml(
+            "forward",
+            "service",
+            &format!("command: C:/Tools/app.exe\ncwd: {slashes}"),
+        );
+        let loaded = load_from_str(&config(&[quoted, forward]));
+
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        assert_eq!(
+            loaded.sessions[0].command.as_deref(),
+            Some("C:\\Tools\\app.exe"),
+            "a single-quoted path is taken literally"
+        );
+        assert_eq!(
+            loaded.sessions[1].command.as_deref(),
+            Some("C:/Tools/app.exe")
+        );
+    }
+
+    /// Every other way a document fails to parse keeps the message it had:
+    /// the file is what is wrong, and the fix is not a quoted path.
+    #[test]
+    fn a_yaml_error_that_is_not_a_quoted_windows_path_keeps_its_message() {
+        // A stray flow sequence in the second entry.
+        let broken = "id: broken\nname: Broken\ntype: service\ncommand: [oops".to_owned();
+        let other = session_yaml("ok", "service", "command: run");
+        let loaded = load_from_str(&config(&[other.clone(), broken]));
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].index, 0);
+        assert!(loaded.errors[0]
+            .message
+            .contains("config file is not valid YAML"));
+        assert!(!loaded.errors[0].message.contains("single quotes"));
+
+        // A backslash that *is* a valid escape must not be blamed for an
+        // error that is somewhere else on the page.
+        let escaped = "id: esc\nname: Esc\ntype: service\n\
+                       command: \"C:\\\\Tools\\\\app.exe\"\nport: [oops"
+            .to_owned();
+        let loaded = load_from_str(&config(&[other, escaped]));
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].index, 0);
+        assert!(loaded.errors[0]
+            .message
+            .contains("config file is not valid YAML"));
+        assert!(!loaded.errors[0].message.contains("single quotes"));
     }
 
     #[test]
