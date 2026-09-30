@@ -758,12 +758,26 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
    `allow-close`、`allow-start-dragging`。少一个不会让构建失败，只会让那一次点击在真机上
    被拒绝——所以 `release.rs` 的 `the_title_bar_controls_are_granted_what_they_ask_for`
    钉住这五条。
-3. **图标只有一个来源。** `assets/brand/hub-mark.svg` 是那颗 mark（V2 参考图的几何，
-   24 单位 viewBox 原样保留），标题栏**直接渲染这个文件**，Windows 图标集
-   （`src-tauri/icons/`，含 exe 资源与安装包快捷方式用的 `icon.ico`）由
-   `scripts/generate-icon.mjs` 栅格化后 `npx tauri icon` 生成；托盘继续取
+3. **图标只有一个来源。** `assets/brand/hub-mark.svg` 是那颗 mark，标题栏**直接渲染这个
+   文件**，Windows 图标集（`src-tauri/icons/`，含 exe 资源与安装包快捷方式用的
+   `icon.ico`）由 `scripts/generate-icon.mjs` 栅格化后 `npx tauri icon` 生成；托盘继续取
    `default_window_icon()`，与窗口、任务栏同一套。于是「任务栏/托盘/快捷方式/窗口内」是
    同一颗 mark，而不是两份要人肉对齐的资产。D-013 的蓝色提示符图标作废（文件已删）。
+
+   > 2026-09-30 补记（#68 收尾）：源文件换成上游设计工程原件的
+   > `public/favicon.svg`（`E:\Grok-UI-Design\LocalConsoleHub`，`docs/DESIGN_SPEC_EXTRACTED.md`
+   > 头部记的就是这个工程），逐字采用。
+   >
+   > 原来那份是同一颗 mark 的转写，画在 24 单位网格上、tile 只占画布 75%。它在 128px 以上
+   > 好看，但 Windows 真正渲染的是 16px（通知区域）与 32px（任务栏）：那里的绿点与三条
+   > 列表行只剩几团糊影——用户看到的「太糊」就是这个。上游原件本来就为 16px 槽位画：
+   > 16 单位网格、更粗的元素、tile 满画布，缩到 32px 仍然分得清。
+   >
+   > 换的只是这份源文件，机制不变（一个文件既给标题栏也给图标集，脚本与守卫照旧）；
+   > 四角保持透明——tile 是圆角矩形且背后什么都没画，`icon.png`、`32x32.png` 与
+   > `icon.ico` 四个角的实测 alpha 分别是 0、3/255（圆角抗锯齿，像素本身是黑的不是白的）
+   > 与 0，证据在 `docs/VERIFICATION.md` §6。另一条路是保留转写、把元素加粗，那等于为
+   > 小尺寸再画一份，正是本条要避免的第二份资产。
 4. **最大化按钮是读数，不是本地开关。** 它在 `tauri://resize` 上重读 `is_maximized`，
    读失败时保留上一次读数；本地布尔值会被拖动到屏幕边缘、双击、Win+↑ 这些不经过按钮的
    最大化路径甩在后面。判断与订阅在 `src/state/window-controls.ts`（node 环境下有测试），
