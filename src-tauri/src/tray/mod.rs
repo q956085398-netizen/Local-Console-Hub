@@ -80,7 +80,8 @@ pub struct SessionFocusRequested {
 /// ## Why a missing icon is fatal
 ///
 /// The icon is the approved application identity, taken from the same icon set
-/// the window and the taskbar use (D-013) rather than a second asset that
+/// the window, the taskbar and the installers use (D-013; the set is generated
+/// from one Hub mark since #68, D-028) rather than a second asset that
 /// could drift from it. It is embedded at build time from `bundle.icon`, so
 /// its absence means a broken build rather than a condition to handle at
 /// runtime.

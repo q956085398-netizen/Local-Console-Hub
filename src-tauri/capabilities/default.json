@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "默认能力：主窗口使用核心权限",
+  "description": "默认能力：主窗口使用核心权限，加上合并标题栏所需的窗口操作权限（最小化 / 最大化 / 关闭 / 拖动）",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
 }

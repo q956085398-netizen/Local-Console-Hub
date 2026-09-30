@@ -334,3 +334,134 @@ fn the_uninstaller_checkbox_label_describes_what_it_deletes() {
         "the uninstaller's checkbox label and the wording this guard was written for disagree"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The window's title bar and its icon (issue #68, docs/DECISIONS.md D-028)
+// ---------------------------------------------------------------------------
+//
+// Three surfaces have to agree for the merged title bar to be the window's
+// only one, and none of them fails loudly when they drift apart: the window's
+// config (undecorated? resizable?), the capability the controls' commands are
+// gated by, and the icon the window, taskbar, tray and installers all show.
+// The first two are checked at click time in a running app — too late to be a
+// build failure; the third is a picture nothing compares.
+
+/// The main window's entry in `tauri.conf.json`, wherever it sits in the list.
+fn main_window() -> Value {
+    let windows = manifest("tauri.conf.json")["app"]["windows"].clone();
+
+    windows
+        .as_array()
+        .unwrap_or_else(|| panic!("app.windows is a list: {windows}"))
+        .iter()
+        .find(|window| window["label"] == "main")
+        .cloned()
+        .unwrap_or_else(|| panic!("app.windows has an entry labelled `main`: {windows}"))
+}
+
+/// The window is undecorated, and it stays resizable.
+///
+/// Both halves matter together. `decorations: false` is what makes the dark V2
+/// title bar the window's only title bar; an undecorated window has no system
+/// frame of its own, so the resize borders are the ones Tauri attaches when
+/// `resizable` is on (`tauri-runtime-wry`'s undecorated resizing). Setting
+/// `resizable: false` would produce a window with no frame at all: nothing to
+/// drag for a resize, no system menu, and a close button as the only way out
+/// besides the tray.
+#[test]
+fn the_main_window_carries_its_own_title_bar() {
+    let window = main_window();
+
+    assert_eq!(
+        window["decorations"], false,
+        "the main window is undecorated so the dark title bar is the only one — a system title \
+         above it is the duplicate title #68 removed (docs/DECISIONS.md D-028)"
+    );
+    assert_ne!(
+        window["resizable"], false,
+        "an undecorated window takes its resize borders from Tauri's undecorated resizing, which \
+         only attaches while the window is resizable — turning it off leaves no way to resize"
+    );
+}
+
+/// The controls' window commands are allowed for the window that uses them.
+///
+/// Tauri gates every `plugin:window|*` call on a capability permission and
+/// refuses the call when it is missing — at click time, in the running app,
+/// with nothing failing at build time and no test red. `core:window:default`
+/// covers the readings (`is-maximized`) but not the actions, so minimize,
+/// toggle-maximize, close and the drag region's `start-dragging` are granted
+/// explicitly in `capabilities/default.json`.
+#[test]
+fn the_title_bar_controls_are_granted_what_they_ask_for() {
+    let capabilities = manifest("capabilities/default.json");
+    let permissions = string_list(&capabilities["permissions"], "permissions");
+    let windows = string_list(&capabilities["windows"], "capabilities.windows");
+
+    assert_eq!(
+        windows,
+        vec!["main"],
+        "the capability is about the main window: that is the window the title bar controls"
+    );
+    for permission in [
+        "core:default",
+        "core:window:allow-minimize",
+        "core:window:allow-toggle-maximize",
+        "core:window:allow-close",
+        "core:window:allow-start-dragging",
+    ] {
+        assert!(
+            permissions.contains(&permission),
+            "capabilities/default.json no longer grants `{permission}`: the merged title bar's \
+             control that uses it is refused at runtime, with nothing else failing"
+        );
+    }
+}
+
+/// One icon, generated from the one file the window also renders.
+///
+/// #68 unified the app's identity: the Hub mark the V2 title bar draws is now
+/// the source the whole Windows icon set is rasterized from
+/// (`assets/brand/hub-mark.svg` → `scripts/generate-icon.mjs` → the checked-in
+/// `src-tauri/icons/`), and the title bar renders that file rather than a copy
+/// of it. Nothing can compare the raster with the vector, so what is guarded
+/// here is the *linkage*: the bundle lists icons that exist, the source they
+/// are generated from exists, and the title bar still imports that same source.
+/// Delete the source or re-inline a private copy of the mark, and this fails
+/// while `cargo build` and the bundle would both have been happy.
+#[test]
+fn the_icon_set_comes_from_the_one_hub_mark() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config = manifest("tauri.conf.json");
+    let icons = string_list(&config["bundle"]["icon"], "bundle.icon");
+
+    for icon in &icons {
+        assert!(
+            crate_dir.join(icon).is_file(),
+            "bundle.icon lists `{icon}`, which is not in src-tauri — regenerate with \
+             `node scripts/generate-icon.mjs && npx tauri icon assets/brand/hub-mark-1024.png`"
+        );
+    }
+    assert!(
+        icons.iter().any(|icon| icon.ends_with("icon.ico")),
+        "the Windows icon format is missing from bundle.icon: that is the file the executable's \
+         resource and every installed shortcut take their icon from: {icons:?}"
+    );
+
+    let source = crate_dir.join("../assets/brand/hub-mark.svg");
+    assert!(
+        source.is_file(),
+        "the icon source `{}` is gone — it is the file both the native icon set and the title \
+         bar's mark come from (D-028)",
+        source.display()
+    );
+
+    let title_bar =
+        std::fs::read_to_string(crate_dir.join("../src/components/title-bar/TitleBar.tsx"))
+            .expect("the title bar component is readable");
+    assert!(
+        title_bar.contains("assets/brand/hub-mark.svg"),
+        "the title bar no longer renders the icon asset: a second drawing of the same mark is \
+         the drift #68 removed (docs/DECISIONS.md D-028)"
+    );
+}
