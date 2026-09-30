@@ -464,6 +464,7 @@ Must not:
 - resize works
 - switching sessions keeps PTY alive
 - tray hide/restore keeps PTY alive
+- closing a terminal ends the shell's process tree, not just the shell (#61, D-028)
 
 ### Service
 
