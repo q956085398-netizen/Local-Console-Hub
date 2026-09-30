@@ -1,4 +1,6 @@
 import { Menu } from "lucide-react";
+import hubMarkUrl from "../../../assets/brand/hub-mark.svg";
+import WindowControls from "./WindowControls";
 import "./TitleBar.css";
 
 /** What the title-bar identity pill can say about the backend. */
@@ -13,18 +15,38 @@ export interface TitleBarProps {
   narrow: boolean;
   drawerOpen: boolean;
   onToggleDrawer: () => void;
+  /** Where a window control that the OS refused is reported. */
+  onNotice?: (message: string) => void;
 }
 
-/** The compact title bar: app identity and the global run summary. */
+/**
+ * The window's only title bar: app identity, the global run summary, and the
+ * window controls (issue #68).
+ *
+ * The main window is undecorated (`src-tauri/tauri.conf.json`), so this bar
+ * carries what the system's title bar used to: it is the drag handle
+ * (`data-tauri-drag-region="deep"` — Tauri walks up from the click, so the
+ * glyph and the text drag the window while the buttons, being `<button>`s, do
+ * not), the double-click-to-maximize target, and the home of
+ * minimize / maximize / restore / close. Resizing still comes from the window's
+ * own edges: Tauri attaches a native hit-test border to undecorated resizable
+ * windows, which is why the bar keeps its padding clear of the frame.
+ *
+ * That V2's other title-bar items are still absent is deliberate — `Ctrl K`,
+ * the global settings/logs entries and an Exit button remain out of scope here
+ * (`docs/DESIGN_SPEC_EXTRACTED.md` §5.1). Closing hides to the tray and the
+ * tray's own Exit is still the way out (D-006).
+ */
 export default function TitleBar({
   summary,
   pill,
   narrow,
   drawerOpen,
   onToggleDrawer,
+  onNotice,
 }: TitleBarProps) {
   return (
-    <header className="title-bar">
+    <header className="title-bar" data-tauri-drag-region="deep">
       {narrow && (
         <button
           type="button"
@@ -42,28 +64,19 @@ export default function TitleBar({
         {pill === "preview" && <span className="title-bar__pill">UI 预览</span>}
       </div>
       <p className="title-bar__summary">{summary}</p>
+      <WindowControls onNotice={onNotice} />
     </header>
   );
 }
 
-/** Application mark, transcribed from the approved V2 prototype source. */
-export function HubMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="5" fill="#1a1c24" />
-      <rect
-        x="3.5"
-        y="3.5"
-        width="17"
-        height="17"
-        rx="4.5"
-        fill="none"
-        stroke="rgb(236 236 232 / 0.16)"
-      />
-      <circle cx="7.5" cy="8" r="1.15" fill="#6fba8a" />
-      <rect x="10.2" y="7.15" width="8.2" height="1.5" rx="0.6" fill="#c5ccd6" opacity="0.9" />
-      <rect x="6.4" y="11.2" width="11.2" height="1.4" rx="0.6" fill="#c5ccd6" opacity="0.45" />
-      <rect x="6.4" y="14.6" width="8.4" height="1.4" rx="0.6" fill="#c5ccd6" opacity="0.28" />
-    </svg>
-  );
+/**
+ * Application mark: the Hub icon, rendered from the file the native icon set
+ * is generated from (`assets/brand/hub-mark.svg`, D-029).
+ *
+ * It is that file rather than a copy of it because a second drawing of the same
+ * mark is exactly the drift this ticket removed: one drawing, rasterized for
+ * the taskbar, the tray and the installers, and rendered here as it is.
+ */
+function HubMark({ className }: { className?: string }) {
+  return <img className={className} src={hubMarkUrl} alt="" draggable={false} />;
 }

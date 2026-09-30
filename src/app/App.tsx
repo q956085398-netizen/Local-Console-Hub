@@ -229,6 +229,7 @@ export default function App() {
           narrow={narrow}
           drawerOpen={drawerOpen}
           onToggleDrawer={() => setDrawerOpen((open) => !open)}
+          onNotice={setNotice}
         />
         <div className="app-main">
           <section className="workspace workspace--empty">
@@ -299,6 +300,7 @@ export default function App() {
         narrow={narrow}
         drawerOpen={drawerOpen}
         onToggleDrawer={() => setDrawerOpen((open) => !open)}
+        onNotice={setNotice}
       />
       <div className={`app-main${narrow ? " app-main--narrow" : ""}`}>
         {narrow && drawerOpen && (
