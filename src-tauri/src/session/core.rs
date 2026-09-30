@@ -30,7 +30,10 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::config::{self, EffectiveLogMode, LogSource, SessionConfig, SessionType};
+use crate::config::{
+    self, EffectiveLogMode, EffectiveLogging, LogSource, SessionConfig, SessionConfigDto,
+    SessionType,
+};
 use crate::health;
 use crate::logging::{
     self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
@@ -42,11 +45,12 @@ use crate::process::{
 use crate::pty::{Pty, PtySpec, DEFAULT_COLS, DEFAULT_ROWS, MAX_DIMENSION};
 
 use super::event::{
-    AppSummary, AppSummaryChanged, RunRecordUpdated, SessionEvent, SessionStateChanged,
-    TerminalOutput,
+    AppSummary, AppSummaryChanged, RunRecordUpdated, SessionCreated, SessionEvent, SessionRemoved,
+    SessionStateChanged, TerminalOutput,
 };
 use super::runtime::{RunId, RunRecord, SessionErrorInfo, SessionRuntime, Timestamp};
 use super::state::SessionStatus;
+use super::temporary::{self, ShellLookup};
 use super::terminal::{
     OutputBatch, OutputRelay, RetainedChunk, TerminalAttachment, TerminalPump, PUMP_TICK,
 };
@@ -211,6 +215,15 @@ impl std::error::Error for SessionError {}
 /// One session's mutable state, behind its own lock.
 struct SessionState {
     config: SessionConfig,
+    /// Whether this session was created from the window rather than loaded
+    /// from the config file (#62).
+    ///
+    /// Registry provenance, deliberately *not* a field of [`SessionConfig`]:
+    /// that type is what the user wrote in `config.yaml`, and a temporary
+    /// terminal is by definition not in there. It lives beside the session,
+    /// where the two things it decides — removability, and whether the
+    /// session survives a restart — belong.
+    temporary: bool,
     runtime: SessionRuntime,
     /// The current run, shared with its watcher so the watcher can wait on it
     /// without holding this lock.
@@ -547,6 +560,77 @@ pub struct SessionCore {
     health_interval: std::time::Duration,
 }
 
+/// One session's configuration together with where it came from.
+///
+/// The window renders a row from a configuration plus a snapshot; this is the
+/// configuration half as [`SessionCore::entries`] answers it, and the two are
+/// read from one lock hold so a row cannot be assembled from two registries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionEntry {
+    pub config: SessionConfig,
+    /// Created from the window, not loaded from the config file (#62).
+    pub temporary: bool,
+}
+
+impl SessionEntry {
+    /// The configuration as the frontend reads it, flag and all.
+    ///
+    /// The one place a [`SessionConfig`] becomes a listing row, so a surface
+    /// that shows "which of these are temporary" cannot be written against a
+    /// conversion that forgot the flag.
+    pub fn config_dto(&self) -> SessionConfigDto {
+        let dto = SessionConfigDto::from(&self.config);
+        if self.temporary {
+            dto.temporary()
+        } else {
+            dto
+        }
+    }
+}
+
+/// What a session created on demand answered with.
+///
+/// Both halves of the new session: the window selects it by id and renders it
+/// from the same pair, so nothing has to follow the answer with a read of a
+/// list that may not have caught up yet (spec #59 decision 4 — "创建返回稳定
+/// 会话身份与真实状态").
+#[derive(Debug, Clone)]
+pub struct CreatedSession {
+    pub config: SessionConfig,
+    /// The snapshotted state after the session was started — real, not
+    /// optimistic: a creation that could not start comes back as the error
+    /// that stopped it instead.
+    pub runtime: SessionRuntime,
+}
+
+/// Whether a session can be taken out of the registry (#62).
+///
+/// `Stopped` and `Exited` are only ever reached through an ending that was
+/// observed and confirmed — the terminal's own tree included, which is what
+/// `Pty::kill` returning `Ok` means (D-028) — so those are the states a
+/// session may be forgotten from.
+///
+/// `Error` is not one of them, because it says two different things: a start
+/// that never got a run (which is nothing to own, so it may be removed) and a
+/// **stop that could not confirm the tree was gone** (`RunEnding::Failed`,
+/// where the handle is still the only thing accounting for a live process
+/// tree). Dropping that handle to tidy a list is exactly the "close without
+/// settling ownership" #61 exists to prevent — and #62 forbids it explicitly
+/// ("使用 #61 的安全结束能力，不绕过归属"). The run is what tells the two
+/// apart: a failed start leaves none, a failed stop still holds one.
+///
+/// A configured session is never removable, whatever its state; that is
+/// [`SessionCore::remove_session`]'s caller-facing answer rather than this
+/// predicate's, and both are checked.
+fn removable(temporary: bool, status: SessionStatus, owns_run: bool) -> bool {
+    temporary
+        && match status {
+            SessionStatus::Stopped | SessionStatus::Exited => true,
+            SessionStatus::Error => !owns_run,
+            SessionStatus::Starting | SessionStatus::Running | SessionStatus::Stopping => false,
+        }
+}
+
 /// Lock a mutex, surviving a previous holder's panic.
 ///
 /// A poisoned lock means some other thread panicked mid-operation. Refusing to
@@ -623,6 +707,26 @@ impl SessionCore {
     /// ids are refused rather than replaced — replacing a running session would
     /// drop the only handle accounting for its process.
     pub fn register(&self, config: SessionConfig) -> Result<SessionRuntime, SessionError> {
+        self.register_with_provenance(config, false)
+    }
+
+    /// Register a session created from the window rather than read from the
+    /// config file (#62).
+    ///
+    /// The same registration in every other respect — same validation
+    /// requirements, same lifecycle, same stop rules. Only its provenance
+    /// differs, and only three things read that: the frontend's "remove this
+    /// one" control, the create answer, and the fact that nothing ever writes
+    /// it to a file.
+    fn register_temporary(&self, config: SessionConfig) -> Result<SessionRuntime, SessionError> {
+        self.register_with_provenance(config, true)
+    }
+
+    fn register_with_provenance(
+        &self,
+        config: SessionConfig,
+        temporary: bool,
+    ) -> Result<SessionRuntime, SessionError> {
         let mut sessions = lock(&self.sessions);
         if sessions.contains_key(&config.id) {
             return Err(SessionError {
@@ -640,6 +744,7 @@ impl SessionCore {
             id.clone(),
             Arc::new(Mutex::new(SessionState {
                 config,
+                temporary,
                 runtime: runtime.clone(),
                 run: None,
                 generation: 0,
@@ -697,10 +802,48 @@ impl SessionCore {
         if !self.publish_state(session_id) {
             return;
         }
+        self.publish_summary();
+    }
+
+    /// Publish the app-wide counts.
+    ///
+    /// The one place the summary is sent, so a listener tracking the counts
+    /// cannot be told about a change no event announced.
+    fn publish_summary(&self) {
         self.sink
             .publish(SessionEvent::AppSummaryChanged(AppSummaryChanged {
                 summary: self.summary(),
             }));
+    }
+
+    /// Announce that a session entered the registry (#62).
+    ///
+    /// The configuration travels with it because that is the half of a session
+    /// a state event cannot carry: a listener that has never seen this id has
+    /// no name to render, and reading `list_session_configs` to find one would
+    /// make every listener poll for a change it was just told about.
+    fn publish_created(&self, session_id: &str) {
+        let Some(entry) = self.session_entry(session_id) else {
+            return;
+        };
+        self.sink.publish(SessionEvent::Created(SessionCreated {
+            session_id: session_id.to_owned(),
+            config: entry.config_dto(),
+        }));
+        self.publish_summary();
+    }
+
+    /// Announce that a session left the registry (#62).
+    ///
+    /// Sent after the registry no longer holds it, which is what makes a
+    /// removal final: anything that publishes about that id afterwards —
+    /// a log closing, a terminal reading its last bytes, a watcher's late
+    /// exit — finds no session and publishes nothing.
+    fn publish_removed(&self, session_id: &str) {
+        self.sink.publish(SessionEvent::Removed(SessionRemoved {
+            session_id: session_id.to_owned(),
+        }));
+        self.publish_summary();
     }
 
     /// Publish one session's current snapshot. `false` if there is no such
@@ -1331,6 +1474,162 @@ impl SessionCore {
         outcome
     }
 
+    /// Create, register and start a temporary interactive terminal (#62).
+    ///
+    /// The whole of the quick entry's backend: one call that answers with the
+    /// new session's configuration and its real state, so the window can select
+    /// and focus it without a second read (spec #59 decision 4). What it does
+    /// *not* do is invent a second kind of session — the terminal it makes is
+    /// registered, started, watched, stopped and closed by exactly the paths
+    /// every other session uses, which is what keeps `#61`'s process-tree rules
+    /// and T07's terminal contract applying to it unchanged.
+    ///
+    /// Nothing is written to the config file (decision 6), and nothing is
+    /// written *about* it: a temporary terminal's logging is `off`/`none`, so
+    /// its output lives in the bounded scrollback and nowhere else
+    /// (`docs/LOGGING.md` §3, #59 decision 16).
+    pub fn create_temporary_terminal(
+        &self,
+        cwd: Option<&str>,
+    ) -> Result<CreatedSession, SessionError> {
+        self.create_temporary_terminal_with(cwd, &temporary::SystemLookup, dirs::home_dir())
+    }
+
+    /// The same operation with the machine's answers injected.
+    ///
+    /// Which shells exist and where the user's home directory is are facts
+    /// about the machine, not decisions of this layer (`super::temporary`), so
+    /// the operation takes them as parameters: a test can then assert the
+    /// preference order and the directory rule instead of asserting whatever
+    /// is installed on the machine running it.
+    pub fn create_temporary_terminal_with(
+        &self,
+        cwd: Option<&str>,
+        lookup: &dyn ShellLookup,
+        home: Option<PathBuf>,
+    ) -> Result<CreatedSession, SessionError> {
+        const OPERATION: &str = "create_terminal";
+
+        // Minted first so every refusal below can name the terminal it is
+        // about, and so the id it would have had is visible in the error.
+        let identity = temporary::mint();
+        let shell = temporary::resolve_shell(lookup)
+            .map_err(|reason| SessionError::failed(&identity.id, OPERATION, reason, None))?;
+        let cwd = temporary::resolve_cwd(cwd, home)
+            .map_err(|reason| SessionError::failed(&identity.id, OPERATION, reason, None))?;
+
+        let config = SessionConfig {
+            id: identity.id,
+            name: identity.name,
+            session_type: SessionType::Terminal,
+            cwd: Some(cwd),
+            command: None,
+            url: None,
+            port: None,
+            purpose: None,
+            close_impact: None,
+            // The resolved program, quoted if it has a space in it: the
+            // config's `shell` is a command line, and `C:\Program Files\...`
+            // is the normal case for PowerShell 7 rather than an exotic one.
+            shell: Some(temporary::shell_command(&shell.program)),
+            initial_command: None,
+            // `off`/`none` rather than `auto`: `auto` exists to *choose* a
+            // policy, and for a temporary shell every choice it could make
+            // would be a file the user did not ask for (decision 16).
+            logging: EffectiveLogging {
+                mode: EffectiveLogMode::Off,
+                source: LogSource::None,
+                external_path: None,
+            },
+        };
+
+        self.register_temporary(config.clone())?;
+        // Announced before the start, never after it: every lifecycle event
+        // the start publishes then belongs to a session listeners already know,
+        // in the order the events were published (§9). An announcement sent
+        // afterwards would race the run's own events — a shell that exits
+        // immediately could have its `Exited` published before its creation,
+        // and a listener told about a creation last would render it running.
+        self.publish_created(&config.id);
+
+        match self.start(&config.id) {
+            Ok(runtime) => Ok(CreatedSession { config, runtime }),
+            Err(error) => {
+                // A terminal that could not start is not a terminal the user
+                // has: the row is withdrawn rather than left behind as a
+                // failure to explain (spec #59 decision 4 — "失败不留假运行
+                // 项"). The start's own error is the answer.
+                let _ = self.remove_session(&config.id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove a temporary session from the registry (#62).
+    ///
+    /// Refused for a configured session — that one belongs to the config file,
+    /// and the window is not the place it is edited — and refused for anything
+    /// still owning a run: removing such a session would drop the only handle
+    /// accounting for its process tree, which is the same reason
+    /// [`SessionCore::register`] refuses a duplicate id, and is what
+    /// [`removable`] spells out.
+    ///
+    /// What a removal actually frees is the session's retained scrollback, so
+    /// the offer is the ended one: "回看本次输出，然后把它从列表里去掉"
+    /// (story 22).
+    pub fn remove_session(&self, session_id: &str) -> Result<(), SessionError> {
+        const OPERATION: &str = "remove_session";
+
+        let mut sessions = lock(&self.sessions);
+        let Some(state) = sessions.get(session_id).cloned() else {
+            return Err(SessionError::unknown_session(session_id, OPERATION));
+        };
+        {
+            // Registry lock, then session lock: the order every other path
+            // takes, and the one that keeps a concurrent start from slipping
+            // between the question and the removal.
+            let state = lock(&state);
+            if !state.temporary {
+                return Err(SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!(
+                        "session `{session_id}` is configured in the config file; remove it there \
+                         rather than from the window"
+                    ),
+                    None,
+                ));
+            }
+            if !removable(state.temporary, state.runtime.status, state.run.is_some()) {
+                let message = match state.runtime.status {
+                    // The one refusal that is not "wait for it to stop": this
+                    // session's stop could not confirm its tree was gone, so
+                    // the handle it still holds is the only thing accounting
+                    // for that tree (§61's rule, upheld by #62).
+                    SessionStatus::Error => format!(
+                        "session `{session_id}` could not confirm that its process tree ended; \
+                         restart it and end it cleanly before removing it"
+                    ),
+                    status => format!(
+                        "session `{session_id}` is {}; stop it before removing it",
+                        status.as_str()
+                    ),
+                };
+                return Err(SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    message,
+                    Some(state.runtime.status),
+                ));
+            }
+        }
+        sessions.remove(session_id);
+        drop(sessions);
+
+        self.publish_removed(session_id);
+        Ok(())
+    }
+
     /// The effective logging state of one session (`docs/LOGGING.md` §1.4).
     ///
     /// Answered whether or not a run exists: "is this being recorded, and
@@ -1544,10 +1843,45 @@ impl SessionCore {
     /// the first half, and it is the same set the snapshots come from — one
     /// registry, so a session the window lists is one Session Core can act on.
     pub fn configs(&self) -> Vec<SessionConfig> {
+        self.entries()
+            .into_iter()
+            .map(|entry| entry.config)
+            .collect()
+    }
+
+    /// The same list, each configuration with its provenance (#62).
+    ///
+    /// The tray and the bootstrap path read [`SessionCore::configs`]: neither
+    /// has anything to say about where a session came from. The window does —
+    /// it is the surface that offers "remove this one" — so the listing it
+    /// reads says which sessions are temporary, from the same lock hold that
+    /// gives it the configurations.
+    pub fn entries(&self) -> Vec<SessionEntry> {
         lock(&self.sessions)
             .values()
-            .map(|state| lock(state).config.clone())
+            .map(|state| {
+                let state = lock(state);
+                SessionEntry {
+                    config: state.config.clone(),
+                    temporary: state.temporary,
+                }
+            })
             .collect()
+    }
+
+    /// One session's configuration together with its provenance.
+    ///
+    /// The pair travel together because both halves of an answer need both:
+    /// a listing that marks which rows are temporary, and the creation event
+    /// that files one under the same rule.
+    fn session_entry(&self, session_id: &str) -> Option<SessionEntry> {
+        self.handle(session_id).map(|state| {
+            let state = lock(&state);
+            SessionEntry {
+                config: state.config.clone(),
+                temporary: state.temporary,
+            }
+        })
     }
 
     /// The URL "open this session's page" should hand to the OS (spec §9).
@@ -2707,6 +3041,38 @@ mod tests {
 
     fn test_cwd() -> PathBuf {
         std::env::current_dir().expect("the test process has a working directory")
+    }
+
+    /// A machine whose shells are exactly the ones a test names (#62).
+    ///
+    /// The preference order and the directory rule have their own suite in
+    /// [`crate::session::temporary`]; what this is for is deciding *which*
+    /// shell a kernel-level test creates a session with — and, in the failure
+    /// cases, that there is none.
+    struct OneShell {
+        name: &'static str,
+        program: PathBuf,
+    }
+
+    impl crate::session::temporary::ShellLookup for OneShell {
+        fn find(&self, name: &str) -> Option<PathBuf> {
+            (name == self.name).then(|| self.program.clone())
+        }
+    }
+
+    /// A machine with no PowerShell installed at all.
+    struct NoShells;
+
+    impl crate::session::temporary::ShellLookup for NoShells {
+        fn find(&self, _name: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    /// The path T02's and T07's suites use, so nothing here depends on how
+    /// `PATH` happens to be set. Only a test that starts a shell needs it.
+    fn windows_powershell() -> PathBuf {
+        PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe")
     }
 
     fn core_with(id: &str) -> (SessionCore, Arc<RecordingSink>) {
@@ -4816,6 +5182,119 @@ mod tests {
         }
     }
 
+    /// The quick entry's refusals (`#62`), which need no shell to test: what
+    /// they assert is that nothing is registered and nothing is announced when
+    /// the machine or the entry cannot supply what a terminal needs.
+    #[test]
+    fn the_quick_entry_refuses_a_machine_with_no_powershell() {
+        let sink = Arc::new(RecordingSink::default());
+        let core = SessionCore::new(sink.clone());
+
+        let error = core
+            .create_temporary_terminal_with(None, &NoShells, Some(test_cwd()))
+            .expect_err("without a shell there is no terminal to create");
+
+        assert_eq!(error.operation, "create_terminal");
+        assert!(error.message.contains(temporary::POWERSHELL_7), "{error:?}");
+        assert!(
+            error.message.contains(temporary::WINDOWS_POWERSHELL),
+            "{error:?}"
+        );
+        assert!(
+            core.snapshots().is_empty() && core.entries().is_empty(),
+            "a terminal that could not be created was registered anyway"
+        );
+        assert!(
+            !sink.names().contains(&"session-created"),
+            "a terminal that never existed was announced: {:?}",
+            sink.names()
+        );
+    }
+
+    /// A directory that is not there is a failure about that directory — and
+    /// the session it was going to be is not left half-registered.
+    #[test]
+    fn the_quick_entry_refuses_a_directory_that_is_not_there() {
+        let sink = Arc::new(RecordingSink::default());
+        let core = SessionCore::new(sink.clone());
+        let missing = std::env::temp_dir().join("lch-t62-no-such-entry-directory");
+
+        let error = core
+            .create_temporary_terminal_with(
+                Some(&missing.to_string_lossy()),
+                &OneShell {
+                    name: temporary::WINDOWS_POWERSHELL,
+                    program: windows_powershell(),
+                },
+                Some(test_cwd()),
+            )
+            .expect_err("a directory that does not exist cannot host a terminal");
+
+        assert!(error.message.contains("does not exist"), "{error:?}");
+        assert!(core.snapshots().is_empty());
+        assert!(!sink.names().contains(&"session-created"));
+    }
+
+    /// A configured session is removed by editing the config file, and the
+    /// window is not a second way to delete it.
+    #[test]
+    fn a_configured_session_is_not_removable_from_the_window() {
+        let (core, _sink) = core_with("svc");
+
+        let error = core
+            .remove_session("svc")
+            .expect_err("a configured session belongs to the config file");
+
+        assert_eq!(error.kind, SessionErrorKind::Failed);
+        assert!(error.message.contains("config file"), "{error:?}");
+        assert!(
+            core.snapshot("svc").is_some(),
+            "the refused removal must leave the session alone"
+        );
+    }
+
+    #[test]
+    fn removing_a_session_nothing_registered_is_refused() {
+        let core = SessionCore::without_listener();
+
+        let error = core
+            .remove_session("ghost")
+            .expect_err("there is nothing to remove");
+
+        assert_eq!(error.kind, SessionErrorKind::UnknownSession);
+        assert_eq!(error.operation, "remove_session");
+    }
+
+    /// The removal gate as a table (#62, with #61's ownership rule behind it).
+    ///
+    /// The row that matters is `Error` with a run: that is how a stop which
+    /// could not confirm the tree was gone is reported (`RunEnding::Failed`),
+    /// and such a session still owns the only handle accounting for a live
+    /// process tree — dropping it to tidy a list is exactly what #62 forbids.
+    /// `Error` without a run is the other `Error`: a start that never got one.
+    #[test]
+    fn only_a_settled_temporary_session_is_removable() {
+        use crate::session::state::ALL_STATUSES;
+        use SessionStatus::*;
+
+        for status in ALL_STATUSES {
+            for owns_run in [false, true] {
+                let expected = matches!(status, Stopped | Exited) || (status == Error && !owns_run);
+                assert_eq!(
+                    removable(true, status, owns_run),
+                    expected,
+                    "temporary session in {}, owning a run: {owns_run}",
+                    status.as_str()
+                );
+                assert!(
+                    !removable(false, status, owns_run),
+                    "a configured session is never removable ({})",
+                    status.as_str()
+                );
+            }
+        }
+    }
+
     /// The terminal half of Session Core (T07 #8).
     ///
     /// These host a real PowerShell, like T02's own tests: the PTY contract was
@@ -5718,6 +6197,352 @@ mod tests {
                 .decode(&batch.data)
                 .expect("batches arrive as base64")
                 .len()
+        }
+    }
+
+    /// The quick entry's half of Session Core (#62).
+    ///
+    /// Windows-only, for the same reason `terminal_tests` is: these create real
+    /// PowerShell sessions on a ConPTY, and off Windows there is no backend to
+    /// host one (`pty::unsupported`). Their fixtures are deliberately local
+    /// rather than borrowed from `terminal_tests` — the two suites ask
+    /// different questions, and a shared fixture would have to answer both.
+    #[cfg(all(test, windows))]
+    mod temporary_tests {
+        use super::*;
+        use crate::config::AppPaths;
+        use crate::session::temporary;
+
+        /// Cold PowerShell on a busy machine takes a while to render.
+        const STARTUP: std::time::Duration = std::time::Duration::from_secs(40);
+
+        /// The shell every one of these creates, and the one machine fact
+        /// they are allowed to depend on: Windows PowerShell ships with
+        /// Windows, so nothing here needs PowerShell 7 to be installed.
+        fn machine() -> OneShell {
+            OneShell {
+                name: temporary::WINDOWS_POWERSHELL,
+                program: windows_powershell(),
+            }
+        }
+
+        fn core_with_sink() -> (SessionCore, Arc<RecordingSink>) {
+            let sink = Arc::new(RecordingSink::default());
+            (SessionCore::new(sink.clone()), sink)
+        }
+
+        /// Everything the session has taken from the shell so far.
+        fn scrollback(core: &SessionCore, id: &str) -> String {
+            core.terminal_buffer(id)
+                .unwrap_or_default()
+                .iter()
+                .map(|chunk| chunk.text())
+                .collect()
+        }
+
+        /// Send one command line, the way a terminal sends Enter.
+        fn send(core: &SessionCore, id: &str, line: &str) {
+            core.terminal_write(id, format!("{line}\r").as_bytes())
+                .expect("input reaches the terminal");
+        }
+
+        /// Poll until `check` holds, so a test asserts on what happened rather
+        /// than on how long it took.
+        fn wait_until(what: &str, mut check: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + STARTUP;
+            while !check() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        /// Every event the sink was told about `session_id`.
+        fn about(sink: &RecordingSink, session_id: &str) -> Vec<SessionEvent> {
+            sink.events()
+                .into_iter()
+                .filter(|event| event.session_id() == Some(session_id))
+                .collect()
+        }
+
+        /// One click of "新建 PowerShell": a real shell, running, in the
+        /// directory the entry names, with a registry row that says it is
+        /// temporary (#62, story 6).
+        #[test]
+        fn one_click_creates_a_running_terminal_in_the_entrys_directory() {
+            let (core, _sink) = core_with_sink();
+            let directory = test_cwd();
+
+            let created = core
+                .create_temporary_terminal_with(
+                    Some(&directory.to_string_lossy()),
+                    &machine(),
+                    Some(std::env::temp_dir()),
+                )
+                .expect("the entry creates a terminal");
+
+            assert_eq!(created.config.session_type, SessionType::Terminal);
+            assert_eq!(
+                created.config.cwd.as_ref(),
+                Some(&directory),
+                "the directory the entry named is the one the shell opened in"
+            );
+            assert_eq!(
+                created.config.shell.as_deref(),
+                Some(temporary::shell_command(&windows_powershell()).as_str()),
+                "the session runs the shell the machine resolved"
+            );
+            // A temporary shell persists nothing (decision 16, H07).
+            assert_eq!(created.config.logging.mode, EffectiveLogMode::Off);
+            assert_eq!(created.config.logging.source, LogSource::None);
+
+            assert_eq!(
+                created.runtime.status,
+                SessionStatus::Running,
+                "the entry starts the terminal, it does not file it as stopped"
+            );
+            assert!(created.runtime.pty_attached, "a real shell is attached");
+
+            // The registry and the answer describe the same session.
+            let entry = core
+                .entries()
+                .into_iter()
+                .find(|entry| entry.config.id == created.config.id)
+                .expect("the created session is in the registry");
+            assert!(
+                entry.temporary,
+                "the row is removable because it is temporary"
+            );
+            assert_eq!(core.configs().len(), 1);
+
+            core.stop(&created.config.id).expect("cleanup");
+        }
+
+        /// The window is told about the session *before* it is told anything
+        /// about its state, which is what lets a listener render the row a
+        /// state event is about (§9, decision 14).
+        #[test]
+        fn a_creation_is_announced_before_any_of_its_states() {
+            let (core, sink) = core_with_sink();
+
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+
+            let events = about(&sink, &created.config.id);
+            match events.first() {
+                Some(SessionEvent::Created(payload)) => {
+                    assert_eq!(payload.session_id, created.config.id);
+                    assert_eq!(payload.config.session_type, "terminal");
+                    assert!(
+                        payload.config.temporary,
+                        "the announcement says the session is temporary"
+                    );
+                }
+                other => {
+                    panic!("the first event about a new session must be its creation: {other:?}")
+                }
+            }
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, SessionEvent::StateChanged(state)
+                        if state.runtime.status == SessionStatus::Running)),
+                "the states that follow belong to a session the listener already knows"
+            );
+
+            core.stop(&created.config.id).expect("cleanup");
+        }
+
+        /// Story 9: each click is its own terminal — its own id, its own name,
+        /// its own process.
+        #[test]
+        fn every_click_creates_a_separate_terminal() {
+            let (core, _sink) = core_with_sink();
+
+            let first = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the first terminal is created");
+            let second = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the second terminal is created");
+
+            assert_ne!(first.config.id, second.config.id);
+            assert_ne!(
+                first.config.name, second.config.name,
+                "two rows with the same name would be indistinguishable"
+            );
+            assert_eq!(core.snapshots().len(), 2);
+            assert_eq!(
+                core.snapshot(&second.config.id)
+                    .map(|runtime| runtime.status),
+                Some(SessionStatus::Running)
+            );
+
+            core.stop(&first.config.id).expect("cleanup");
+            core.stop(&second.config.id).expect("cleanup");
+        }
+
+        /// A shell that cannot start leaves no row behind — the creation is
+        /// withdrawn, and the command answers with the failure (decision 4).
+        #[test]
+        fn a_terminal_that_cannot_start_leaves_no_row() {
+            let (core, sink) = core_with_sink();
+            // A real file that is not a program: it resolves, and the spawn
+            // fails on it — the one failure a pre-flight check cannot catch.
+            let impostor = std::env::temp_dir().join("lch-t62-not-a-program.txt");
+            std::fs::write(&impostor, b"not a program").expect("the fixture file is writable");
+
+            let error = core
+                .create_temporary_terminal_with(
+                    None,
+                    &OneShell {
+                        name: temporary::WINDOWS_POWERSHELL,
+                        program: impostor.clone(),
+                    },
+                    Some(test_cwd()),
+                )
+                .expect_err("a file cannot host a terminal");
+
+            std::fs::remove_file(&impostor).ok();
+            assert_eq!(error.operation, "start");
+            assert!(
+                core.snapshots().is_empty() && core.entries().is_empty(),
+                "a terminal that could not start left a row: {error:?}"
+            );
+            let names = sink.names();
+            assert!(
+                names.contains(&"session-created") && names.contains(&"session-removed"),
+                "the withdrawn creation must be announced as withdrawn: {names:?}"
+            );
+        }
+
+        /// Removing is for ended terminals: a live one owns a process tree.
+        #[test]
+        fn a_running_terminal_cannot_be_removed() {
+            let (core, _sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+
+            let error = core
+                .remove_session(&created.config.id)
+                .expect_err("a running terminal is not removable");
+
+            assert!(error.message.contains("stop it"), "{error:?}");
+            assert!(core.snapshot(&created.config.id).is_some());
+
+            core.stop(&created.config.id).expect("cleanup");
+        }
+
+        /// Stories 21–22: an ended terminal keeps the output of the run the
+        /// user just watched, stays in the list, and can then be removed —
+        /// after which nothing can bring it back (decision 14).
+        #[test]
+        fn an_ended_terminal_keeps_its_output_until_it_is_removed() {
+            let (core, sink) = core_with_sink();
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+
+            // The marker is assembled inside the shell, so only executed
+            // output can satisfy the wait (T07's rule).
+            send(&core, &id, "Write-Host (\"LCH-T62-\" + \"OK\")");
+            wait_until("the shell to print the marker", || {
+                scrollback(&core, &id).contains("LCH-T62-OK")
+            });
+
+            send(&core, &id, "exit");
+            wait_until("the shell to end", || {
+                core.snapshot(&id).map(|runtime| runtime.status) == Some(SessionStatus::Exited)
+            });
+
+            assert!(
+                scrollback(&core, &id).contains("LCH-T62-OK"),
+                "an ended terminal keeps the output of its run"
+            );
+            assert!(
+                core.snapshot(&id).is_some(),
+                "an ended terminal stays in the list until it is removed"
+            );
+
+            core.remove_session(&id)
+                .expect("an ended terminal is removable");
+
+            assert!(core.snapshot(&id).is_none());
+            assert!(core.entries().iter().all(|entry| entry.config.id != id));
+            let events = about(&sink, &id);
+            assert!(
+                matches!(events.last(), Some(SessionEvent::Removed(_))),
+                "the removal is the last thing said about a removed session: {events:?}"
+            );
+
+            // And nothing published later can revive it: the publication path
+            // itself finds no session, so a late watcher, log or output flush
+            // cannot put the row back.
+            let published = sink.events().len();
+            assert!(
+                !core.publish_state(&id),
+                "a removed session must not be publishable again"
+            );
+            assert_eq!(
+                sink.events().len(),
+                published,
+                "a late publication for a removed session reached a listener"
+            );
+        }
+
+        /// H07/H08: a temporary shell's output goes to the scrollback and
+        /// nowhere else, and the entry writes no config.
+        ///
+        /// Run *metadata* is deliberately not on that list: it is not output
+        /// (`docs/LOGGING.md` §6 — "「这次运行发生过」本身就是记录"), every
+        /// managed run has one, and a temporary terminal's record is what lets
+        /// the Logs tab answer "what has this session run?" for the terminal
+        /// the user is still looking at. So the assertions below are the two
+        /// that matter: nothing captured the bytes, and no config entry was
+        /// written.
+        #[test]
+        fn a_temporary_terminal_persists_no_output_and_writes_no_config() {
+            let scratch = crate::logging::test_support::TempDir::new();
+            let paths = AppPaths::new(scratch.path(), scratch.path());
+            let sink = Arc::new(RecordingSink::default());
+            let core = SessionCore::new(sink).with_log_roots(LogRoots::from_app_paths(&paths));
+
+            let created = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("the entry creates a terminal");
+            let id = created.config.id.clone();
+            send(&core, &id, "Write-Host (\"LCH-T62-\" + \"LOG\")");
+            wait_until("the shell to print the marker", || {
+                scrollback(&core, &id).contains("LCH-T62-LOG")
+            });
+            core.stop(&id).expect("cleanup");
+
+            assert!(
+                !paths.logs_dir.exists(),
+                "a temporary terminal persisted output: {} exists",
+                paths.logs_dir.display()
+            );
+            assert!(
+                !paths.config_file.exists(),
+                "the quick entry wrote to the config file: {} exists",
+                paths.config_file.display()
+            );
+            let history = core.run_history(&id);
+            assert_eq!(history.runs.len(), 1, "the run is recorded");
+            assert!(
+                history.runs[0].run.log_file.is_none() && !history.runs[0].log_is_openable(),
+                "a temporary run's record must not claim a log file: {:?}",
+                history.runs[0].run
+            );
+            assert!(
+                scrollback(&core, &id).contains("LCH-T62-LOG"),
+                "the output is still where a temporary terminal keeps it"
+            );
         }
     }
 }

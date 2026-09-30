@@ -13,11 +13,37 @@
 
 use serde::Serialize;
 
+use crate::config::SessionConfigDto;
+
 use super::runtime::{RunRecord, SessionRuntime};
 use super::terminal::OutputBatch;
 
 /// `session-state-changed` — a session moved through the lifecycle.
 pub const SESSION_STATE_CHANGED: &str = "session-state-changed";
+
+/// `session-created` — a session entered the registry (#62).
+///
+/// Until the quick entry existed the registry's membership was fixed at
+/// startup: every session came from the config file, which the window had
+/// already read, so a snapshot plus the state events covered everything. A
+/// temporary terminal is created while the app is running, and its config is
+/// in no file the window can read — so the registry's *membership* becomes
+/// something that changes, and a change of membership is announced.
+///
+/// Announced before the new session starts, and carrying the configuration
+/// rather than a snapshot: a listener then knows the session by the time its
+/// first lifecycle event arrives, in the order the events were published. A
+/// listener that learned of it only from a later state event would be applying
+/// a state to a session it cannot render.
+pub const SESSION_CREATED: &str = "session-created";
+
+/// `session-removed` — a session left the registry (#62).
+///
+/// The counterpart of [`SESSION_CREATED`], and the reason a removed session
+/// cannot come back from a late event: the removal is a published fact, not a
+/// local deletion. What a listener does with a state event for a session it
+/// has been told is gone is its own business — the window's is to drop it.
+pub const SESSION_REMOVED: &str = "session-removed";
 
 /// `run-record-updated` — a run started, or ended with its result.
 pub const RUN_RECORD_UPDATED: &str = "run-record-updated";
@@ -79,6 +105,26 @@ pub struct SessionStateChanged {
     pub runtime: SessionRuntime,
 }
 
+/// Payload of [`SESSION_CREATED`].
+///
+/// The configuration is the *frontend DTO*, not the session layer's own type:
+/// an event and the `list_session_configs` answer are the same two halves of a
+/// session (§4), and a listener that learned a session from one and re-read it
+/// from the other must not have to reconcile two vocabularies for it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCreated {
+    pub session_id: String,
+    pub config: SessionConfigDto,
+}
+
+/// Payload of [`SESSION_REMOVED`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRemoved {
+    pub session_id: String,
+}
+
 /// Payload of [`RUN_RECORD_UPDATED`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +147,8 @@ pub struct AppSummaryChanged {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
     StateChanged(SessionStateChanged),
+    Created(SessionCreated),
+    Removed(SessionRemoved),
     RunRecordUpdated(RunRecordUpdated),
     AppSummaryChanged(AppSummaryChanged),
     TerminalOutput(TerminalOutput),
@@ -111,6 +159,8 @@ impl SessionEvent {
     pub fn name(&self) -> &'static str {
         match self {
             SessionEvent::StateChanged(_) => SESSION_STATE_CHANGED,
+            SessionEvent::Created(_) => SESSION_CREATED,
+            SessionEvent::Removed(_) => SESSION_REMOVED,
             SessionEvent::RunRecordUpdated(_) => RUN_RECORD_UPDATED,
             SessionEvent::AppSummaryChanged(_) => APP_SUMMARY_CHANGED,
             SessionEvent::TerminalOutput(_) => TERMINAL_OUTPUT,
@@ -121,6 +171,8 @@ impl SessionEvent {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             SessionEvent::StateChanged(event) => Some(&event.session_id),
+            SessionEvent::Created(event) => Some(&event.session_id),
+            SessionEvent::Removed(event) => Some(&event.session_id),
             SessionEvent::RunRecordUpdated(event) => Some(&event.session_id),
             SessionEvent::AppSummaryChanged(_) => None,
             SessionEvent::TerminalOutput(event) => Some(&event.session_id),
@@ -136,6 +188,8 @@ impl SessionEvent {
     pub fn payload(&self) -> serde_json::Value {
         match self {
             SessionEvent::StateChanged(inner) => serde_json::to_value(inner),
+            SessionEvent::Created(inner) => serde_json::to_value(inner),
+            SessionEvent::Removed(inner) => serde_json::to_value(inner),
             SessionEvent::RunRecordUpdated(inner) => serde_json::to_value(inner),
             SessionEvent::AppSummaryChanged(inner) => serde_json::to_value(inner),
             SessionEvent::TerminalOutput(inner) => serde_json::to_value(inner),
@@ -253,6 +307,31 @@ mod tests {
                 session_id: "comfyui".to_owned(),
                 runtime: snapshot("comfyui"),
             }),
+            SessionEvent::Created(SessionCreated {
+                session_id: "comfyui".to_owned(),
+                config: crate::config::SessionConfigDto {
+                    id: "comfyui".to_owned(),
+                    name: "ComfyUI".to_owned(),
+                    session_type: "service".to_owned(),
+                    cwd: None,
+                    command: Some("run".to_owned()),
+                    url: None,
+                    port: None,
+                    purpose: None,
+                    close_impact: None,
+                    shell: None,
+                    initial_command: None,
+                    logging: crate::config::EffectiveLoggingDto {
+                        mode: "off".to_owned(),
+                        source: "none".to_owned(),
+                        external_path: None,
+                    },
+                    temporary: false,
+                },
+            }),
+            SessionEvent::Removed(SessionRemoved {
+                session_id: "comfyui".to_owned(),
+            }),
             SessionEvent::RunRecordUpdated(RunRecordUpdated {
                 session_id: "comfyui".to_owned(),
                 run: RunRecord {
@@ -296,6 +375,8 @@ mod tests {
             names,
             vec![
                 "session-state-changed",
+                "session-created",
+                "session-removed",
                 "run-record-updated",
                 "app-summary-changed",
                 "terminal-output",

@@ -108,6 +108,8 @@ pub fn run() {
             ipc::session::get_config_report,
             ipc::session::list_sessions,
             ipc::session::list_session_configs,
+            ipc::session::create_temporary_terminal,
+            ipc::session::remove_session,
             ipc::session::get_session,
             ipc::session::start_session,
             ipc::session::stop_session,

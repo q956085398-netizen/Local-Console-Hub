@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Terminal } from "lucide-react";
 import TitleBar from "../components/title-bar/TitleBar";
 import Sidebar from "../components/sidebar/Sidebar";
 import SessionHeader from "../components/session-header/SessionHeader";
@@ -20,7 +21,7 @@ import {
 } from "../state/derivations";
 import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
-import { LIVE_GROUP } from "../state/session-view";
+import { LIVE_GROUPS } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
 import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
 import { copyPathToClipboard } from "./clipboard";
@@ -70,6 +71,8 @@ export default function App() {
   const [now, setNow] = useState(() => new Date());
   const narrow = useMediaQuery("(max-width: 767px)");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /** Bumped for each "新建 PowerShell" the workspace carried out (#62). */
+  const [focusRequest, setFocusRequest] = useState(0);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -109,7 +112,7 @@ export default function App() {
 
   const filtered = useMemo(() => filterSessions(sessions, query), [sessions, query]);
   const groups = useMemo(
-    () => groupSessions(filtered, registry.source === "backend" ? [LIVE_GROUP] : FIXTURE_GROUPS),
+    () => groupSessions(filtered, registry.source === "backend" ? LIVE_GROUPS : FIXTURE_GROUPS),
     [filtered, registry.source],
   );
 
@@ -130,6 +133,33 @@ export default function App() {
    * nothing, because there is no run behind them to act on. */
   const onPreviewAction = (label: string) => {
     setNotice(`预览模式 ·「${label}」需要连接到后端`);
+  };
+
+  /**
+   * "新建 PowerShell" (#62): create, select and focus, in one gesture.
+   *
+   * Nothing is asked for first — no form, no dialog, no default session to
+   * copy. The backend resolves the shell (`pwsh`, else Windows PowerShell),
+   * opens it in the user's home directory and answers with the new session's
+   * id; the workspace selects it and the terminal takes the keyboard, so the
+   * next keystroke is already a command (stories 6–8).
+   *
+   * A failure is a message, not a row: the backend withdraws a terminal it
+   * could not start, and what is left is the reason — a shell that is not on
+   * this machine, or a directory that is not there (story 17).
+   */
+  const onCreateTerminal = () => {
+    if (!registry.live) {
+      onPreviewAction(SESSION_ACTION_LABELS["new-session"]);
+      return;
+    }
+    void registry.createTerminal().then((sessionId) => {
+      if (sessionId === null) return;
+      setSelectedId(sessionId);
+      setTab("terminal");
+      setFocusRequest((request) => request + 1);
+      setDrawerOpen(false);
+    });
   };
 
   /**
@@ -178,6 +208,9 @@ export default function App() {
         break;
       case "open-directory":
         registry.openDirectory(selected.config.id);
+        break;
+      case "remove-session":
+        registry.removeSession(selected.config.id);
         break;
       default:
         setNotice(`「${label}」尚未接入`);
@@ -228,6 +261,30 @@ export default function App() {
               sessionCount={diagnosticSessionCount}
               empty={!registry.loading}
             />
+            {/* An empty workspace is a workspace (#62, story 7): the quick
+                entry is offered here too, so a first run with no config file
+                can still open a terminal. It is deliberately not rendered
+                while the registry is still syncing — a session may be about to
+                arrive, and a button that claimed there was nothing yet would
+                be answering a question the window cannot. */}
+            {!registry.loading && (
+              <div className="workspace__quick-entry">
+                <p className="workspace__quick-entry-title">
+                  {registry.live ? "还没有会话" : "预览工作区"}
+                </p>
+                <p className="workspace__quick-entry-hint">
+                  点击“新建 PowerShell”立即在 Hub 内打开一个临时终端，不需要填写配置。
+                </p>
+                <button
+                  type="button"
+                  className="btn btn--primary btn--sm"
+                  onClick={onCreateTerminal}
+                >
+                  <Terminal size={14} />
+                  新建 PowerShell
+                </button>
+              </div>
+            )}
           </section>
         </div>
         <StatusBar counts={counts} connection={connection} notice={statusNotice} />
@@ -265,7 +322,7 @@ export default function App() {
               setSelectedId(sessionId);
               setDrawerOpen(false);
             }}
-            onAdd={() => onSessionAction("new-session")}
+            onAdd={onCreateTerminal}
           />
         </div>
         <section className="workspace">
@@ -290,6 +347,7 @@ export default function App() {
               <TerminalHost
                 session={selected}
                 live={registry.live}
+                focusRequest={focusRequest}
                 onStart={() =>
                   registry.live
                     ? registry.start(selected.config.id)

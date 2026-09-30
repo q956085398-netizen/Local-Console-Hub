@@ -60,7 +60,7 @@ describe("the live session registry", () => {
       getConfigReport: vi.fn(() => Promise.resolve(CONFIG_REPORT)),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     const configured = FIXTURE_SESSIONS[0];
 
     expect(reports[0]).toMatchObject({ phase: "loading", sessions: [] });
@@ -93,7 +93,7 @@ describe("the live session registry", () => {
     receive(event("not-configured", "error"));
     expect(reports).toHaveLength(reportCount);
 
-    stop();
+    watching.stop();
     expect(unlisten).toHaveBeenCalledOnce();
   });
 
@@ -112,7 +112,7 @@ describe("the live session registry", () => {
       getConfigReport: () => Promise.resolve(CONFIG_REPORT),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
 
     runtimes.resolve([{ ...configured.runtime, status: "stopped" }]);
@@ -125,7 +125,7 @@ describe("the live session registry", () => {
       phase: "ready",
       sessions: [{ runtime: { status: "running" } }],
     });
-    stop();
+    watching.stop();
   });
 
   it("ignores snapshot results that settle after the registry has stopped", async () => {
@@ -141,11 +141,11 @@ describe("the live session registry", () => {
       getConfigReport: () => configReport.promise,
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
 
     subscription.resolve(unlisten);
     await flushPromises();
-    stop();
+    watching.stop();
     configs.resolve(FIXTURE_SESSIONS.map((session) => session.config));
     runtimes.resolve(FIXTURE_SESSIONS.map((session) => session.runtime));
     configReport.resolve(CONFIG_REPORT);
@@ -167,9 +167,9 @@ describe("the live session registry", () => {
       getConfigReport: () => Promise.resolve(CONFIG_REPORT),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
 
-    stop();
+    watching.stop();
     subscription.resolve(unlisten);
     await flushPromises();
 
@@ -196,7 +196,7 @@ describe("the live session registry", () => {
       getConfigReport: vi.fn(() => Promise.resolve(CONFIG_REPORT)),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
 
     expect(reports.at(-1)).toMatchObject({ phase: "loading", error: "listener unavailable" });
@@ -207,7 +207,7 @@ describe("the live session registry", () => {
     expect(subscriptions).toBe(2);
     expect(reports.at(-1)).toMatchObject({ phase: "ready", error: null });
 
-    stop();
+    watching.stop();
     expect(unlisten).toHaveBeenCalledOnce();
   });
 
@@ -229,7 +229,7 @@ describe("the live session registry", () => {
       getConfigReport: () => Promise.resolve(CONFIG_REPORT),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
 
     expect(reports.at(-1)).toMatchObject({ phase: "loading", error: "config list unavailable" });
@@ -242,7 +242,7 @@ describe("the live session registry", () => {
       configured.config.id,
     ]);
 
-    stop();
+    watching.stop();
     expect(unlisten).toHaveBeenCalledTimes(2);
   });
 
@@ -265,7 +265,7 @@ describe("the live session registry", () => {
       getConfigReport: () => Promise.resolve(CONFIG_REPORT),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
     receives[0]?.(event(configured.config.id, "running"));
     firstConfigRead.reject(new Error("temporary config read failure"));
@@ -282,7 +282,7 @@ describe("the live session registry", () => {
       phase: "ready",
       sessions: [{ runtime: { status: "stopped" } }],
     });
-    stop();
+    watching.stop();
   });
 
   it("resynchronizes when the bounded pre-snapshot event cache overflows", async () => {
@@ -318,7 +318,7 @@ describe("the live session registry", () => {
       getConfigReport: () => Promise.resolve(CONFIG_REPORT),
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
 
     for (const config of allConfigs) {
@@ -342,7 +342,7 @@ describe("the live session registry", () => {
     expect(reports.at(-1)?.sessions.every((session) => session.runtime.status === "stopped")).toBe(
       true,
     );
-    stop();
+    watching.stop();
   });
 
   it("shows config-report read failures and recovers without blocking sessions", async () => {
@@ -361,7 +361,7 @@ describe("the live session registry", () => {
       },
     };
     const reports: SessionRegistrySnapshot[] = [];
-    const stop = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
     await flushPromises();
 
     expect(reports.at(-1)).toMatchObject({
@@ -373,6 +373,236 @@ describe("the live session registry", () => {
     await vi.advanceTimersByTimeAsync(retryDelayMs(0));
     expect(reports.at(-1)?.configReport).toEqual(CONFIG_REPORT);
     expect(reports.at(-1)?.configReportError).toBeNull();
-    stop();
+    watching.stop();
+  });
+});
+
+/**
+ * The registry's membership protocol (#62).
+ *
+ * A temporary terminal makes the session list something that changes while the
+ * app runs, and from the backend's side. These pin the three questions that
+ * creates: what a creation does to the view, what a removal does to it, and
+ * what a late event can and cannot do afterwards.
+ */
+describe("the live session registry's membership", () => {
+  /** A temporary terminal, in the shape the backend announces one. */
+  function createdSession(id = "terminal-1a2b") {
+    const source = FIXTURE_SESSIONS[5].config;
+    return {
+      id,
+      config: {
+        ...source,
+        id,
+        name: "PowerShell 1",
+        sessionType: "terminal" as const,
+        purpose: undefined,
+        closeImpact: undefined,
+        temporary: true,
+      },
+    };
+  }
+
+  /** A registry whose initial read has finished. */
+  async function ready() {
+    const configured = FIXTURE_SESSIONS[0];
+    let receive: (payload: unknown) => void = () => {};
+    const backend: SessionRegistryBackend = {
+      subscribe: (handler) => {
+        receive = handler;
+        return Promise.resolve(() => {});
+      },
+      listConfigs: () => Promise.resolve([configured.config]),
+      listSessions: () => Promise.resolve([configured.runtime]),
+      getConfigReport: () => Promise.resolve(CONFIG_REPORT),
+    };
+    const reports: SessionRegistrySnapshot[] = [];
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    await flushPromises();
+    expect(reports.at(-1)?.phase).toBe("ready");
+    return { watching, reports, receive: (payload: unknown) => receive(payload) };
+  }
+
+  it("adds a session the backend announces, under its own group", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+
+    receive({ sessionId: created.id, config: created.config });
+
+    const sessions = reports.at(-1)?.sessions ?? [];
+    expect(sessions.map((session) => session.config.id)).toEqual([
+      FIXTURE_SESSIONS[0].config.id,
+      created.id,
+    ]);
+    expect(sessions.at(-1)).toMatchObject({
+      group: "temporary",
+      config: { temporary: true },
+      runtime: { status: "stopped" },
+    });
+    // The row arrived from an event, so the revision moved: a listener that
+    // clears its error notice on change has to see this one.
+    expect(reports.at(-1)?.sessionRevision).toBe(1);
+    watching.stop();
+  });
+
+  it("lets a session's states follow the creation that announced it", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+
+    receive({ sessionId: created.id, config: created.config });
+    receive({
+      sessionId: created.id,
+      runtime: { ...FIXTURE_SESSIONS[5].runtime, sessionId: created.id, status: "running" },
+    });
+
+    expect(reports.at(-1)?.sessions.at(-1)?.runtime.status).toBe("running");
+    watching.stop();
+  });
+
+  it("merges a creation announced before the snapshot arrives", async () => {
+    const configs = deferred<unknown>();
+    const runtimes = deferred<unknown>();
+    let receive: (payload: unknown) => void = () => {};
+    const configured = FIXTURE_SESSIONS[0];
+    const created = createdSession();
+    const backend: SessionRegistryBackend = {
+      subscribe: (handler) => {
+        receive = handler;
+        return Promise.resolve(() => {});
+      },
+      listConfigs: () => configs.promise,
+      listSessions: () => runtimes.promise,
+      getConfigReport: () => Promise.resolve(CONFIG_REPORT),
+    };
+    const reports: SessionRegistrySnapshot[] = [];
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    await flushPromises();
+
+    receive({ sessionId: created.id, config: created.config });
+    // The lists were read before the creation: they cannot contain it, and
+    // they must not undo it.
+    configs.resolve([configured.config]);
+    runtimes.resolve([configured.runtime]);
+    await flushPromises();
+
+    expect(reports.at(-1)?.phase).toBe("ready");
+    expect(reports.at(-1)?.sessions.map((session) => session.config.id)).toEqual([
+      configured.config.id,
+      created.id,
+    ]);
+    watching.stop();
+  });
+
+  it("drops a removed session and ignores the events that arrive late", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+    receive({ sessionId: created.id, config: created.config });
+
+    receive({ sessionId: created.id });
+    expect(reports.at(-1)?.sessions.map((session) => session.config.id)).toEqual([
+      FIXTURE_SESSIONS[0].config.id,
+    ]);
+
+    const settled = reports.length;
+    receive({
+      sessionId: created.id,
+      runtime: { ...FIXTURE_SESSIONS[5].runtime, sessionId: created.id, status: "running" },
+    });
+    // A state event for a session the backend says is gone is not a reason to
+    // draw it again — that is "迟到结果不复活移除项" in this protocol.
+    expect(reports).toHaveLength(settled);
+    watching.stop();
+  });
+
+  it("applies a removal that arrived before the snapshot even if the snapshot lists it", async () => {
+    const configs = deferred<unknown>();
+    const runtimes = deferred<unknown>();
+    let receive: (payload: unknown) => void = () => {};
+    const configured = FIXTURE_SESSIONS[0];
+    const created = createdSession();
+    const backend: SessionRegistryBackend = {
+      subscribe: (handler) => {
+        receive = handler;
+        return Promise.resolve(() => {});
+      },
+      listConfigs: () => configs.promise,
+      listSessions: () => runtimes.promise,
+      getConfigReport: () => Promise.resolve(CONFIG_REPORT),
+    };
+    const reports: SessionRegistrySnapshot[] = [];
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    await flushPromises();
+
+    receive({ sessionId: created.id, config: created.config });
+    receive({ sessionId: created.id });
+    // The read was issued before the removal, so it still names the session.
+    configs.resolve([configured.config, created.config]);
+    runtimes.resolve([
+      configured.runtime,
+      { ...FIXTURE_SESSIONS[5].runtime, sessionId: created.id },
+    ]);
+    await flushPromises();
+
+    expect(reports.at(-1)?.sessions.map((session) => session.config.id)).toEqual([
+      configured.config.id,
+    ]);
+    watching.stop();
+  });
+
+  it("adopts a command's answer without letting a repeated event duplicate it", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+
+    // The answer can arrive first: the event and the reply travel different
+    // paths out of the backend.
+    watching.adopt({ config: created.config, runtime: FIXTURE_SESSIONS[5].runtime });
+    expect(reports.at(-1)?.sessions).toHaveLength(2);
+
+    const afterAdopt = reports.length;
+    receive({ sessionId: created.id, config: created.config });
+    expect(reports).toHaveLength(afterAdopt);
+    expect(reports.at(-1)?.sessions).toHaveLength(2);
+    watching.stop();
+  });
+
+  it("forgets a session the command removed, whatever the event stream does next", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+    receive({ sessionId: created.id, config: created.config });
+
+    watching.forget(created.id);
+    expect(reports.at(-1)?.sessions).toHaveLength(1);
+
+    const afterForget = reports.length;
+    receive({ sessionId: created.id });
+    expect(reports).toHaveLength(afterForget);
+    watching.stop();
+  });
+
+  it("does not read a state event as a removal", async () => {
+    const { watching, reports, receive } = await ready();
+    const configured = FIXTURE_SESSIONS[0];
+
+    // The removal guard accepts a bare session id, and a state payload has one
+    // too — which is exactly the confusion this pins.
+    receive({
+      sessionId: configured.config.id,
+      runtime: { ...configured.runtime, status: "running" },
+    });
+
+    expect(reports.at(-1)?.sessions).toHaveLength(1);
+    expect(reports.at(-1)?.sessions[0]?.runtime.status).toBe("running");
+    watching.stop();
+  });
+
+  it("never applies membership changes after it has stopped", async () => {
+    const { watching, reports } = await ready();
+    const created = createdSession();
+    watching.stop();
+
+    watching.adopt({ config: created.config, runtime: FIXTURE_SESSIONS[5].runtime });
+    watching.forget(created.id);
+
+    expect(reports.at(-1)?.sessions).toHaveLength(1);
   });
 });

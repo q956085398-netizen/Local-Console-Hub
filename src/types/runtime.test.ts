@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   isAppSummaryDto,
   isBufferSummaryDto,
+  isCreatedSessionDto,
   isRunRecordDto,
   isServiceHealthDto,
+  isSessionCreatedDto,
+  isSessionRemovedDto,
   isSessionRuntimeDto,
   type AppSummaryDto,
   type BufferSummaryDto,
@@ -222,6 +225,55 @@ describe("isRunRecordDto", () => {
 
   it("rejects a run whose timestamps are not RFC 3339 strings", () => {
     expect(isRunRecordDto(record({ startedAt: 1760000000000 as never }))).toBe(false);
+  });
+});
+
+/** A temporary terminal's configuration, as the created event carries it. */
+function terminalConfig(id = "terminal-1a2b") {
+  return {
+    id,
+    name: "PowerShell 1",
+    sessionType: "terminal" as const,
+    cwd: "C:\\Users\\example",
+    shell: "pwsh",
+    logging: { mode: "off" as const, source: "none" as const },
+    temporary: true,
+  };
+}
+
+describe("the membership payloads (#62)", () => {
+  it("accepts a creation that carries its configuration", () => {
+    const config = terminalConfig();
+    expect(isSessionCreatedDto({ sessionId: config.id, config })).toBe(true);
+    // The id has to be the one the configuration is about: a listener files
+    // the row by it, and two ids that disagree would file it under a session
+    // that does not exist.
+    expect(isSessionCreatedDto({ sessionId: "other", config })).toBe(false);
+    expect(isSessionCreatedDto({ sessionId: config.id })).toBe(false);
+    expect(isSessionCreatedDto({ sessionId: config.id, config: { id: config.id } })).toBe(false);
+  });
+
+  it("accepts a removal, and only a removal", () => {
+    expect(isSessionRemovedDto({ sessionId: "terminal-1a2b" })).toBe(true);
+    expect(isSessionRemovedDto({})).toBe(false);
+    // A state payload has a session id too; reading one as a removal would
+    // turn "this session is running" into "this session is gone".
+    expect(isSessionRemovedDto({ sessionId: "terminal-1a2b", runtime: snapshot() })).toBe(false);
+    expect(isSessionRemovedDto({ sessionId: "terminal-1a2b", config: terminalConfig() })).toBe(
+      false,
+    );
+  });
+
+  it("requires both halves of a creation's answer", () => {
+    const config = terminalConfig();
+    const runtime = { ...snapshot(), sessionId: config.id, status: "running" as const };
+
+    expect(isCreatedSessionDto({ config, runtime })).toBe(true);
+    expect(isCreatedSessionDto({ config })).toBe(false);
+    expect(isCreatedSessionDto({ runtime })).toBe(false);
+    expect(
+      isCreatedSessionDto({ config, runtime: { ...runtime, sessionId: "somebody-else" } }),
+    ).toBe(false);
   });
 });
 

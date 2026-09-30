@@ -34,7 +34,7 @@ import {
   typeLabel,
 } from "./derivations";
 import { FIXTURE_GROUPS } from "./fixtures";
-import type { SessionView } from "./session-view";
+import { sessionsFromLive, type SessionView } from "./session-view";
 
 function config(overrides: Partial<SessionConfigDto> = {}): SessionConfigDto {
   return {
@@ -230,7 +230,49 @@ describe("liveCounts / summaries", () => {
   });
 });
 
+describe("sessionsFromLive", () => {
+  it("files a temporary terminal under its own group, and nothing else there", () => {
+    const views = sessionsFromLive(
+      [config({ id: "svc" }), config({ id: "term", sessionType: "terminal", temporary: true })],
+      [],
+    );
+
+    expect(views.map((view) => view.group)).toEqual(["configured", "temporary"]);
+    // A session whose snapshot has not been read is rendered stopped, which is
+    // what makes a row that just appeared renderable before its first state
+    // event lands (`stoppedRuntime`).
+    expect(views[1]?.runtime.status).toBe("stopped");
+  });
+});
+
 describe("availableActions", () => {
+  // Removing is a temporary terminal's action, and only once it has ended
+  // (#62): a running one still owns a process tree, and a configured one
+  // belongs to the config file.
+  it("offers removal for an ended temporary terminal and nobody else", () => {
+    const ended = runtime({ status: "exited" });
+    const stopped = runtime({ status: "stopped" });
+    expect(availableActions(config({ temporary: true }), ended).remove).toBe(true);
+    expect(availableActions(config({ temporary: true }), stopped).remove).toBe(true);
+    expect(availableActions(config({ temporary: true }), runtime()).remove).toBe(false);
+    expect(
+      availableActions(config({ temporary: true }), runtime({ status: "starting" })).remove,
+    ).toBe(false);
+    expect(availableActions(config(), ended).remove).toBe(false);
+    expect(availableActions(config({ temporary: false }), ended).remove).toBe(false);
+  });
+
+  // `error` is not "ended": a stop that could not confirm the terminal's tree
+  // was gone reports it while still owning that tree, so the control that
+  // would drop the last handle accounting for it must not appear (#62's
+  // 不绕过归属). The backend's `removable` applies the same rule.
+  it("withholds removal from a temporary terminal in an error state", () => {
+    const failed = runtime({ status: "error" });
+    expect(availableActions(config({ temporary: true }), failed).remove).toBe(false);
+    // …while Start, a legal move from that state, stays offered.
+    expect(availableActions(config({ temporary: true }), failed).start).toBe(true);
+  });
+
   it("offers Start only when idle, Stop only when live", () => {
     const running = availableActions(config(), runtime());
     expect(running.start).toBe(false);
@@ -499,16 +541,23 @@ describe("headerCallout", () => {
     });
   });
 
-  it("renders an em dash when the session carries no close impact", () => {
+  it("renders an em dash when a service carries no close impact", () => {
+    const callout = headerCallout(config({ closeImpact: undefined }), runtime());
+    expect(callout).toEqual({ kind: "impact", title: "关闭影响", text: "—" });
+  });
+
+  it("gives a terminal without configured text the Hub's own sentence instead (#62)", () => {
+    // A temporary terminal is created with no config text at all, and
+    // `关闭影响 —` states nothing while looking like something failed to load.
+    // The sentence that would have followed the dash is the whole card.
     const callout = headerCallout(
-      config({ sessionType: "terminal", closeImpact: undefined }),
+      config({ sessionType: "terminal", closeImpact: undefined, temporary: true }),
       runtime(),
     );
     expect(callout).toEqual({
       kind: "impact",
       title: "关闭影响",
-      text: "—",
-      note: "停止该终端会同时结束它启动的子进程。",
+      text: "停止该终端会同时结束它启动的子进程。",
     });
   });
 

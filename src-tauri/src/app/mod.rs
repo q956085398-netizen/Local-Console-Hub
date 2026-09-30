@@ -20,11 +20,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 
 use crate::config::{
-    load_from_file, AppPaths, ConfigFileStatusDto, ConfigReportDto, SessionConfigDto,
-    SessionConfigErrorDto,
+    load_from_file, AppPaths, ConfigFileStatusDto, ConfigReportDto, SessionConfigErrorDto,
 };
 use crate::logging::LogRoots;
-use crate::session::core::{EventSink, FanoutSink, SessionCore};
+use crate::session::core::{EventSink, FanoutSink, SessionCore, SessionEntry};
 use crate::session::tauri_sink::TauriSink;
 use crate::tray::TraySink;
 
@@ -115,8 +114,15 @@ pub fn register_configured(core: &SessionCore, config_file: Option<&Path>) -> Co
         }
     }
     // The registry is authoritative for what the UI can act on. A config
-    // entry that fails registration must not appear as a usable session here.
-    report.sessions = core.configs().iter().map(SessionConfigDto::from).collect();
+    // entry that fails registration must not appear as a usable session here —
+    // and since #62 the registry can also hold sessions the file never
+    // described, so the listing is read with its provenance rather than from
+    // the configurations alone.
+    report.sessions = core
+        .entries()
+        .iter()
+        .map(SessionEntry::config_dto)
+        .collect();
     report
 }
 

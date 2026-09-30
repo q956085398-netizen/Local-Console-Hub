@@ -50,6 +50,16 @@ export interface SessionConfigDto {
   shell?: string;
   initialCommand?: string;
   logging: EffectiveLoggingDto;
+  /**
+   * Whether this session was created from the window rather than loaded from
+   * the config file (#62). Absent means configured — the backend omits the
+   * flag for a session that came from the file, so an older payload and a
+   * configured session are the same thing here.
+   *
+   * It is the one difference a row's controls act on: a temporary terminal can
+   * be removed once it has ended, and is never restored after the app exits.
+   */
+  temporary?: boolean;
 }
 
 /** One actionable configuration problem; index 0 means file-level. */
@@ -119,6 +129,9 @@ export function isSessionConfigDto(value: unknown): value is SessionConfigDto {
     }
   }
   if (candidate.port !== undefined && typeof candidate.port !== "number") {
+    return false;
+  }
+  if (candidate.temporary !== undefined && typeof candidate.temporary !== "boolean") {
     return false;
   }
   return isEffectiveLoggingDto(candidate.logging);

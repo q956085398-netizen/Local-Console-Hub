@@ -17,7 +17,8 @@ export type SessionAction =
   | "open-url"
   | "open-directory"
   | "copy-path"
-  | "new-session";
+  | "new-session"
+  | "remove-session";
 
 /** The wording each action renders as, for the notices that name it. */
 export const SESSION_ACTION_LABELS: Record<SessionAction, string> = {
@@ -28,5 +29,9 @@ export const SESSION_ACTION_LABELS: Record<SessionAction, string> = {
   "open-url": "打开网页",
   "open-directory": "打开目录",
   "copy-path": "复制路径",
-  "new-session": "新建会话",
+  // The quick entry's own wording (spec #59 decision 7): one click opens an
+  // interactive terminal, and the form-based "添加应用" entry is a different
+  // control that does not exist yet.
+  "new-session": "新建 PowerShell",
+  "remove-session": "移除临时终端",
 };

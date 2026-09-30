@@ -25,7 +25,14 @@
  * its own layer does.
  */
 
-import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue } from "./config";
+import {
+  LOG_MODES,
+  LOG_SOURCES,
+  isSessionConfigDto,
+  type EffectiveLogModeValue,
+  type LogSourceValue,
+  type SessionConfigDto,
+} from "./config";
 
 /**
  * The event names Session Core publishes (`src-tauri/src/session/event.rs`,
@@ -33,6 +40,10 @@ import { LOG_MODES, LOG_SOURCES, type EffectiveLogModeValue, type LogSourceValue
  * the listener that reads it rather than silently stop firing it.
  */
 export const SESSION_STATE_CHANGED = "session-state-changed";
+/** A session entered the registry (#62) — a temporary terminal, in practice. */
+export const SESSION_CREATED = "session-created";
+/** A session left the registry (#62). */
+export const SESSION_REMOVED = "session-removed";
 export const RUN_RECORD_UPDATED = "run-record-updated";
 export const APP_SUMMARY_CHANGED = "app-summary-changed";
 /** Lifecycle states, serialized snake_case by `SessionStatus`. */
@@ -119,6 +130,33 @@ export interface AppSummaryDto {
 export interface SessionStateChangedDto {
   sessionId: string;
   /** The full post-transition snapshot, so a listener never applies a delta. */
+  runtime: SessionRuntimeDto;
+}
+
+/**
+ * Payload of the `session-created` event (#62).
+ *
+ * The configuration travels with it, because that is the half of a session a
+ * `session-state-changed` payload cannot carry: a listener told about a state
+ * for an id it has no name for could not render the row it is about. The
+ * runtime is deliberately absent — states arrive as their own events, in the
+ * order the backend published them — so this event answers "does this session
+ * exist, and what is it?" and nothing else.
+ */
+export interface SessionCreatedDto {
+  sessionId: string;
+  config: SessionConfigDto;
+}
+
+/** Payload of the `session-removed` event (#62). */
+export interface SessionRemovedDto {
+  sessionId: string;
+}
+
+/** What `create_temporary_terminal` answers with (#62): both halves of the
+ * session it made, from the operation that made it. */
+export interface CreatedSessionDto {
+  config: SessionConfigDto;
   runtime: SessionRuntimeDto;
 }
 
@@ -292,6 +330,59 @@ export function isSessionStateChangedDto(value: unknown): value is SessionStateC
   }
   const candidate = value as Record<string, unknown>;
   return typeof candidate.sessionId === "string" && isSessionRuntimeDto(candidate.runtime);
+}
+
+/** Runtime guard for a `session-created` payload (#62). */
+export function isSessionCreatedDto(value: unknown): value is SessionCreatedDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.sessionId === "string" &&
+    isSessionConfigDto(candidate.config) &&
+    candidate.config.id === candidate.sessionId
+  );
+}
+
+/**
+ * Runtime guard for a `session-removed` payload (#62).
+ *
+ * It says what the payload must *not* carry, which a bare `sessionId` check
+ * would not: every session event has a session id, so a guard that accepted
+ * any object with one would read the life out of a `session-state-changed`
+ * payload that fell through its own check — turning "this session is running"
+ * into "this session is gone". A removal is exactly an id and nothing else.
+ */
+export function isSessionRemovedDto(value: unknown): value is SessionRemovedDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.sessionId === "string" &&
+    candidate.runtime === undefined &&
+    candidate.config === undefined
+  );
+}
+
+/**
+ * Runtime guard for the answer `create_temporary_terminal` gives (#62).
+ *
+ * Both halves are required: a caller selects the new session by the
+ * configuration's id and renders it from the snapshot, so an answer missing
+ * either one is not something the window can act on.
+ */
+export function isCreatedSessionDto(value: unknown): value is CreatedSessionDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    isSessionConfigDto(candidate.config) &&
+    isSessionRuntimeDto(candidate.runtime) &&
+    candidate.runtime.sessionId === candidate.config.id
+  );
 }
 
 /** Runtime guard for the structured failure a session command reports. */

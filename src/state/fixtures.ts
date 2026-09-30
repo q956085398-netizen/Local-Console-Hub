@@ -343,6 +343,10 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       purpose: "用完即弃的草稿终端。",
       closeImpact: "丢弃内存缓冲。默认不写日志文件。",
       logging: { mode: "off", source: "none" },
+      // The row the reference's TEMPORARY group is about, and the one surface
+      // that shows what a temporary session's controls are (#62): the remove
+      // action is offered here because the backend would accept it.
+      temporary: true,
     },
     runtime: {
       sessionId: "scratch",

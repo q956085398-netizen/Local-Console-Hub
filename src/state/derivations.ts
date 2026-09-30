@@ -197,6 +197,22 @@ export interface ActionAvailability {
    * Available for the whole live window, including Stopping: skipping the
    * grace period is exactly what this action is for. */
   forceStop: boolean;
+  /**
+   * Remove this session from the list (#62).
+   *
+   * A temporary terminal's own action, offered once its run has ended: that is
+   * when there is nothing left to own and the row is only holding scrollback
+   * (story 22). A configured session never gets it — it lives in the config
+   * file, and Session Core refuses the removal anyway.
+   *
+   * "Ended" is `stopped` or `exited` and not merely "not live", which is the
+   * distinction `error` makes: a stop that could not confirm the terminal's
+   * process tree was gone reports `error` **while still owning that tree**, and
+   * the control that would drop the last handle accounting for it must not be
+   * offered (#62: "使用 #61 的安全结束能力，不绕过归属"). The backend's own
+   * gate is `session::core::removable`, and this mirrors it.
+   */
+  remove: boolean;
 }
 
 /** Derive the header action set for the current lifecycle state. */
@@ -219,6 +235,8 @@ export function availableActions(
     directory: hasDirectory,
     copyPath: hasDirectory,
     forceStop: isLive(runtime.status),
+    remove:
+      config.temporary === true && (runtime.status === "stopped" || runtime.status === "exited"),
   };
 }
 
@@ -356,12 +374,22 @@ export function headerCallout(
   runtime: SessionRuntimeDto,
 ): HeaderCallout | null {
   if (isLive(runtime.status)) {
-    return {
-      kind: "impact",
-      title: "关闭影响",
-      text: config.closeImpact ?? "—",
-      ...(config.sessionType === "terminal" ? { note: TERMINAL_TREE_NOTE } : {}),
-    };
+    if (config.sessionType === "terminal") {
+      // A terminal whose config carries no close impact still has one thing to
+      // say, and it is the Hub's own sentence (D-028): a temporary terminal is
+      // created without any config text at all, and `关闭影响 —` states
+      // nothing while looking like something failed to load. So the sentence
+      // moves up into the text rather than following a dash.
+      return config.closeImpact === undefined
+        ? { kind: "impact", title: "关闭影响", text: TERMINAL_TREE_NOTE }
+        : {
+            kind: "impact",
+            title: "关闭影响",
+            text: config.closeImpact,
+            note: TERMINAL_TREE_NOTE,
+          };
+    }
+    return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
   }
   if (isPresent(runtime.lastError)) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };

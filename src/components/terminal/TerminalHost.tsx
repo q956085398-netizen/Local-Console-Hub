@@ -47,6 +47,14 @@ export interface TerminalHostProps {
   live: boolean;
   /** Start the selected session. In preview mode the caller surfaces a notice. */
   onStart: () => void;
+  /**
+   * A request to put the keyboard in this terminal (#62).
+   *
+   * A counter rather than a boolean: "focus it" is an event, and two creations
+   * in a row have to be two events. `0` is "nobody has asked yet", which is
+   * what keeps the terminal from grabbing the keyboard when the app opens.
+   */
+  focusRequest?: number;
 }
 
 /**
@@ -64,12 +72,19 @@ export interface TerminalHostProps {
  * remaining fake, it is unreachable while a backend is answering, and it is
  * what keeps the shell comparable to the reference images.
  */
-export default function TerminalHost({ session, live, onStart }: TerminalHostProps) {
+export default function TerminalHost({
+  session,
+  live,
+  onStart,
+  focusRequest = 0,
+}: TerminalHostProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   /** Re-measure the surface and report its size. Set by the mount effect. */
   const refitRef = useRef<(() => void) | null>(null);
+  /** The newest focus request this pane has honoured. */
+  const honouredFocus = useRef(0);
 
   const running = session.runtime.status === "running";
   const stream = useTerminalStream(live ? session.config.id : null, session.runtime.runId, live, {
@@ -127,6 +142,24 @@ export default function TerminalHost({ session, live, onStart }: TerminalHostPro
       term.options.cursorBlink = canType;
     }
   }, [canType]);
+
+  /**
+   * Put the keyboard in the terminal the user just asked for (story 8).
+   *
+   * Honoured once per request, and only once the pane can actually take
+   * typing: a keystroke sent before the attachment resolves would be refused
+   * by the backend, so focusing earlier would put the caret somewhere that
+   * swallows the next key. The counter is why two creations in a row are two
+   * focuses, and why a request made while the Logs tab was showing is still
+   * honoured when the terminal comes back.
+   */
+  useEffect(() => {
+    if (!canType || focusRequest <= honouredFocus.current) {
+      return;
+    }
+    honouredFocus.current = focusRequest;
+    termRef.current?.focus();
+  }, [canType, focusRequest]);
 
   useEffect(() => {
     if (!live) {

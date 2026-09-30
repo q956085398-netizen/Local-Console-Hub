@@ -107,6 +107,21 @@ describe("config DTO guards", () => {
     ).toBe(true);
   });
 
+  it("reads the temporary flag as a boolean, and its absence as configured", () => {
+    const terminal = {
+      id: "terminal-1a2b",
+      name: "PowerShell 1",
+      sessionType: "terminal",
+      logging: { mode: "off", source: "none" },
+    };
+    // Absent: a configured session, which is what every payload written before
+    // #62 says.
+    expect(isSessionConfigDto(terminal)).toBe(true);
+    expect(isSessionConfigDto({ ...terminal, temporary: true })).toBe(true);
+    expect(isSessionConfigDto({ ...terminal, temporary: false })).toBe(true);
+    expect(isSessionConfigDto({ ...terminal, temporary: "yes" })).toBe(false);
+  });
+
   it("rejects reports whose parts are not DTOs", () => {
     expect(isConfigReportDto({ sessions: [{}], errors: [] })).toBe(false);
     expect(isConfigReportDto({ sessions: [], errors: [{ message: 1 }] })).toBe(false);

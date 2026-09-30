@@ -13,14 +13,37 @@
 //! Tauri maps the frontend's camelCase arguments onto these snake_case
 //! parameters, so the frontend calls `startSession({ sessionId })`.
 
+use serde::Serialize;
 use tauri::State;
 
 use crate::config::{ConfigReportDto, SessionConfigDto};
-use crate::session::core::{SessionCore, SessionError};
+use crate::session::core::{CreatedSession, SessionCore, SessionEntry, SessionError};
 use crate::session::runtime::SessionRuntime;
 use crate::shell;
 
 use super::hand_over_failed;
+
+/// What "新建 PowerShell" answers with (#62).
+///
+/// Both halves of the session it made, from the same operation that made it:
+/// the window selects the new terminal by id and renders it from this pair, so
+/// nothing has to follow the answer with a list read that may not have caught
+/// up (spec #59 decision 4).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedSessionDto {
+    pub config: SessionConfigDto,
+    pub runtime: SessionRuntime,
+}
+
+impl From<CreatedSession> for CreatedSessionDto {
+    fn from(created: CreatedSession) -> Self {
+        CreatedSessionDto {
+            config: SessionConfigDto::from(&created.config).temporary(),
+            runtime: created.runtime,
+        }
+    }
+}
 
 /// The startup config-loading and validation report. The report is captured
 /// once during bootstrap; this read-only command never edits or reloads the
@@ -45,9 +68,46 @@ pub fn list_sessions(core: State<'_, SessionCore>) -> Vec<SessionRuntime> {
 /// It answers from the same registry the snapshots come from, which is what
 /// keeps the two halves describing one set of sessions: a row the window can
 /// render is a session Session Core can start, stop and hand a terminal to.
+///
+/// Since #62 the list also says which rows are temporary — created from the
+/// window rather than loaded from the config file — because that is the one
+/// difference a row's controls act on (it is the row that can be removed).
 #[tauri::command]
 pub fn list_session_configs(core: State<'_, SessionCore>) -> Vec<SessionConfigDto> {
-    core.configs().iter().map(SessionConfigDto::from).collect()
+    core.entries()
+        .iter()
+        .map(SessionEntry::config_dto)
+        .collect()
+}
+
+/// Create, register and start a temporary interactive terminal (#62).
+///
+/// The quick entry behind "新建 PowerShell": no form, no config file, and no
+/// second kind of session — what it makes is a terminal session Session Core
+/// starts, watches and closes the same way it does every other one. `cwd` is
+/// the directory an external entry asked for; the session layer decides what
+/// an absent one means (the user's home directory) rather than this thin
+/// command doing it (spec #59 decision 5).
+#[tauri::command]
+pub fn create_temporary_terminal(
+    core: State<'_, SessionCore>,
+    cwd: Option<String>,
+) -> Result<CreatedSessionDto, SessionError> {
+    core.create_temporary_terminal(cwd.as_deref())
+        .map(CreatedSessionDto::from)
+}
+
+/// Remove a temporary session from the registry (#62).
+///
+/// Session Core refuses a configured session (that one lives in the config
+/// file) and a live one (its process tree is still owned by its handle), so
+/// this command cannot be used as a way to stop something by deleting it.
+#[tauri::command]
+pub fn remove_session(
+    core: State<'_, SessionCore>,
+    session_id: String,
+) -> Result<(), SessionError> {
+    core.remove_session(&session_id)
 }
 
 /// One session's snapshot.

@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ConfigReportDto } from "../types/config";
-import { SESSION_STATE_CHANGED, sessionErrorMessage } from "../types/runtime";
+import {
+  SESSION_CREATED,
+  SESSION_REMOVED,
+  SESSION_STATE_CHANGED,
+  isCreatedSessionDto,
+  sessionErrorMessage,
+} from "../types/runtime";
 import { FIXTURE_SESSIONS } from "../state/fixtures";
 import type { SessionView } from "../state/session-view";
 import type { BackendConnection } from "../state/backend-connection";
-import { watchSessionRegistry, type SessionRegistrySnapshot } from "../state/session-registry";
+import {
+  watchSessionRegistry,
+  type SessionRegistryController,
+  type SessionRegistrySnapshot,
+} from "../state/session-registry";
 import {
   installVerificationReload,
   readVerificationSnapshot,
@@ -41,6 +51,17 @@ export interface SessionRegistry {
    */
   openUrl(sessionId: string): void;
   openDirectory(sessionId: string): void;
+  /**
+   * Create a temporary terminal (#62) — the "新建 PowerShell" entry.
+   *
+   * Answers with the new session's id once the backend has created, started
+   * and announced it, or `null` when it could not: the failure's message
+   * lands in `error`, which the status bar shows, because a shell that is not
+   * on the machine is the user's to fix (H06).
+   */
+  createTerminal(cwd?: string): Promise<string | null>;
+  /** Remove a temporary session that has ended (#62). */
+  removeSession(sessionId: string): void;
 }
 
 /** Where the rendered sessions came from. */
@@ -73,17 +94,35 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     snapshot: SessionRegistrySnapshot;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The running watch, for the two commands whose answers the event stream may
+   * not have delivered yet (`createTerminal`, `removeSession`).
+   */
+  const controller = useRef<SessionRegistryController | null>(null);
 
   useEffect(installVerificationReload, []);
 
   useEffect(() => {
-    if (!live) return;
+    if (!live) {
+      controller.current = null;
+      return;
+    }
     const activeConnection = connection;
     let lastSessionRevision = 0;
-    return watchSessionRegistry(
+    const watching = watchSessionRegistry(
       {
+        // Three event names, one listener: a session's state, its arrival and
+        // its departure are all "what the registry looks like now" (#62), and
+        // a second listener keyed to the same lifecycle would only be a second
+        // chance to get the ordering wrong.
         subscribe: (receive) =>
-          listen<unknown>(SESSION_STATE_CHANGED, (event) => receive(event.payload)),
+          Promise.all([
+            listen<unknown>(SESSION_STATE_CHANGED, (event) => receive(event.payload)),
+            listen<unknown>(SESSION_CREATED, (event) => receive(event.payload)),
+            listen<unknown>(SESSION_REMOVED, (event) => receive(event.payload)),
+          ]).then((unlisten) => () => {
+            for (const stop of unlisten) stop();
+          }),
         listConfigs: () =>
           readVerificationSnapshot("configs", () => invoke<unknown>("list_session_configs")),
         listSessions: () =>
@@ -98,6 +137,11 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
         }
       },
     );
+    controller.current = watching;
+    return () => {
+      controller.current = null;
+      watching.stop();
+    };
   }, [connection, live]);
 
   // A new connection starts empty immediately, without briefly showing fixture
@@ -130,6 +174,38 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     invoke(command, { sessionId }).catch((cause) => setError(sessionErrorMessage(cause)));
   }, []);
 
+  /**
+   * The one command whose answer the window *does* read (#62).
+   *
+   * Everything else renders from the event, because the event is the same
+   * fact published to everyone. A creation is different in one respect: the
+   * caller needs the new session's id to select it, and only the answer has
+   * it — the event carries the configuration but no notion of "this is the one
+   * you asked for". The pair is adopted into the watch as well, which is what
+   * makes the row exist even if the event is still in flight.
+   */
+  const createTerminal = useCallback(async (cwd?: string): Promise<string | null> => {
+    try {
+      const raw = await invoke<unknown>("create_temporary_terminal", { cwd });
+      if (!isCreatedSessionDto(raw)) {
+        throw new Error("create_temporary_terminal 返回了无法识别的载荷");
+      }
+      controller.current?.adopt(raw);
+      return raw.config.id;
+    } catch (cause) {
+      // A shell or directory that is not there is a real answer, not a
+      // silent failure: it is the message the user needs (H06).
+      setError(sessionErrorMessage(cause));
+      return null;
+    }
+  }, []);
+
+  const removeSession = useCallback((sessionId: string) => {
+    invoke("remove_session", { sessionId })
+      .then(() => controller.current?.forget(sessionId))
+      .catch((cause) => setError(sessionErrorMessage(cause)));
+  }, []);
+
   return useMemo<SessionRegistry>(
     () => ({
       sessions,
@@ -146,6 +222,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       forceStop: (sessionId) => run("force_stop_session", sessionId),
       openUrl: (sessionId) => run("open_session_url", sessionId),
       openDirectory: (sessionId) => run("open_session_cwd", sessionId),
+      createTerminal,
+      removeSession,
     }),
     [
       sessions,
@@ -157,6 +235,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       configReport,
       configReportError,
       run,
+      createTerminal,
+      removeSession,
     ],
   );
 }
