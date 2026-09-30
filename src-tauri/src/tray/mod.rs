@@ -33,7 +33,6 @@
 //! main thread, and executes it inline when it is already there.
 
 mod actions;
-mod confirm;
 mod menu;
 mod model;
 
@@ -43,6 +42,8 @@ use serde::Serialize;
 use tauri::menu::MenuEvent;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+
+use crate::dialog;
 
 use crate::session::core::{EventSink, SessionCore, SessionError};
 use crate::session::event::SessionEvent;
@@ -237,7 +238,12 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     }
 
     match id {
-        menu::ids::SHOW_WINDOW => show_window(app),
+        // The tray has nothing to add to the answer: a window that could not be
+        // restored would leave the tray menu open in front of the user, which is
+        // where the problem already is.
+        menu::ids::SHOW_WINDOW => {
+            show_window(app);
+        }
         menu::ids::RESTART_FAILED => on_worker(app, restart_failed),
         menu::ids::STOP_ALL => on_worker(app, stop_all),
         menu::ids::EXIT => on_worker(app, exit),
@@ -264,15 +270,31 @@ where
 }
 
 /// Bring the main window back, in the state it was hidden in.
-fn show_window<R: Runtime>(app: &AppHandle<R>) {
+///
+/// `pub(crate)` because the tray is not the only thing that can ask for the
+/// window: a launch request that reached the running Hub is answered with this
+/// same call ([`crate::app::launch`], #60), so "bring the Hub back" has one
+/// definition rather than two that could drift apart (spec §2: 窗口、快捷方式与
+/// 托盘使用同一应用操作边界).
+///
+/// The answer is about *issuing* the restore, and it is deliberately no more
+/// than that. `show` and friends are proxied to the main thread and return
+/// before the window has been drawn, so reading `is_visible` back here would
+/// report the state the window was in *before* the call — a false failure on a
+/// restore that is about to work. What can be said without racing is whether
+/// there is a window to restore at all, and the launch path reports that much
+/// rather than claiming a success it did not observe
+/// ([`crate::app::launch::Hub`]).
+pub(crate) fn show_window<R: Runtime>(app: &AppHandle<R>) -> bool {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
-        return;
+        return false;
     };
     // `show` alone can leave a minimized window minimized — the user asked to
     // see the workspace, not its taskbar button.
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+    true
 }
 
 /// Open the window on one session.
@@ -382,18 +404,18 @@ fn exit<R: Runtime>(app: &AppHandle<R>) {
     let configs = core.configs();
 
     if let Some(message) = plan.blocked_message(&configs) {
-        confirm::report(&message);
+        dialog::report(&message);
         return;
     }
     if let Some(prompt) = plan.confirm_prompt(&configs) {
-        if !confirm::confirm(&prompt) {
+        if !dialog::confirm(&prompt) {
             return;
         }
     }
 
     let failures = clear_for_exit(&core);
     if !failures.is_empty() {
-        confirm::report(&actions::stop_failure_message(&core.configs(), &failures));
+        dialog::report(&actions::stop_failure_message(&core.configs(), &failures));
         return;
     }
 

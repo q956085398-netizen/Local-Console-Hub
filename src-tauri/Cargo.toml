@@ -62,15 +62,24 @@ base64 = "0.22"
 # `nshowcmd` parameter behind the second, so both are required for one call.
 # Enabling them downloads nothing — windows-sys gates modules, not packages.
 #
-# Win32_UI_WindowsAndMessaging has a second consumer since T09: the tray's exit
-# confirmation (`tray/confirm.rs`) is a native message box, so the question can
-# be answered while the window is hidden (spec §11).
+# Win32_UI_WindowsAndMessaging has a second consumer since T09: the app's native
+# message boxes (`dialog.rs`) are how the user is asked about Exit, or told that
+# a launch was not delivered, while the window is hidden or absent (spec §11).
+#
+# Win32_Storage_FileSystem and Win32_System_IO arrived with the single-instance
+# entry (#60, `instance/win.rs`): the Hub's identity is a named mutex and a
+# named pipe, and windows-sys gates those calls behind what they take —
+# `CreateNamedPipeW` needs the file-system flags, `ConnectNamedPipe` and the
+# `OVERLAPPED` parameter of `ReadFile`/`WriteFile` need the IO module. Enabling
+# them downloads nothing, like every other feature here.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",

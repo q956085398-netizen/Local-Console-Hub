@@ -1,17 +1,16 @@
-//! The one place the tray asks the user something
+//! The one place the app asks the user something, or tells them something
 //! (`docs/MVP_IMPLEMENTATION_SPEC.md` §11, `docs/PRODUCT_SPEC.md` §8).
 //!
 //! Both calls here are native message boxes rather than app-drawn dialogs, and
-//! that is the point: Exit is usually pressed while the window is *hidden*, so
-//! the question has to be answerable by a surface that does not need the window
-//! to exist. §11 names this the MVP-acceptable confirmation ("Stop managed
-//! sessions and exit" or Cancel); `docs/PRODUCT_SPEC.md` §8's
-//! detach-and-leave-running option is not offered, because the MVP has no safe
-//! way to hand a supervised tree to another owner and §11 forbids faking one.
+//! that is the point: they are used exactly when there is no window to draw in.
+//! The tray's Exit is usually pressed while the window is *hidden* (§11 names
+//! this the MVP-acceptable confirmation), and a launch request that could not be
+//! delivered is reported by a process that has no window at all and is about to
+//! end (#60) — a release build is a Windows GUI subsystem binary, so it has no
+//! console to print to either.
 //!
-//! The wording of each question is decided by [`super::actions`], which is
-//! testable; this module only carries it to the user and brings the answer
-//! back.
+//! The wording of each question and message is decided by its caller, which is
+//! testable; this module only carries it to the user and brings the answer back.
 
 /// Ask a yes/no question about something destructive.
 ///
@@ -40,7 +39,7 @@ pub fn confirm(message: &str) -> bool {
 }
 
 /// Tell the user something they need to know but did not ask for: that Exit
-/// could not proceed, and why.
+/// could not proceed, or that a launch was not delivered, and why.
 #[cfg(windows)]
 pub fn report(message: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
