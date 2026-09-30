@@ -136,6 +136,22 @@ card and the search filter read them without consulting the session type
 (D-027). Every other field belongs to exactly one type; validation rejects it
 on the other rather than dropping it quietly.
 
+Service entries also carry **where they are displayed** and **who ends them**
+(#66, DECISIONS.md D-034):
+
+~~~yaml
+display: internal        # or `window`: keep the application's own console
+lifecycle: managed       # or `independent`, for an application that ends itself
+~~~
+
+Both are optional and both are service-only. Absent means `internal` and, from
+there, `managed` — which is what every entry written before those keys existed
+meant. A `window` entry without a `lifecycle` is `independent`: leaving the Hub
+must not close an application nobody asked the Hub to manage. `internal` with
+`independent` is refused (the Hub-hosted console *is* the run's owner), and a
+`window` entry cannot ask for `source: captured`, because it has no Hub-side
+console to capture from.
+
 Logging fields follow LOGGING.md.
 
 ### SessionStatus
@@ -314,6 +330,7 @@ restart_session
 create_temporary_terminal
 remove_session
 add_application
+recommend_display
 save_terminal_config
 activate_session
 attach_terminal
@@ -359,12 +376,24 @@ and this command is not a way to delete one.
 `add_application` is the secondary entry ("添加应用", D-032): it validates one
 form against the config layer, saves it into the user's `config.yaml` as an
 appended entry, and registers the session so the window lists it immediately.
+It carries the two display dimensions (#66) when the user chose them, and
+omits them when the form was left alone.
+
+`recommend_display` is the form's one read-only question (#66): given a
+command and a working directory, it answers what this build can *confirm*
+about that launch method's display — the executable the command resolves to,
+and whether it gets a console of its own — as advice the user may accept or
+change. It never reads the entry's name (spec #59 decision 9).
 The save is an edit of the user's own text — unrelated entries, ordering and
 comments survive, and a file this build cannot safely extend (broken YAML, an
 unknown root key, an inline `sessions: []`) is refused rather than rewritten.
 `activate_session` is the one way an entry opens an application: start it when
 nothing is running, answer with the run it already has when something is, and
-refuse while it is stopping. It is deliberately not `restart_session`.
+refuse while it is stopping. It is deliberately not `restart_session`. Since
+#66 its answer also carries what happened to the application's **own** window —
+focused, refused by Windows, or no window to bring forward — for entries that
+keep one, so a click whose window did not come forward says so instead of
+starting a second copy (D-034).
 
 `save_terminal_config` is the other half of the quick entry (D-033): it writes
 a temporary terminal's launch method — the shell and directory it is already
@@ -443,6 +472,12 @@ Do not reintroduce:
 For stopped services, Start replaces the relevant running action state.
 
 For terminal sessions, PTY-native interaction is required. A fake command textbox cannot replace real terminal input if it breaks full-screen/interactive CLI applications.
+
+For an entry configured as `display: window` (#66) the content region states
+where the application's console is and offers the one action that works —
+opening it, which brings its own window forward — instead of drawing a terminal
+that would stay empty forever. The header's primary control on such an entry is
+that open action; stop and restart are shown only for a run the Hub owns.
 
 ## 11. Tray contract
 

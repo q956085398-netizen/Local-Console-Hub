@@ -13,6 +13,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
+use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
     AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleProcessList, GetConsoleWindow,
@@ -22,8 +23,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-    CREATE_SUSPENDED, INFINITE, THREAD_SUSPEND_RESUME,
+    GetProcessTimes, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject,
+    CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE,
+    PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
 /// Capability gate for the process layer: this backend can own a process tree,
@@ -79,6 +81,26 @@ fn creation_flags_for(hub_has_console: bool) -> u32 {
     }
 }
 
+/// Pids attached to the console this process is attached to, empty when it has
+/// none.
+///
+/// For tests that have to tell "the run shares this process's console" from
+/// "the run has one of its own": which of the two it is decides whether a
+/// `CTRL_BREAK` reaches it from here, and the answer is the environment's, not
+/// the test's.
+#[cfg(test)]
+pub fn console_members() -> Vec<u32> {
+    let mut probe = [0u32; 1];
+    let count = unsafe { GetConsoleProcessList(probe.as_mut_ptr(), 1) };
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut members = vec![0u32; count as usize];
+    let listed = unsafe { GetConsoleProcessList(members.as_mut_ptr(), count) };
+    members.truncate(listed.min(count) as usize);
+    members
+}
+
 /// Whether this process is attached to a console at all.
 ///
 /// The Hub is a windowless application in a release build and is normally
@@ -93,6 +115,18 @@ fn has_console() -> bool {
     unsafe { GetConsoleProcessList(members.as_mut_ptr(), 1) != 0 }
 }
 
+/// Put a run that keeps its own window and console in a process group of its
+/// own, and give it the console Windows will put that window beside (#66).
+///
+/// `CREATE_NEW_CONSOLE` is the point of the mode rather than a detail: an
+/// application configured as `display: window` keeps the console it provides,
+/// and inheriting the Hub's — the Hub has none, being a GUI build — would make
+/// it invisible instead. `CREATE_SUSPENDED` is the same start-owned-before-run
+/// rule every other run follows ([`attach_independent`]).
+pub fn prepare_windowed(command: &mut Command) {
+    command.creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+}
+
 /// Create the run's job object, assign the suspended process, then let its
 /// initial thread execute.
 ///
@@ -100,12 +134,26 @@ fn has_console() -> bool {
 /// If assignment or resumption fails, dropping `job` terminates any assigned
 /// process and the caller kills/reaps the child handle.
 pub fn attach(child: &Child) -> Result<TreeHandle, String> {
+    attach_to(child, TreeHandle::create)
+}
+
+/// The same startup sequence for a run the Hub must not end by exiting (#66):
+/// the job owns the tree exactly as above, but without the kill-on-close limit,
+/// so closing the last handle only closes a handle.
+pub fn attach_independent(child: &Child) -> Result<TreeHandle, String> {
+    attach_to(child, TreeHandle::create_independent)
+}
+
+fn attach_to(
+    child: &Child,
+    create: impl FnOnce() -> Result<TreeHandle, String>,
+) -> Result<TreeHandle, String> {
     #[cfg(test)]
     if fail_start_step(StartFailurePointForTest::JobCreation) {
         return Err("test-injected CreateJobObjectW failure".to_owned());
     }
 
-    let job = TreeHandle::create()?;
+    let job = create()?;
 
     #[cfg(test)]
     if fail_start_step(StartFailurePointForTest::JobAssignment) {
@@ -243,6 +291,49 @@ pub fn request_graceful_stop(pid: u32) -> bool {
         FreeConsole();
         delivered
     }
+}
+
+/// When this run's process was created, read from the handle the supervisor
+/// already holds (#66).
+///
+/// A pid is not an identity: Windows reuses the number once the process is
+/// gone, and the Hub keeps a number for a run it does not supervise. The
+/// creation timestamp is what a remembered pid can be checked against
+/// ([`super::ProcessIdentity`]).
+pub fn creation_time(child: &Child) -> Option<u64> {
+    process_times(child.as_raw_handle() as usize)
+}
+
+/// When the process Windows currently reports under `pid` was created, or
+/// `None` when no process answers for that id.
+pub fn creation_time_of(pid: u32) -> Option<u64> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } as usize;
+    if process == 0 {
+        return None;
+    }
+    let created = process_times(process);
+    unsafe { CloseHandle(process as _) };
+    created
+}
+
+fn process_times(process: usize) -> Option<u64> {
+    let mut created: FILETIME = unsafe { std::mem::zeroed() };
+    let mut exited: FILETIME = unsafe { std::mem::zeroed() };
+    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+    let read = unsafe {
+        GetProcessTimes(
+            process as _,
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if read == 0 {
+        return None;
+    }
+    Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
 }
 
 /// Liveness of an arbitrary pid, for tests that have to check a process the

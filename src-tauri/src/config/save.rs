@@ -283,6 +283,15 @@ fn entry_mapping(entry: &RawSessionConfig) -> Value {
             put(key, Value::String(value.clone()));
         }
     }
+    // The two #66 dimensions go in only when the entry carries them, which is
+    // how a Hub-internal, Hub-managed application — the shape every entry had
+    // before them — is written exactly as it was (spec #59 decision 8).
+    if let Some(display) = entry.display {
+        put("display", Value::String(display.as_str().to_owned()));
+    }
+    if let Some(lifecycle) = entry.lifecycle {
+        put("lifecycle", Value::String(lifecycle.as_str().to_owned()));
+    }
     if let Some(port) = entry.port {
         put("port", Value::Number(port.into()));
     }
@@ -584,6 +593,8 @@ mod tests {
             close_impact: Some("可停止；网页会失联".to_owned()),
             shell: None,
             initial_command: None,
+            display: None,
+            lifecycle: None,
             logging: Some(LoggingConfig {
                 mode: Some(LogMode::OnError),
                 source: Some(LogSource::Captured),
@@ -765,6 +776,57 @@ sessions:
         let loaded = super::super::load_from_str(&file.read());
         assert_eq!(loaded.sessions.len(), 1);
         assert_eq!(loaded.sessions[0].id, "first");
+    }
+
+    /// What the user chose about display and lifecycle is written; what they
+    /// did not choose is not (spec #59 decision 8). A Hub-internal, Hub-managed
+    /// entry is the shape every entry had before #66, so an entry that says
+    /// nothing about either dimension is written exactly as it always was.
+    #[test]
+    fn display_and_lifecycle_are_written_only_when_the_entry_carries_them() {
+        let file = TempFile::with("sessions:\n");
+
+        save_session(file.path(), &service("plain")).expect("the append saves");
+        let mut window = service("window");
+        window.display = Some(crate::config::DisplayMode::Window);
+        // A standalone entry has no Hub console to capture from, so it states
+        // no logging block at all.
+        window.logging = None;
+        save_session(file.path(), &window).expect("the append saves");
+        let mut managed = service("managed");
+        managed.display = Some(crate::config::DisplayMode::Window);
+        managed.lifecycle = Some(crate::config::LifecycleOwner::Managed);
+        managed.logging = None;
+        save_session(file.path(), &managed).expect("the append saves");
+
+        let text = file.read();
+        assert!(
+            !text.contains("display: internal"),
+            "an unstated default must not be frozen into the file: {text}"
+        );
+        assert_eq!(text.matches("display: window").count(), 2, "{text}");
+        assert_eq!(
+            text.matches("lifecycle:").count(),
+            1,
+            "only the entry that asked for management states one: {text}"
+        );
+
+        // The round trip is the point: what was written is what the next start
+        // reads, with the lifecycle default applied where nothing was written.
+        let loaded = super::super::load_from_str(&text);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        assert_eq!(
+            loaded.sessions[0].display,
+            crate::config::DisplayMode::Internal
+        );
+        assert_eq!(
+            loaded.sessions[1].lifecycle,
+            crate::config::LifecycleOwner::Independent
+        );
+        assert_eq!(
+            loaded.sessions[2].lifecycle,
+            crate::config::LifecycleOwner::Managed
+        );
     }
 
     /// A comment-only file keeps its comments and gains the key it lacked.

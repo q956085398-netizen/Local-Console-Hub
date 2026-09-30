@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FolderOpen, MoreHorizontal, Play, RotateCw, Square } from "lucide-react";
+import {
+  AppWindow,
+  ExternalLink,
+  FolderOpen,
+  MoreHorizontal,
+  Play,
+  RotateCw,
+  Square,
+} from "lucide-react";
 import type { SessionConfigDto } from "../../types/config";
 import type { SessionRuntimeDto } from "../../types/runtime";
 import type { SessionAction } from "../../state/actions";
@@ -69,16 +77,22 @@ export default function SessionHeader({
           <p className="session-header__purpose">{config.purpose}</p>
         </div>
         <div className="session-header__actions">
+          {/* The primary control of a run the Hub owns is 启动/停止. For a
+              standalone application it is neither: stopping is not the Hub's
+              to do (#66), so the control that remains is the one that works —
+              opening the application, which is also what brings its own window
+              forward when it is already running. */}
           {actions.start ? (
             <button
               type="button"
               className="btn btn--primary btn--sm"
+              disabled={actions.stopDisabled}
               onClick={() => onAction("start")}
             >
               <Play size={14} />
               启动
             </button>
-          ) : (
+          ) : actions.stop ? (
             <button
               type="button"
               className="btn btn--secondary btn--sm"
@@ -88,12 +102,29 @@ export default function SessionHeader({
               <Square size={14} />
               停止
             </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              disabled={actions.stopDisabled}
+              title="唤起应用的窗口"
+              onClick={() => onAction("start")}
+            >
+              <AppWindow size={14} />
+              打开
+            </button>
           )}
           <button
             type="button"
             className="btn btn--secondary btn--sm"
             disabled={!actions.restart}
-            title={actions.restart ? undefined : "需等待上一次运行结束"}
+            title={
+              actions.managed
+                ? actions.restart
+                  ? undefined
+                  : "需等待上一次运行结束"
+                : "此应用由自己管理生命周期；在配置中启用 Hub 生命周期管理后可从这里重启"
+            }
             onClick={() => onAction("restart")}
           >
             <RotateCw size={14} />

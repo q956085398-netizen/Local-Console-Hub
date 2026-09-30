@@ -403,6 +403,64 @@ export function isCreatedSessionDto(value: unknown): value is CreatedSessionDto 
   );
 }
 
+/** What bringing an application's own window forward did (#66). */
+export type WindowOutcomeValue = "focused" | "refused" | "no_window";
+
+const WINDOW_OUTCOMES: readonly WindowOutcomeValue[] = ["focused", "refused", "no_window"];
+
+/**
+ * The window step of one activation (#66).
+ *
+ * Present only for entries that keep their own window. `notice` is what the
+ * window shows the user, and it is absent exactly when the window did come
+ * forward — a notice for the ordinary case would be noise (story 48).
+ */
+export interface WindowStepDto {
+  outcome: WindowOutcomeValue;
+  /** The window's caption, when one was found. Never used to *find* it. */
+  title?: string;
+  pid?: number;
+  notice?: string;
+}
+
+/**
+ * The answer to `activate_session` (#66; #64 gave it its first half).
+ *
+ * The window reads one thing out of it: whether the application's own window
+ * came forward, and what to say when it did not. The runtime half is what the
+ * command answered with before the window step existed, and the events that
+ * follow carry the same state to everyone.
+ */
+export interface ActivationOutcomeDto {
+  runtime: SessionRuntimeDto;
+  started: boolean;
+  window?: WindowStepDto;
+}
+
+/** Runtime guard for the activation answer. */
+export function isActivationOutcomeDto(value: unknown): value is ActivationOutcomeDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.started !== "boolean" || !isSessionRuntimeDto(candidate.runtime)) {
+    return false;
+  }
+  if (candidate.window === undefined) {
+    return true;
+  }
+  const window = candidate.window;
+  if (!isObject(window)) {
+    return false;
+  }
+  return (
+    WINDOW_OUTCOMES.includes(window.outcome as WindowOutcomeValue) &&
+    optionalString(window, "title") &&
+    optionalString(window, "notice") &&
+    (window.pid === undefined || typeof window.pid === "number")
+  );
+}
+
 /** Runtime guard for the structured failure a session command reports. */
 export function isSessionErrorDto(value: unknown): value is SessionErrorDto {
   if (!isObject(value)) {

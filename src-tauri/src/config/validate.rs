@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 use super::model::{
-    EffectiveLogMode, EffectiveLogging, LogMode, LogSource, LoggingConfig, RawSessionConfig,
-    SessionConfig, SessionType,
+    DisplayMode, EffectiveLogMode, EffectiveLogging, LifecycleOwner, LogMode, LogSource,
+    LoggingConfig, RawSessionConfig, SessionConfig, SessionType,
 };
 use super::paths::is_filesystem_safe_component;
 
@@ -124,7 +124,9 @@ pub fn validate_entry(
         }
     }
 
-    let logging = resolve_logging(index, id, session_type, raw.logging.as_ref())?;
+    let display = raw.display.unwrap_or_default();
+    let lifecycle = resolve_lifecycle(index, id, display, raw.lifecycle)?;
+    let logging = resolve_logging(index, id, session_type, display, raw.logging.as_ref())?;
 
     match session_type {
         SessionType::Service => Ok(SessionConfig {
@@ -143,8 +145,13 @@ pub fn validate_entry(
             close_impact: trimmed(&raw.close_impact, "close_impact")?,
             shell: None,
             initial_command: None,
+            display,
+            lifecycle,
             logging,
         }),
+        // A terminal is hosted by the Hub's own console, so it has no display
+        // mode to choose: `display` and `lifecycle` are rejected for it above,
+        // and the values it carries are the ones that describe what it is.
         SessionType::Terminal => Ok(SessionConfig {
             id: id.to_owned(),
             name: name.to_owned(),
@@ -157,8 +164,41 @@ pub fn validate_entry(
             close_impact: trimmed(&raw.close_impact, "close_impact")?,
             shell: Some(require_shell(index, id, &trimmed(&raw.shell, "shell")?)?),
             initial_command: trimmed(&raw.initial_command, "initial_command")?,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging,
         }),
+    }
+}
+
+/// Settle who ends an entry's run (#66, spec #59 decisions 8 and 12).
+///
+/// The two dimensions are independent, but not freely combinable: an entry the
+/// Hub hosts on its own console is ended by the Hub because the console —
+/// and the job object behind it — is the Hub's, so `independent` there would
+/// describe a state this app cannot produce. That combination is refused with
+/// a message naming the other display mode rather than quietly ignored, which
+/// is the same rule `reject_cross_type_fields` applies to fields that belong to
+/// the other session type.
+fn resolve_lifecycle(
+    index: usize,
+    id: &str,
+    display: DisplayMode,
+    lifecycle: Option<LifecycleOwner>,
+) -> Result<LifecycleOwner, SessionConfigError> {
+    match (display, lifecycle) {
+        (DisplayMode::Internal, Some(LifecycleOwner::Independent)) => {
+            Err(SessionConfigError::field(
+                index,
+                id,
+                "lifecycle",
+                "`lifecycle: independent` only applies to `display: window` — an entry the Hub \
+                 hosts on its own console is ended by the Hub; use `display: window` to keep \
+                 the application's own window and console, or `lifecycle: managed`",
+            ))
+        }
+        (_, Some(owner)) => Ok(owner),
+        (_, None) => Ok(LifecycleOwner::default_for(display)),
     }
 }
 
@@ -185,6 +225,11 @@ fn reject_cross_type_fields(
                 ("command", raw.command.is_some()),
                 ("url", raw.url.is_some()),
                 ("port", raw.port.is_some()),
+                // A terminal is displayed in the Hub and ended by the Hub,
+                // always (#66): it is the Hub's own console the user is
+                // typing into, so there is no other window to keep.
+                ("display", raw.display.is_some()),
+                ("lifecycle", raw.lifecycle.is_some()),
             ],
             "service",
         ),
@@ -285,16 +330,28 @@ fn validate_port(
 /// - interactive terminal → `off` / `none`
 /// - service with an external log → link it, no extra capture
 /// - service without an external log → `on_error` / `captured`
+/// - standalone window application → `off` / `none`, external logs still linked
 ///
 /// Contradictions (e.g. `mode: off` with `source: captured`) are rejected
 /// with a message naming the valid combination instead of guessing.
+///
+/// The standalone case is not a fourth default but a boundary: the Hub has no
+/// console of that application's (#66), so `captured` cannot be honoured there
+/// at all and is refused rather than resolved into a mode that would record
+/// nothing while claiming to (spec #59 decision 16 — no faked capture state).
+/// Linking the application's own log is unaffected, because that is a *link*
+/// to a file the application writes, not a second copy of its console.
 fn resolve_logging(
     index: usize,
     id: &str,
     session_type: SessionType,
+    display: DisplayMode,
     logging: Option<&LoggingConfig>,
 ) -> Result<EffectiveLogging, SessionConfigError> {
     let raw = logging.cloned().unwrap_or_default();
+    // Whether this entry keeps its own console, which is what makes Hub-side
+    // capture impossible rather than merely unusual.
+    let owns_console = display.is_window();
 
     let external_path = match raw.path.as_deref() {
         None => None,
@@ -332,6 +389,22 @@ fn resolve_logging(
     // Defaults (`mode` unspecified) behave exactly like `auto` so the
     // omitted logging block and `mode: auto` cannot diverge.
     let mode = raw.mode.unwrap_or(LogMode::Auto);
+
+    // The two things a standalone entry's own console decides, stated once
+    // rather than as guards on the arms below (#66). It cannot be captured
+    // from — the Hub has no console of that application's — and its `auto`
+    // resolves to "record nothing" instead of the service default, which is
+    // `on_error` with Hub-captured output. Everything else about its logging
+    // (an external log, an explicit contradiction) is the same table as any
+    // other service's.
+    if owns_console {
+        if raw.source == Some(LogSource::Captured) {
+            return Err(owns_its_console(index, id));
+        }
+        if mode == LogMode::Auto && raw.source != Some(LogSource::External) {
+            return Ok(off_none());
+        }
+    }
 
     let effective = match (raw.source, mode) {
         // External: the application owns the log; the Hub only links it.
@@ -452,6 +525,25 @@ fn resolve_logging(
         }
     };
     Ok(effective)
+}
+
+/// Why a standalone window entry cannot capture output, phrased as what the
+/// user can do instead (#66).
+///
+/// Naming the alternative matters more here than usual: `captured` is the
+/// default a user gets by copying any other service entry, so the refusal has
+/// to say what the standalone equivalent of it is rather than only what is
+/// wrong.
+fn owns_its_console(index: usize, id: &str) -> SessionConfigError {
+    SessionConfigError::field(
+        index,
+        id,
+        "logging.source",
+        "`display: window` keeps the application's own console, so the Hub cannot capture its \
+         output — link the application's own log with `source: external` and `logging.path`, \
+         set `mode: off` (or remove the logging block) to record nothing, or use \
+         `display: internal` to host the command on a Hub console",
+    )
 }
 
 fn mode_name(mode: LogMode) -> &'static str {

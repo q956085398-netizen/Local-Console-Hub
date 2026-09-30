@@ -23,6 +23,24 @@ export type LogSourceValue = "none" | "captured" | "external";
 /** Startup state of the config file, distinct from an empty valid file. */
 export type ConfigFileStatusValue = "missing" | "loaded" | "unreadable" | "unavailable";
 
+/**
+ * Where a configured application is displayed (#66, spec #59 decision 8).
+ *
+ * `"internal"` hosts the command on a console the Hub owns; `"window"` keeps
+ * the window *and* console the application provides for itself, so there is
+ * nothing for the Hub to render.
+ */
+export type DisplayModeValue = "internal" | "window";
+
+/**
+ * Who ends an application's run (#66).
+ *
+ * A second dimension rather than a third display mode: `"managed"` puts the run
+ * under the Hub's stop rules (Stop All and Exit include it), `"independent"`
+ * leaves it to the application.
+ */
+export type LifecycleOwnerValue = "managed" | "independent";
+
 /** Effective logging state of a session (LOGGING.md §1.4: the UI must
  * reveal whether persistence is active and where it writes). */
 export interface EffectiveLoggingDto {
@@ -49,6 +67,13 @@ export interface SessionConfigDto {
   /** Terminal sessions only. */
   shell?: string;
   initialCommand?: string;
+  /**
+   * Where this entry is displayed (#66). Always present: "internal" is a fact
+   * about the entry, not an absence, so a UI never has to infer it.
+   */
+  display: DisplayModeValue;
+  /** Who ends this entry's run (#66). Always present. */
+  lifecycle: LifecycleOwnerValue;
   logging: EffectiveLoggingDto;
   /**
    * Whether this session was created from the window rather than loaded from
@@ -96,6 +121,14 @@ export interface NewApplicationFormDto {
   closeImpact?: string;
   port?: number;
   url?: string;
+  /**
+   * Where the application is displayed (#66). Omitted when the user left the
+   * form's default alone, so a write does not freeze a default into the file;
+   * the config layer then reads the same thing the absence has always meant.
+   */
+  display?: DisplayModeValue;
+  /** Who ends the run (#66); only meaningful together with `display: "window"`. */
+  lifecycle?: LifecycleOwnerValue;
   logging?: {
     /** `auto` is accepted and resolved by the config layer. */
     mode?: "off" | "always" | "on_error" | "manual" | "auto";
@@ -166,6 +199,41 @@ export function isFormErrorDto(value: unknown): value is FormErrorDto {
   );
 }
 
+/**
+ * What the Hub could confirm about a launch method's display mode (#66).
+ *
+ * The answer to `recommend_display`: `recommended` is present only when this
+ * build *confirmed* the launch method brings a console of its own, and `reason`
+ * always says what it looked at — which is what keeps the recommendation
+ * checkable rather than an "automatic recognition" claim (spec #59 decision 9).
+ */
+export interface DisplayAdviceDto {
+  recommended?: DisplayModeValue;
+  reason: string;
+  /** The executable the command resolved to, when it resolved. */
+  program?: string;
+}
+
+/** Every valid display mode, for runtime guards on both sides of the contract. */
+export const DISPLAY_MODES: readonly DisplayModeValue[] = ["internal", "window"];
+
+/** Every valid lifecycle owner, for runtime guards on both sides of the contract. */
+export const LIFECYCLE_OWNERS: readonly LifecycleOwnerValue[] = ["managed", "independent"];
+
+/** Runtime guard for the display advice the form reads. */
+export function isDisplayAdviceDto(value: unknown): value is DisplayAdviceDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.reason === "string" &&
+    (candidate.recommended === undefined ||
+      DISPLAY_MODES.includes(candidate.recommended as DisplayModeValue)) &&
+    optionalString(candidate, "program")
+  );
+}
+
 const SESSION_TYPES: readonly SessionTypeValue[] = ["service", "terminal"];
 const CONFIG_FILE_STATUSES: readonly ConfigFileStatusValue[] = [
   "missing",
@@ -198,7 +266,12 @@ export function isSessionConfigDto(value: unknown): value is SessionConfigDto {
   if (
     typeof candidate.id !== "string" ||
     typeof candidate.name !== "string" ||
-    !SESSION_TYPES.includes(candidate.sessionType as SessionTypeValue)
+    !SESSION_TYPES.includes(candidate.sessionType as SessionTypeValue) ||
+    // Both #66 dimensions are required, not optional: the backend always
+    // states them, and a payload missing one is not a session this UI can
+    // render honestly (it would have to guess the display mode).
+    !DISPLAY_MODES.includes(candidate.display as DisplayModeValue) ||
+    !LIFECYCLE_OWNERS.includes(candidate.lifecycle as LifecycleOwnerValue)
   ) {
     return false;
   }

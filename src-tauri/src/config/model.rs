@@ -32,6 +32,98 @@ impl SessionType {
     }
 }
 
+/// Where a configured application is displayed (#66, spec #59 decision 8).
+///
+/// The two modes are not two skins of one runtime. `Internal` hosts the
+/// command on a console this app owns — a supervised service, or an
+/// interactive terminal — and the Hub window is the only place its output
+/// appears. `Window` lets the application keep the window *and* the console it
+/// provides for itself: the Hub starts it, does not embed it, and has nothing
+/// to render for it.
+///
+/// The mode belongs to the entry, not to the Hub window, because it says what
+/// the *application* provides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode {
+    /// Hub-internal: the command runs under a Hub-owned console.
+    Internal,
+    /// Standalone: the application's own window and console are kept.
+    Window,
+}
+
+impl DisplayMode {
+    /// Literal used in YAML and DTOs.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DisplayMode::Internal => "internal",
+            DisplayMode::Window => "window",
+        }
+    }
+
+    /// Whether this entry is displayed in its own window.
+    pub fn is_window(self) -> bool {
+        self == DisplayMode::Window
+    }
+}
+
+impl Default for DisplayMode {
+    /// Absent means Hub-internal, which is what every configuration written
+    /// before #66 meant (spec #59 decision 8: "旧配置继续维持原有行为").
+    fn default() -> Self {
+        DisplayMode::Internal
+    }
+}
+
+/// Who ends an application's run (#66, spec #59 decision 8).
+///
+/// A second dimension rather than a third display mode: the same standalone
+/// window can be left to manage itself, or be brought under the Hub's stop
+/// rules (`docs/DECISIONS.md` D-007). Display mode answers "where does it
+/// appear", lifecycle ownership answers "who ends it", and neither can be
+/// derived from the other — nor from whether output happens to be captured or
+/// whether a port happens to be configured (spec #59 decision 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleOwner {
+    /// The Hub's rules apply: Stop All and Exit include the run, and stop,
+    /// force stop and restart are the same operations they are for a service.
+    Managed,
+    /// The application owns its run. `Stop All` and `Exit` leave it alone, and
+    /// the Hub refuses to end it (`docs/DECISIONS.md` D-034).
+    Independent,
+}
+
+impl LifecycleOwner {
+    /// Literal used in YAML and DTOs.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LifecycleOwner::Managed => "managed",
+            LifecycleOwner::Independent => "independent",
+        }
+    }
+
+    /// What an entry gets when it does not say.
+    ///
+    /// An entry the Hub hosts (`internal`) was always the Hub's to end, so the
+    /// answer for it is unchanged. An entry that keeps its own window is a
+    /// third-party application the user runs *through* the Hub; ending it as a
+    /// side effect of leaving the Hub is the silent kill spec #59 decision 12
+    /// forbids, so the default there is `independent` and management is
+    /// something the user turns on explicitly.
+    pub fn default_for(display: DisplayMode) -> Self {
+        match display {
+            DisplayMode::Internal => LifecycleOwner::Managed,
+            DisplayMode::Window => LifecycleOwner::Independent,
+        }
+    }
+
+    /// Whether the Hub's stop rules apply to this run.
+    pub fn is_managed(self) -> bool {
+        self == LifecycleOwner::Managed
+    }
+}
+
 /// Persistence policy for a session (`docs/LOGGING.md` §3).
 ///
 /// `Auto` is resolved away during validation; it never survives into
@@ -155,6 +247,14 @@ pub struct RawSessionConfig {
     pub shell: Option<String>,
     /// Terminal: command run once the shell is ready.
     pub initial_command: Option<String>,
+    /// Service: `internal` (Hub-hosted console) or `window` (the
+    /// application's own window and console). Absent means `internal`, which
+    /// is what every entry written before #66 meant.
+    pub display: Option<DisplayMode>,
+    /// Service: `managed` (Stop All and Exit include the run) or
+    /// `independent`. Absent means [`LifecycleOwner::default_for`] the display
+    /// mode.
+    pub lifecycle: Option<LifecycleOwner>,
     /// Logging policy; defaults are derived per session type.
     pub logging: Option<LoggingConfig>,
 }
@@ -208,5 +308,21 @@ pub struct SessionConfig {
     pub shell: Option<String>,
     /// Terminal only.
     pub initial_command: Option<String>,
+    /// Service only; `internal` for everything that does not say (#66).
+    pub display: DisplayMode,
+    /// Service only; whether the Hub's stop rules apply to a run (#66).
+    pub lifecycle: LifecycleOwner,
     pub logging: EffectiveLogging,
+}
+
+impl SessionConfig {
+    /// Whether this entry keeps the application's own window and console.
+    pub fn is_window(&self) -> bool {
+        self.display.is_window()
+    }
+
+    /// Whether the Hub owns this session's run lifecycle.
+    pub fn is_managed(&self) -> bool {
+        self.lifecycle.is_managed()
+    }
 }

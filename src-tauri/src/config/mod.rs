@@ -17,8 +17,8 @@ pub use dto::{
     SessionConfigErrorDto,
 };
 pub use model::{
-    EffectiveLogMode, EffectiveLogging, LogMode, LogSource, LoggingConfig, RawConfigFile,
-    RawSessionConfig, SessionConfig, SessionType,
+    DisplayMode, EffectiveLogMode, EffectiveLogging, LifecycleOwner, LogMode, LogSource,
+    LoggingConfig, RawConfigFile, RawSessionConfig, SessionConfig, SessionType,
 };
 pub use paths::{
     is_filesystem_safe_component, local_utc_offset_secs, run_file_name, run_log_filename,
@@ -1083,6 +1083,131 @@ mod tests {
         let loaded = load_from_str(&config(&[entry]));
         assert_eq!(loaded.errors.len(), 1);
         assert!(loaded.errors[0].message.contains("terminal"));
+    }
+
+    /// An entry that says nothing about #66's two dimensions is the entry the
+    /// Hub has always hosted and ended — the behaviour every configuration
+    /// written before them keeps (spec #59 decision 8).
+    #[test]
+    fn an_entry_without_display_or_lifecycle_is_the_hub_internal_managed_one() {
+        let entry = session_yaml("svc", "service", "command: run");
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let session = &loaded.sessions[0];
+        assert_eq!(session.display, DisplayMode::Internal);
+        assert_eq!(session.lifecycle, LifecycleOwner::Managed);
+        assert!(!session.is_window());
+        assert!(session.is_managed());
+    }
+
+    /// A standalone window entry owns its lifecycle by default: a third-party
+    /// application must not be ended by leaving the Hub unless the user said so
+    /// (spec #59 decision 12).
+    #[test]
+    fn a_window_entry_is_independent_unless_it_says_otherwise() {
+        let independent = session_yaml(
+            "app",
+            "service",
+            "command: app.exe\ndisplay: window\nlogging:\n  mode: off",
+        );
+        let managed = session_yaml(
+            "app2",
+            "service",
+            "command: app.exe\ndisplay: window\nlifecycle: managed",
+        );
+        let loaded = load_from_str(&config(&[independent, managed]));
+
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        assert_eq!(loaded.sessions[0].lifecycle, LifecycleOwner::Independent);
+        assert_eq!(loaded.sessions[1].lifecycle, LifecycleOwner::Managed);
+    }
+
+    /// The two dimensions are separate settings, and the only combination the
+    /// app cannot produce is refused with the mode that makes it possible
+    /// rather than silently downgraded (spec #59 decision 8).
+    #[test]
+    fn an_independent_hub_hosted_entry_is_refused_with_the_other_display_mode() {
+        let entry = session_yaml("svc", "service", "command: run\nlifecycle: independent");
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert!(loaded.sessions.is_empty());
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("lifecycle"));
+        let message = &loaded.errors[0].message;
+        assert!(message.contains("display: window"), "{message}");
+    }
+
+    /// Display is a service's setting: a terminal is typed into in this window
+    /// and ended by this window, so neither key belongs on one.
+    #[test]
+    fn display_keys_belong_to_services_only() {
+        let entry = session_yaml(
+            "term",
+            "terminal",
+            "shell: powershell\ndisplay: window\nlifecycle: managed",
+        );
+        let loaded = load_from_str(&config(&[entry]));
+
+        assert!(loaded.sessions.is_empty());
+        assert_eq!(loaded.errors.len(), 1);
+        assert_eq!(loaded.errors[0].field.as_deref(), Some("display"));
+        assert!(loaded.errors[0].message.contains("service"));
+    }
+
+    /// A standalone entry has no Hub console to capture from, so `captured` is
+    /// refused — with the two modes that do work named — instead of resolving
+    /// into a policy that would record nothing while claiming to (spec #59
+    /// decision 16).
+    #[test]
+    fn a_window_entry_cannot_capture_output() {
+        for logging in [
+            "logging:\n  mode: auto\n  source: captured",
+            "logging:\n  mode: on_error\n  source: captured",
+            "logging:\n  mode: always\n  source: captured",
+        ] {
+            let entry = session_yaml(
+                "app",
+                "service",
+                &format!("command: app.exe\ndisplay: window\n{logging}"),
+            );
+            let loaded = load_from_str(&config(&[entry]));
+
+            assert_eq!(loaded.errors.len(), 1, "for {logging}");
+            assert_eq!(loaded.errors[0].field.as_deref(), Some("logging.source"));
+            let message = &loaded.errors[0].message;
+            assert!(message.contains("external"), "{message}");
+            assert!(message.contains("display: internal"), "{message}");
+        }
+    }
+
+    /// What a standalone entry *can* do: keep nothing, or link the log the
+    /// application writes itself (`docs/LOGGING.md` §5).
+    #[test]
+    fn a_window_entry_records_nothing_or_links_the_applications_own_log() {
+        let silent = session_yaml("silent", "service", "command: app.exe\ndisplay: window");
+        let silent_explicit = session_yaml(
+            "silent2",
+            "service",
+            "command: app.exe\ndisplay: window\nlogging:\n  mode: off",
+        );
+        let linked = session_yaml(
+            "linked",
+            "service",
+            "command: app.exe\ndisplay: window\nlogging:\n  source: external\n  path: D:/Tools/app/log.txt",
+        );
+        let loaded = load_from_str(&config(&[silent, silent_explicit, linked]));
+
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        for session in &loaded.sessions[..2] {
+            assert_eq!(session.logging.mode, EffectiveLogMode::Off);
+            assert_eq!(session.logging.source, LogSource::None);
+        }
+        assert_eq!(loaded.sessions[2].logging.source, LogSource::External);
+        assert_eq!(
+            loaded.sessions[2].logging.external_path.as_deref(),
+            Some("D:/Tools/app/log.txt")
+        );
     }
 
     #[test]

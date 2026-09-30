@@ -1,7 +1,13 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import AddApplicationDialog, { errorPlacement, loggingFor } from "./AddApplicationDialog";
+import AddApplicationDialog, {
+  displayHint,
+  errorPlacement,
+  legalPolicyFor,
+  logPoliciesFor,
+  loggingFor,
+} from "./AddApplicationDialog";
 
 function render(): string {
   return renderToStaticMarkup(
@@ -35,11 +41,26 @@ describe("AddApplicationDialog", () => {
     expect(markup).not.toContain("应用日志文件");
   });
 
-  it("states the Hub-internal display mode instead of offering a mode that does not work", () => {
+  /// Both display modes are on offer, and the one that is not chosen is still
+  /// visible (#66): a mode that exists but is hidden behind a dropdown is a
+  /// choice the user has to know about before they can make it.
+  it("offers both display modes, starting on the Hub-internal one", () => {
     const markup = render();
 
     expect(markup).toContain("Hub 内显示");
-    expect(markup).not.toContain("独立窗口");
+    expect(markup).toContain("独立窗口");
+    expect(markup).toContain('aria-checked="true"');
+    // The Hub-internal option is the selected one, so the standalone one is not.
+    expect(markup).toMatch(/aria-checked="true"[^>]*>[^<]*Hub 内显示/);
+    expect(markup).toMatch(/aria-checked="false"[^>]*>[^<]*独立窗口/);
+  });
+
+  /// The lifecycle choice is about a run the Hub does not otherwise own, so it
+  /// only appears for the mode that can have one.
+  it("asks about lifecycle management only for a standalone window", () => {
+    const markup = render();
+
+    expect(markup).not.toContain("由 Hub 管理生命周期");
   });
 
   it("keeps a refusal's message on the form rather than closing it", () => {
@@ -76,6 +97,99 @@ describe("errorPlacement", () => {
 
     expect(errorPlacement(error, "external")).toBe("logging.path");
     expect(errorPlacement(error, "on_error")).toBeNull();
+  });
+
+  /// The two #66 fields are placed like every other one: the config layer names
+  /// `lifecycle` or `logging.source`, and the form has inputs for both.
+  it("places the display-related refusals on the controls they belong to", () => {
+    expect(errorPlacement({ field: "lifecycle", message: "no" }, "")).toBe("lifecycle");
+    expect(errorPlacement({ field: "logging.source", message: "no" }, "")).toBe("logging.source");
+  });
+});
+
+describe("logPoliciesFor", () => {
+  /// A standalone entry cannot capture Hub-side output, so the three policies
+  /// that would ask it to are not offered for it — a policy the save would
+  /// refuse is exactly the "press does nothing" option the spec rules out.
+  it("offers a standalone entry only the policies it can actually have", () => {
+    const policies = logPoliciesFor("window");
+    const values = policies.map((option) => option.value);
+
+    expect(values).toEqual(["", "off", "external"]);
+    // And the unspecified one says what it means *here*: this mode's default is
+    // "record nothing", not the service default it names for a Hub-hosted entry.
+    expect(policies[0].label).toContain("不捕获输出");
+    expect(policies[0].label).not.toContain("出错时记录");
+  });
+
+  it("keeps every policy available to a Hub-internal entry", () => {
+    expect(logPoliciesFor("internal").map((option) => option.value)).toEqual([
+      "",
+      "off",
+      "on_error",
+      "always",
+      "manual",
+      "external",
+    ]);
+  });
+});
+
+describe("legalPolicyFor", () => {
+  /// The one policy that cannot survive a switch to a standalone entry has to
+  /// go with it — whether the user clicked the mode or the recommendation moved
+  /// it for them. Leaving `on_error`/`always`/`manual` selected would send a
+  /// payload the config layer refuses, which is the "option that does not work"
+  /// the display choice exists to avoid.
+  it("drops a capturing policy when the mode can no longer carry it", () => {
+    for (const capturing of ["on_error", "always", "manual"]) {
+      expect(legalPolicyFor("window", capturing)).toBe("");
+    }
+  });
+
+  it("keeps every policy a standalone entry can carry", () => {
+    for (const legal of ["", "off", "external"]) {
+      expect(legalPolicyFor("window", legal)).toBe(legal);
+    }
+  });
+
+  it("keeps the selection when the Hub-internal mode is chosen again", () => {
+    expect(legalPolicyFor("internal", "on_error")).toBe("on_error");
+  });
+});
+
+describe("displayHint", () => {
+  it("says what the choice means when the Hub could confirm nothing", () => {
+    expect(displayHint("internal", null)).toContain("Hub 窗口里用终端");
+
+    expect(displayHint("window", null)).toContain("应用自己的窗口");
+  });
+
+  /// The backend's sentence is what names the evidence — which executable, and
+  /// which subsystem — so the form shows it rather than paraphrasing it.
+  it("shows the backend's reason, and marks the recommended choice", () => {
+    const advice = {
+      recommended: "window" as const,
+      reason: "`cmd.exe` 自带控制台（控制台子系统程序）。",
+      program: "C:/Windows/System32/cmd.exe",
+    };
+
+    const recommended = displayHint("window", advice);
+    expect(recommended).toContain("Hub 推荐这一项");
+    expect(recommended).toContain("cmd.exe");
+
+    // The same advice with the other mode selected: still shown, not marked.
+    const other = displayHint("internal", advice);
+    expect(other).not.toContain("Hub 推荐这一项");
+    expect(other).toContain("cmd.exe");
+  });
+
+  it("shows the reason even when the Hub recommended nothing", () => {
+    const hint = displayHint("internal", {
+      reason: "`explorer.exe` 是图形界面程序：Hub 无法只凭启动方式确认…",
+    });
+
+    expect(hint).toContain("explorer.exe");
+    expect(hint).not.toContain("Hub 推荐这一项");
   });
 });
 

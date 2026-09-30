@@ -919,6 +919,13 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
 | 前端 `AddApplicationDialog.test.ts`（11 条） | 三个必填项与五个可选项；不出现「独立窗口」字样，只陈述「Hub 内显示」；`loggingFor` 的每种策略都是配置层接受的组合、未指定时不写 `logging:` 块；`errorPlacement` 把后端给字段名落在对应输入框上、没有字段或表单没有这个输入框时退回 banner（含 `logging.path` 只在外部日志策略下才落位） |
 | 前端 `Sidebar.test.ts`（1 条） | 两个入口并存，且不再出现被决策 7 取消的混合文案 |
 
+**CI 上的第一次运行失败在 #65 的用例上（已修，记录在案）。** 本 PR 的第一次 CI
+（`Windows build check`）在 `a_saved_terminal_joins_a_real_config_and_keeps_its_run`
+上失败：它按字节比较保存前后的滚动缓冲，而**活着的 shell 会在命令跑完后补画一次提示符** ——
+那段提示符出现在两次读取之间是 shell 自己的时机，不是保存做了什么。改成比较「到用户当时正在
+读的那一行标记为止」的内容（并保留 `assert_kept` 对 run 与 pid 的判断），保存前后必须一致。
+本地复跑该用例 3 次、整份集成用例 4 次、全量两次均通过。该用例来自 #65，不是本片引入。
+
 **一次偶发失败（不是本片引入，记录在案）。** 一次全量 `cargo test` 里
 `process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree` 失败过一次；该用例与
 本片改动无关（`process` 模块未被本片触碰），随后单独复跑 3 次与全量复跑 8 次全部通过，因此
@@ -1097,18 +1104,34 @@ run 执行。改动只有 `src-tauri/src/process/win.rs`：run 的创建 flag �
 （10.0.26300）、真实用户会话 `q9560`、worktree `silly-perlman-2e920e`；本机的默认终端应用是
 Windows Terminal（`HKCU:\Console\%%Startup` 未设置，实测由它接管新分配的控制台）。
 
-**第 1 层（自动）。** 全绿：
+**第 1 层（自动）。** 全绿（分支已合入含 #66 的最新 `main`）：
 
 | 套件 | 结果 |
 | --- | --- |
 | `cargo fmt --all --check` | 通过 |
 | `cargo clippy --all-targets -- -D warnings` | 通过 |
-| `cargo test` | **465 lib + 14 `tests/mvp_matrix.rs`，0 failed**（基线 462 + 14） |
+| `cargo test` | **503 lib + 14 `tests/mvp_matrix.rs`，0 failed**（合并 #66 后的基线 500 + 14） |
 
 本片新增 3 条用例：`process::win::tests::a_run_gets_no_console_window_only_when_it_has_no_console_to_inherit`
 钉住 flag 规则（有/无 Hub 控制台各两条断言）、`having_a_console_is_read_from_the_consoles_membership`
 钉住「有没有控制台」的读法与 `GetConsoleProcessList` 一致、`process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window`
-钉住优雅停止仍能到达 run 且 `graceful_delivered` 不说谎。
+钉住停止请求与它自己的报告：请求被报告为已投递时，这次停止必须走优雅路径而不是超时后强制结束。
+
+**这条用例为什么是「条件断言」而不是「一定投递到」**（合并 #66 之后才看清）：run 落在哪个控制台
+是**环境**给的答案——Hub 有控制台时继承，没有时自己一个（本决策第 2 条）——而**这个测试二进制会
+自己把自己的控制台弄丢**：#66 的 `process::independent` 在等待独立窗口时每 50ms 调一次
+`crate::window::console_window(pid)`，那个函数为了问「这个 pid 的控制台窗口是哪个」会
+`FreeConsole` + `AttachConsole(pid)` + `FreeConsole`，是**进程级**状态改动。并行的用例一旦这样
+做，本用例的 run 就在另一个控制台上了。所以断言分成两半：跨度可测的那一半（`graceful_delivered`
+为真 ⇒ 必须 `Exited`）在任何情况下都成立，另一半（run 确实在本进程控制台上时请求必须到达）只在
+读得到该条件时断言。合入 #66 后连跑 5 次全量，本用例 0 次失败。
+
+**合并 #66 时看到的一次抖动（如实记录，未归因）。** 5 次全量里有 1 次失败在
+`session::core::tests::terminal_tests::a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`
+与 `temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed`（两条都是 ConPTY 进程树
+断言），单独跑这两条 3/3 通过。本片唯一的产物改动是受监督 run 的创建 flag，与 PTY 路径无关，但
+「无关」不等于「已排除」：合并进来的 #66 带来了一批新的独立窗口用例（含上述每 50ms 的窗口轮询），
+全量运行的负载特征变了。此处只记录现象与已知读数，#66 的作者（或后续轮次）应按需要复核。
 
 **先复现，再改（本机原生读数）。** 复现要造出报告里的条件——**runner 自己没有控制台**。直接用
 `DETACHED_PROCESS` 跑 `cargo test` 不够：cargo 自己也是控制台程序，窗口会记在 `cargo.exe`
@@ -1160,6 +1183,110 @@ worktree 的 `scratch/`，提交前删除（`git status` 干净）。
 
 ---
 
+### 2026-10-01 — #66 自带控制台的独立窗口应用（D-034）
+
+工单 #66（父规格 #59 的决策 8、9、11、12、16；前置 #64 已合并）。基线提交 `7e631ad`
+（含 #60–#68 与 #63），worktree `funny-saha-e740a2`。**下面的自动结果跑在并入 #65 之后的工作树
+上**：`#65`（保存终端启动配置）与本片改到同一批文件，两边合并时在 10 个文件上冲突，冲突解决
+保留双方意图（两个新命令都注册、两个新测试块都保留、表单的两轴改名 `dialog__*` 也套用到本片
+新增的控件上），随后全量复跑通过。环境为 Windows 11 Pro（10.0.26300）、
+真实用户会话 `q9560`。下面第 1 层里涉及真实进程、真实 Win32 窗口与 ConPTY 的用例，跑在这个
+Windows 用户环境里，不是 mock。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | **280 passed / 19 files** |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **497 lib + 17 `tests/mvp_matrix.rs`，0 failed**（并入 #65 之后的工作树，见下） |
+
+本片新增 55 条用例（Rust 41、集成 3、前端 14），它们各自钉住的行为：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `config::tests`（6 条） | 不写两个维度时是 Hub 内显示 + Hub 管理（旧配置原行为）；`display: window` 不写 lifecycle 时是 `independent`、写了 `managed` 就服从；`internal` + `independent` 被拒且消息给出 `display: window` 这条出路；`display`/`lifecycle` 只属于 service（terminal 携带即拒）；独立条目不允许 `source: captured`（三种捕获模式都拒，消息给出 `external` 与 `display: internal`）；独立条目可以什么都不记，也可以关联应用自己的日志 |
+| `config::save::tests`（1 条） | 用户选过的维度才写进文件（`display: window`、必要时 `lifecycle: managed`），没选过的一个字都不写；写下去的内容能被真实加载链路读回，且缺省处回到各自默认 |
+| `config::dto::tests`（1 条） | 两个维度总是出现在 DTO 里（"internal" 是事实而不是缺省键），供界面渲染 |
+| `window::tests`（5 条） | 「哪一个是用户说的那个窗口」的选法：可见且有标题的优先、被别的窗口拥有的不算、最小化仍是它、全隐藏时没有可唤起的窗口（如实说没有，而不是把隐藏窗口「拉到」前面）、无标题可见窗口作为退路 |
+| `window::win::tests`（3 条） | 真实 Win32 窗口上：按拥有进程枚举能找到自己的窗口（且别人的窗不会混进来）、`WM_CLOSE` 之后窗口消失、聚焦如实返回 `Focused`/`Refused` |
+| `process::independent::tests`（8 条） | 句柄释放后进程仍存活（这就是 Hub 退出时发生的事）；启动器退出但子进程还在时运行**没有**结束；停止只结束这棵树而无关同名进程存活；已结束的运行再停是 `AlreadyExited` 且不改变退出码；身份与自己的进程相符、与「同 PID 不同创建时间」的进程不相符；控制台程序能报出自己的控制台窗口；等待窗口有界并在等不到时如实说没有 |
+| `app::recommend::tests`（9 条） | 同名不同启动方式给不同回答（批处理 → 推荐独立窗口，GUI 程序 → 不推荐）；控制台子系统程序由自己的头部确认；图形界面程序保留两种模式、不猜；解析不到的程序不推荐；空命令不报错；带引号的路径按工作目录解析；**裸名字沿 `PATH` 解析**（`cmd.exe /c run.bat` 这条最常写的形状）；**命令本身分不出词**（引号不配对）时不推荐并说明原因；目录与假 exe 不当作可识别镜像 |
+| `tray::actions::tests`（5 条） | 「停止全部」不碰未受管的独立应用；退出既不停止也不被它阻塞；显式受管理的独立条目照常停止并参与退出确认；「重启失败」同样排除它；注册表里没有条目可查的会话仍按 Hub 所有处理（排除是**条目**的事实，不是默认） |
+| 集成 `a_standalone_application_keeps_its_window_and_outlives_the_hub` | 真实 `config.yaml` → 真实 `SessionCore` → 真实 .cmd 启动器：加载出的条目是独立窗口 + 独立生命周期 + 不捕获；打开一次得到运行、第二次打开是**同一个**进程；它报出自己的窗口；**丢掉整个注册表（即 Hub 退出）之后，应用与它启动的子进程仍在工作**（子进程每秒写一行 tick，断言的是活动而不只是存活） |
+| 集成 `a_standalone_gui_application_is_found_by_its_run_and_ends_through_its_own_window` | **可控 GUI**（`charmap.exe`）作为独立窗口应用：Hub 从自己持有的运行找到它开的那个窗口（可见、非被拥有的顶层窗口、pid 就是这次运行）；聚焦如实返回 `Focused`/`Refused`；**关掉它自己的窗口就是应用自己结束**，Hub 随后如实报告结束、进程与树都不在了 |
+| 集成 `only_a_managed_standalone_entry_can_be_stopped_from_the_hub` | 默认独立条目被 `stop` 拒绝且消息给出 `lifecycle: managed`，进程仍在；显式受管理的条目走正常停止路径，进程确实消失 |
+| 前端 `AddApplicationDialog.test.ts`（3 条新增） | 两种显示方式都在（未被选中的也可见），默认选中 Hub 内显示；生命周期选项只在独立窗口下出现；`lifecycle` 与 `logging.source` 的拒绝落在对应控件上 |
+| 前端 `logPoliciesFor`（2 条）与 `legalPolicyFor`（3 条） | 独立窗口只给「未指定 / 关闭 / 关联应用自有日志」三种策略，且「未指定」的说明写明这一态**不捕获输出**（而不是服务默认的「出错时记录」）；Hub 内显示保留全部策略。`legalPolicyFor` 钉住同一个约束的另一半：切到独立窗口时不可用的策略会被换掉——**推荐自动改模式时也一样**，否则用户先选「出错时记录」再输入一条控制台命令，提交就会被配置层拒绝 |
+| 前端 `displayHint`（3 条） | 后端确认不了时只讲这个选择的意思；有推荐时显示后端那句依据并标注「Hub 推荐这一项」；被推荐的不是当前选项时仍显示依据、不标注 |
+| 前端 `availableActions`（2 条）+ `isSessionConfigDto`（1 条） | 未受管会话不提供停止/强制停止/重启（后端同样拒绝），受管的独立窗口照常提供；DTO 守卫要求两个维度都在，缺一个即不是可渲染的会话 |
+
+**第 2 层（原生窗口）：本轮真的跑到的那部分。** 这一片与之前几片不同——它要的「窗口」正好是
+agent 能在本会话里创建与枚举的真实 Win32 对象。因此 `window::win::tests` 与
+`process::independent::tests` 在真实桌面上建了真的顶层窗口、真的控制台窗口，并真的
+`EnumWindows` / `SetForegroundWindow` / `WM_CLOSE`；集成用例里那一次「Hub 退出」是丢弃整个
+注册表（连同它持有的进程句柄与 job 句柄），随后用 `tasklist` 与子进程的活动证明两者都还在。
+这些是真实 Windows 结果，不是浏览器里的模拟。
+
+**第 2 层（原生窗口）：仍未运行的部分。** 打包后应用自己的窗口形态（无装饰标题栏、任务栏与
+托盘图标、真实快捷方式入口）、托盘菜单的实际操作、以及 H13 里「点托盘『退出』后确认对话框」
+这一串真实手势，本轮都没有驱动。**H12/H13 因此不记为通过**，与 #61/#62/#64 留下的
+H05/H09/H10/H14/H15/H16 一并归 #69 的组合原生轮次。用户真实的
+`%APPDATA%\LocalConsoleHub\config.yaml` 本片从未写过：所有写盘都在临时目录里。
+
+**第 3 层（视觉）。** 本片新增的三个表面（独立窗口面板、表单的两个显示维度、头部的「打开」）
+参考图里没有，所以比对的是视觉语言（`docs/UI_STYLE_GUIDE.md` §7 与 §10），不是逐区域复刻。
+做法与 #64 同源：在工程根放一个**临时** `t66-harness.html`（跑完已删除），在 `/src/main.tsx`
+之前装 `window.__TAURI_INTERNALS__` 的桩（`ping`、`list_session_configs`、`list_sessions`、
+`get_config_report`、`recommend_display`、`activate_session`、`add_application` 与
+`plugin:event|listen`），用 `preview_*` 工具在同一浏览器页里驱动，1280×800。
+
+**这一轮 `preview_screenshot` 在本会话拿不到图**：宿主窗口处于最小化/隐藏状态，页面无法绘制，
+截图在 5 秒后超时（`preview_snapshot` 与 `getComputedStyle` 正常）。所以这一层的证据是**文本
+形式**的——可访问性树、计算样式与几何读数——**不是像素比对**。如实记下，不当作「已按参考图
+逐区域比对」。观察到的：
+
+- 独立窗口面板与终端面板**占同一个区域**：两者都是 983×581 @ (289,178)，连接条内边距同为
+  `6px 12px`，所以换一种会话不会让工作区变形；
+- 面板用与终端同一套 token：底 `#090a0d`（`--terminal`）、12px 圆角、卡片 `--popover` 与
+  16px 圆角（与终端「未运行」浮层同一形状），模式行是 11px IBM Plex Mono + `--muted-fg`；
+- 头部：未受管的独立会话主控变成「打开」（可点），「重启」禁用且 title 说明原因（此应用由
+  自己管理生命周期…），不再是「需等待上一次运行结束」那种会说错的解释；
+- 表单：显示方式是两枚等宽分段按钮（各 261px、30px 高，与输入框同高同圆角），未选中的仍有
+  边框与低对比文字；日志策略在独立窗口下只剩三项；勾选「由 Hub 管理生命周期」后提交的载荷是
+  `{name, cwd, command, display: "window", lifecycle: "managed"}`——只发用户选过的；
+- 点「打开」后状态栏出现后端的真实结果：「应用已经在运行，但现在没有可以唤起的窗口…Hub 不会
+  为此再启动一份」，而不是静默无事发生。
+
+**这一层证明的边界。** 它证明的是我们的标记、样式与前端接线（哪个控件发哪条命令、推荐怎么
+驱动初值、被拒绝的结果怎么回到用户眼前）；它**证明不了**原生窗口里的唤起是否真的把窗口带到
+前台——那由第 1 层里真实 Win32 窗口的用例与 `charmap.exe` 那一条集成用例负责，而打包应用的
+真实入口仍归 #69。
+
+**代码审查（两轴）之后改了什么。** 这一轮跑了标准与规格两个平行审查，据其结论修了四处：
+两处硬伤（5 处代码注释把本片决策写成 D-033——那是 #63 的编号，已全部改为 D-034；
+`recommend_display` 漏在 MVP 契约 §9 的命令清单外，已补上）与两处真问题——表单里「推荐自动改
+显示方式」时没有跟着调整日志策略（会留下一个提交必被拒的组合，已与手动切换走同一条规则），
+以及 `IndependentProcess` 的观察线程在 job 读数持续失败时会一直轮询下去（现在有界，30 秒后
+停止观察；「读不到树」仍**不**当作运行结束，因为那是没有被证实的主张）。另外把推荐的命令
+切词改为复用 `session::core::split_command`（原来是一份平行的近似实现，会让「推荐看的程序」
+与「真正启动的程序」有分叉的可能），并清掉了 `LifecycleOwner` 上一个用不到的 `Default`。
+
+**一次偶发失败（不是本片引入，记录在案）。** 一次全量 `cargo test` 里
+`session::core::tests::temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed`
+超时失败过一次；该用例与本片改动无关（它是一条真实 ConPTY 终端用例，本片没有改 PTY 路径），
+随后单独复跑与该轮的两次全量复跑都通过，因此记为该用例在并行全量下的偶发，而不是本片结果。
+
+**未执行 / 留待。** H12（在真实窗口里添加自带控制台的应用、改推荐、看它不重复内嵌）、H13
+（在真实窗口里对默认独立应用『停止全部』与退出 Hub、再切到显式受管理）、H10 的「已持有的
+独立实例」在原生窗口里的一次点击，都未在原生环境执行，归 #69。Hub 外已运行实例的关联
+（H11）本就不是本片范围，是 #67。
+
+**清理。** 临时 harness 页已删除（`git status` 里不存在），`npm run dev` 的预览服务已停止、
+视口已复位，测试用的临时目录与临时进程由各用例自行清理（`process::independent` 与集成用例
+都带 `taskkill` 兜底）。
+
 ## 7. 当前已知缺口与验收边界
 
 - **托盘验收已有通过记录。** 2026-09-29 的独立 Windows 桌面轮次确认 R-1 至 R-8 通过，见 §6。
@@ -1174,6 +1301,12 @@ worktree 的 `scratch/`，提交前删除（`git status` 干净）。
   通过 WebView2 的 DevTools 通道驱动了真实窗口（真实 IPC 与真实 ConPTY），因此 H03 与
   H05/H07/H08 的主体有了窗口内证据；但输入不是 OS 级 `SendInput`，托盘与任务栏未参与，
   H14/H15/H16 仍归 #69 的组合原生验收，且该轮出现过两个无法归因的额外临时终端（见 §6）。
+- **#66 的独立窗口应用已有第 1 层、真实 Win32 窗口与「Hub 退出后应用仍存活」的证据，原生窗口里的点击未运行。**
+  2026-10-01 那一轮把两个维度、独立运行的创建与归属、窗口选择规则、启动方式的推荐和批量动作的
+  排除都钉在自动用例里，其中窗口枚举/聚焦/关闭与「丢掉注册表后应用与子进程仍在工作」是真实
+  Windows 结果；但 H12/H13 需要在真实窗口里添加、点头部与托盘、看任务管理器，本轮的浏览器
+  harness 只覆盖到前端接线（且该轮 `preview_screenshot` 取不到图，视觉证据是文本形式），
+  因此**不记为通过**，连同 H10 的已持有独立实例部分一并归 #69（见 §6）。
 - **#64 的保存与激活已有第 1 层与前端桩宿主证据，原生窗口部分未运行。** 2026-10-01 那一轮
   把安全追加、两半事务、id 派生、四种状态下的打开语义钉在自动用例里，并在带桩宿主的浏览器页
   里走通了「保存 → 列表出现 → 被选中」与两种失败呈现；但 H09/H10 需要在真实窗口里真的保存与

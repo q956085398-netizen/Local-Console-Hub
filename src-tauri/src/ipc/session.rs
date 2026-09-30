@@ -144,6 +144,42 @@ pub fn add_application(
     register_application(&core, config_file, form).map(CreatedSessionDto::configured)
 }
 
+/// What the Hub can confirm about a launch method's display mode (#66).
+///
+/// The "添加应用" form calls this as the user fills in the command, so the
+/// recommendation is about the method that would actually run rather than about
+/// the name typed above it (spec #59 decision 9). It is a read-only question:
+/// nothing is resolved to a *running* program, and a launch method this build
+/// cannot confirm comes back unrecommended with the reason why.
+#[tauri::command]
+pub fn recommend_display(command: String, cwd: Option<String>) -> DisplayAdviceDto {
+    DisplayAdviceDto::from(crate::app::recommend::advise(&command, cwd.as_deref()))
+}
+
+/// The recommendation as the form reads it (#66).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayAdviceDto {
+    /// `"window"` when this build confirmed the method brings its own console,
+    /// absent when it could not confirm either mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+    pub reason: String,
+    /// The executable the command resolved to, when it resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+}
+
+impl From<crate::app::recommend::DisplayAdvice> for DisplayAdviceDto {
+    fn from(advice: crate::app::recommend::DisplayAdvice) -> Self {
+        DisplayAdviceDto {
+            recommended: advice.recommended.map(|mode| mode.as_str().to_owned()),
+            reason: advice.reason,
+            program: advice.program,
+        }
+    }
+}
+
 /// Save a running (or ended) temporary terminal's launch configuration (#65).
 ///
 /// The other half of the quick entry: "新建 PowerShell" makes a terminal that no
@@ -177,13 +213,87 @@ pub fn save_terminal_config(
 /// start a second one, a click while it is starting cannot start another, and
 /// a click while it is stopping is refused rather than queued behind the stop
 /// barrier.
+///
+/// Since #66 it also answers what happened to the application's *own* window,
+/// for the entries that keep one. That half belongs to the app layer
+/// ([`crate::app::activation`]) because it is about a window rather than about
+/// a lifecycle, and the same composition answers a launch request handed to the
+/// Hub from a shortcut, so the two entries cannot disagree about what "open"
+/// means.
 #[tauri::command]
 pub fn activate_session(
     core: State<'_, SessionCore>,
     session_id: String,
-) -> Result<SessionRuntime, SessionError> {
-    core.activate(&session_id)
-        .map(|activation| activation.runtime)
+) -> Result<ActivationDto, SessionError> {
+    crate::app::activation::open(&core, &session_id).map(ActivationDto::from)
+}
+
+/// What opening one application answered with (#66).
+///
+/// `runtime` is the lifecycle half the caller already knows how to read (the
+/// same shape `activate_session` answered with before the window step existed);
+/// `window` is present only for an entry that keeps its own window.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivationDto {
+    pub runtime: SessionRuntime,
+    /// Whether this call created the run.
+    pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowStepDto>,
+}
+
+/// What bringing an application's own window forward did (#66).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowStepDto {
+    /// `"focused" | "refused" | "no_window"`.
+    pub outcome: WindowOutcomeDto,
+    /// The window's caption, when one was found — for naming it in a notice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The process the window belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// What to tell the user when the window did not come forward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowOutcomeDto {
+    /// The window was restored if minimized and brought to the foreground.
+    Focused,
+    /// Windows refused the foreground change; the window is still on screen.
+    Refused,
+    /// The application is running without a window to bring forward.
+    NoWindow,
+}
+
+impl From<crate::app::activation::OpenOutcome> for ActivationDto {
+    fn from(outcome: crate::app::activation::OpenOutcome) -> Self {
+        use crate::app::activation::WindowStep;
+
+        let window = outcome.window.map(|step| {
+            let (outcome, found) = match &step {
+                WindowStep::Focused(window) => (WindowOutcomeDto::Focused, Some(window)),
+                WindowStep::Refused(window) => (WindowOutcomeDto::Refused, Some(window)),
+                WindowStep::NoWindow => (WindowOutcomeDto::NoWindow, None),
+            };
+            WindowStepDto {
+                outcome,
+                title: found.map(|window| window.title.clone()),
+                pid: found.map(|window| window.pid),
+                notice: step.notice(),
+            }
+        });
+        ActivationDto {
+            runtime: outcome.activation.runtime,
+            started: outcome.activation.started,
+            window,
+        }
+    }
 }
 
 /// Remove a temporary session from the registry (#62).
