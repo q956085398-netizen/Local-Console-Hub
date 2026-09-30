@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 24 24">
+  <!-- Local Console Hub — the Hub icon, in one place (D-029).
+
+       This is the mark the V2 reference draws in its title bar — a dark rounded
+       tile with one green status dot and three list rows — transcribed from the
+       upstream prototype source that produced assets/ui/ui-v2-*.png. It is the
+       app's identity everywhere: the in-app title bar renders this file
+       verbatim (src/components/title-bar/TitleBar.tsx), and the Windows icon
+       set (taskbar, tray, installers and their shortcuts) is rasterized from
+       it by scripts/generate-icon.mjs + `npx tauri icon`.
+
+       Regenerate the native set after editing (the rasterizer is installed with
+       `npm install @resvg/resvg-js` and deliberately kept out of package.json):
+
+         node scripts/generate-icon.mjs
+         npx tauri icon assets/brand/hub-mark-1024.png
+
+       The 24-unit viewBox is the prototype's own coordinate space, kept as-is
+       so the 20px title-bar mark and the 1024px icon are the same drawing at
+       two sizes rather than two drawings that have to be kept in sync. -->
+  <rect x="3" y="3" width="18" height="18" rx="5" fill="#1a1c24" />
+  <rect
+    x="3.5"
+    y="3.5"
+    width="17"
+    height="17"
+    rx="4.5"
+    fill="none"
+    stroke="#ecece8"
+    stroke-opacity="0.16"
+  />
+  <circle cx="7.5" cy="8" r="1.15" fill="#6fba8a" />
+  <rect x="10.2" y="7.15" width="8.2" height="1.5" rx="0.6" fill="#c5ccd6" opacity="0.9" />
+  <rect x="6.4" y="11.2" width="11.2" height="1.4" rx="0.6" fill="#c5ccd6" opacity="0.45" />
+  <rect x="6.4" y="14.6" width="8.4" height="1.4" rx="0.6" fill="#c5ccd6" opacity="0.28" />
+</svg>

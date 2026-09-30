@@ -32,8 +32,8 @@ CI 也不产出安装包。后果是第一次运行时 Windows SmartScreen 会�
 用户要点「更多信息 → 仍要运行」。签名需要一张代码签名证书，属于要凭据的决定，
 所以 T12 只把它记成已知限制（`RELEASE_NOTES_v0.1.0.md` §6 第 1 条），不在这里实现。
 
-两者共用同一套图标（`src-tauri/icons/`，源文件 `assets/brand/app-icon.svg`，
-经 `scripts/generate-icon.mjs` + `npx tauri icon` 生成，D-013），以及同一份
+两者共用同一套图标（`src-tauri/icons/`，源文件 `assets/brand/hub-mark.svg`，
+经 `scripts/generate-icon.mjs` + `npx tauri icon` 生成，D-029），以及同一份
 `bundle` 元数据：`publisher` / `copyright` / `category` / `shortDescription` /
 `longDescription` / `homepage`。这些字段不是装饰——它们就是 Windows 属性页里
 「产品名称 / 文件版本 / 公司」那一栏的来源。
@@ -154,7 +154,7 @@ npm run tauri build
 | I-4 | 从安装目录启动 exe | 进程起来并**持续存活**（不是启动即崩）；窗口标题是 `Local Console Hub` 且 `Responding = True`；托盘图标出现（托盘那半**人眼**）（验收项「干净安装能启动」） |
 | I-5 | 启动后重看 I-1 的两个目录 | 与安装前**逐字节一致**——安装与启动都没有在数据目录里写东西，也都没有往安装目录里写日志 |
 | I-6 | 看 exe 的属性 → 详细信息（或 `(Get-Item …).VersionInfo`） | 产品名 `Local Console Hub`、文件版本 `0.1.0`、公司 `Local Console Hub contributors`、版权里的 `©` 是真的 U+00A9（控制台打印成 `?` 是代码页，不是资源坏了）（T12 的「版本元数据」） |
-| I-7 | 看开始菜单快捷方式与 exe 的图标 | 与 D-013 的应用图标一致（**人眼**）。快捷方式指向 `…\Local Console Hub\local-console-hub.exe`，工作目录是安装目录 |
+| I-7 | 看开始菜单快捷方式与 exe 的图标 | 与 D-029 的 Hub 图标一致（**人眼**）。快捷方式指向 `…\Local Console Hub\local-console-hub.exe`，工作目录是安装目录 |
 | I-8 | 双击 `.msi` | 走 UAC 提权、装入 `C:\Program Files\Local Console Hub`（per-machine；NSIS 那份不需要管理员，这是两种包的区别）。**本次未跑**：需要管理员，见 §5 |
 
 ### 4.2 卸载

@@ -1,0 +1,52 @@
+/* The window's own controls, at the right end of the dark title bar. */
+
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  /* Not the window edge: the bar's own 8px padding and this inset keep the
+   * close glyph off the frame, where the resize border starts. */
+  margin-right: -2px;
+}
+
+.window-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-fg);
+  cursor: pointer;
+  flex: none;
+}
+
+/* 10px glyphs on a 30px control: Windows' own proportions, so the three read
+ * as window chrome rather than as three more app buttons. */
+.window-control svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+/* Hover and focus stay neutral: color is reserved for lifecycle truth
+ * (UI_STYLE_GUIDE §10), and a window control is not a state. That is also why
+ * close does not turn red — the app's destructive actions say so in words. */
+.window-control:hover:not(:disabled),
+.window-control:focus-visible:not(:disabled) {
+  background: var(--secondary);
+  color: var(--fg);
+}
+
+/* No window to control (browser preview): the controls stay in place so the
+ * bar's layout is the real one, and say so by not responding. */
+.window-control:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
