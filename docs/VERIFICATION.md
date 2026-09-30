@@ -59,6 +59,16 @@ cargo run --example multi_session_smoke
 同时跑，其中一个被灌到超出 256 KiB / 5000 行的滚动缓冲上限，然后停一个、重启一个，
 最后打印每会话的 pid / run / 缓冲 / 丢弃字节 / 落盘日志文件数。
 
+单实例入口（#60）：同一入口连开两次、冷启动竞争、最小化与关闭后的恢复，测量进程数、
+退出码、窗口可见性与有没有多带一个终端。**它不进 CI**：要起真实窗口，并且会拒绝在已有
+Hub 运行时执行。
+
+```bash
+powershell -NoProfile -File scripts\verify-single-instance.ps1
+```
+
+结论与未运行项记在 [单实例入口验收](SINGLE_INSTANCE_ACCEPTANCE.md)。
+
 视觉截图（§5）：
 
 ```bash
