@@ -366,12 +366,22 @@ export function headerCallout(
   runtime: SessionRuntimeDto,
 ): HeaderCallout | null {
   if (isLive(runtime.status)) {
-    return {
-      kind: "impact",
-      title: "关闭影响",
-      text: config.closeImpact ?? "—",
-      ...(config.sessionType === "terminal" ? { note: TERMINAL_TREE_NOTE } : {}),
-    };
+    if (config.sessionType === "terminal") {
+      // A terminal whose config carries no close impact still has one thing to
+      // say, and it is the Hub's own sentence (D-028): a temporary terminal is
+      // created without any config text at all, and `关闭影响 —` states
+      // nothing while looking like something failed to load. So the sentence
+      // moves up into the text rather than following a dash.
+      return config.closeImpact === undefined
+        ? { kind: "impact", title: "关闭影响", text: TERMINAL_TREE_NOTE }
+        : {
+            kind: "impact",
+            title: "关闭影响",
+            text: config.closeImpact,
+            note: TERMINAL_TREE_NOTE,
+          };
+    }
+    return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
   }
   if (isPresent(runtime.lastError)) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };

@@ -302,6 +302,8 @@ start_session
 stop_session
 force_stop_session
 restart_session
+create_temporary_terminal
+remove_session
 attach_terminal
 terminal_write
 terminal_resize
@@ -331,6 +333,17 @@ config file was loaded, missing, unreadable or unavailable, plus its path,
 validated sessions and file/per-session errors. A read or parse error never
 prevents the app from opening, and a bad session never hides valid sessions.
 
+`create_temporary_terminal` and `remove_session` are the two operations that
+make the session list something other than a startup snapshot (D-031). The
+first creates, registers and starts an interactive terminal from the window —
+no form, no config file, answering with both halves of the session it made —
+and the second takes a temporary session that has ended out of the registry.
+The shell and the directory are the session layer's to resolve (PowerShell 7,
+else Windows PowerShell; the user's home directory unless an entry names one),
+and a creation that cannot resolve or start one leaves no row behind. A
+configured session is refused by `remove_session`: it lives in the config file,
+and this command is not a way to delete one.
+
 `attach_terminal` is what a terminal view calls when it appears: it answers with
 the retained scrollback, the byte offset that scrollback reaches, and the run
 they belong to. `terminal_write` carries input bytes (base64) and
@@ -350,12 +363,21 @@ MVP event equivalents:
 
 ~~~text
 session-state-changed
-terminal-output
+session-created
+session-removed
 run-record-updated
 app-summary-changed
+terminal-output
 ~~~
 
 Every session event includes the session id.
+
+`session-created` carries the session's configuration — the half a state event
+cannot, and the reason a listener can render a row it has never seen before
+without re-reading a list (D-031). It is published before the session starts,
+so every lifecycle event that follows belongs to a session the listener already
+knows. `session-removed` says a session left the registry, after which nothing
+about that id is published again.
 
 Terminal output should be batched enough that high-volume output does not create an expensive UI event per line.
 

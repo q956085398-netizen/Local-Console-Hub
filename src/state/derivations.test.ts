@@ -528,16 +528,23 @@ describe("headerCallout", () => {
     });
   });
 
-  it("renders an em dash when the session carries no close impact", () => {
+  it("renders an em dash when a service carries no close impact", () => {
+    const callout = headerCallout(config({ closeImpact: undefined }), runtime());
+    expect(callout).toEqual({ kind: "impact", title: "关闭影响", text: "—" });
+  });
+
+  it("gives a terminal without configured text the Hub's own sentence instead (#62)", () => {
+    // A temporary terminal is created with no config text at all, and
+    // `关闭影响 —` states nothing while looking like something failed to load.
+    // The sentence that would have followed the dash is the whole card.
     const callout = headerCallout(
-      config({ sessionType: "terminal", closeImpact: undefined }),
+      config({ sessionType: "terminal", closeImpact: undefined, temporary: true }),
       runtime(),
     );
     expect(callout).toEqual({
       kind: "impact",
       title: "关闭影响",
-      text: "—",
-      note: "停止该终端会同时结束它启动的子进程。",
+      text: "停止该终端会同时结束它启动的子进程。",
     });
   });
 

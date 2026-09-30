@@ -91,7 +91,9 @@ node scripts/capture-ui-states.mjs
 | 调整尺寸 | `terminal_tests::a_resize_of_a_live_terminal_reaches_the_shell`、`a_resize_before_the_start_geometries_the_shell`、`pty::tests::resize_reaches_the_shell` |
 | 切换会话不销毁 PTY | `terminal_tests::a_terminal_keeps_running_while_no_view_is_attached`、集成 `a_terminal_keeps_running_with_no_view_attached_and_replays_on_attach` |
 | **关闭终端结束所属进程树**（#61、D-028） | `pty::tests::kill_ends_the_shells_children_without_the_handle_going_away`、`the_terminal_owns_the_processes_its_shell_starts`、`a_start_that_cannot_own_the_shell_leaves_no_shell_running`（三个启动步骤的失败清理）、`terminal_tests::stopping_a_terminal_ends_the_processes_its_shell_started`、`a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`、`closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone`。集成侧不重复：`tests/mvp_matrix.rs` 的文档注释把这一层划归各模块自己的套件 |
+| **一键新建临时 PowerShell**（#62、D-031） | `session::temporary::tests`（shell 偏好 `pwsh`→`powershell`、主目录/入口目录、缺目录按名报错、身份唯一且可作路径分量、带空格路径的引用）、`session::core::tests` 的四条拒绝（无 shell / 目录不存在 / 已配置不可删 / 未知会话）、`temporary_tests` 七条（一次点击得到家目录里的真实 shell、创建早于它的状态事件、两次点击两个会话、启动失败不留行、运行中不可删、结束后保留输出并可移除且迟到发布不复活、不落盘输出不写配置）、集成 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace`（真实配置 + 真实终端 + 重载后不恢复） |
 | **托盘隐藏/恢复不销毁 PTY** | **手工**（§4 托盘段）。自动侧只有它的两半：隐藏路径不碰 Session Core（`tray::tests::only_the_main_window_hides_on_close`），以及「没有视图挂着时终端照跑」（上一条） |
+| **空工作区也能新建**（#62、story 7） | 后端与「已有工作区」是同一条路径（`temporary_tests` 与集成那条都不依赖预置会话）；空工作区那一屏是 `App.tsx` 的渲染分支，**自动侧无覆盖**，由 §6 的 2026-09-30 #62 原生轮次在真实窗口里核对 |
 
 ### 服务
 
@@ -125,6 +127,7 @@ node scripts/capture-ui-states.mjs
 | 矩阵行 | 自动覆盖 |
 | --- | --- |
 | 至少三个会话同时跑 | 集成 `three_concurrent_sessions_hold_distinct_runs_and_processes`、冒烟 `multi_session_smoke` |
+| **运行中新增/移除会话时窗口与后端一致**（#62、D-031） | 前端 `session-registry.test.ts` 的 membership 一组（初始化期间创建、配置与运行态乱序、重复事件不重复插入、已移除后迟到状态不复活、删除先于快照、状态事件不被读成删除、停止后不再应用）；后端 `temporary_tests::a_creation_is_announced_before_any_of_its_states`（创建早于状态）、集成同上；托盘 `tray::tests::only_registry_and_state_events_reach_the_tray`（成员变更会重建菜单，输出批次不会） |
 | 停一个不影响其它 | 集成 `stopping_one_session_leaves_the_others_untouched`、`tray::tests::stop_all_stops_the_running_sessions_and_leaves_the_rest_alone` |
 | 一个刷屏不会让另一个不可用 | 集成 `a_noisy_session_does_not_disturb_the_quiet_one`、`pty::tests::high_volume_output_flows_and_the_shell_stays_responsive`、`a_flooding_terminal_stays_alive_while_unread` |
 | 滚动缓冲有界且如实上报丢弃 | 集成 `a_snapshot_reports_an_intact_buffer_without_carrying_it`（未丢弃一侧）、冒烟 `multi_session_smoke` 的 `bounded scrollback` 步（丢弃一侧） |
@@ -742,6 +745,100 @@ Hub 图标 + 应用名 + `UI 预览`，右边全局摘要 + 三个窗口按钮�
   归 I-7。#63 那条日常 PowerShell 入口的新图标按本工单的验收条件在 #69 的组合验收里核对
   （该工单不在本轮范围内）。
 
+### 2026-09-30 — #62 一键新建可交互的临时 PowerShell（D-031）
+
+工单 #62（父规格 #59 的决策 4–6、14、16；前置 #61 已合并）。基线为合并 `origin/main` 后的
+`aa8f4f5`（含 #61 与 #68），worktree `select-complete-ticket-a533fa`，`CARGO_TARGET_DIR`
+未设置、使用 worktree 自己的 `target`。环境为 Windows 11 Pro（10.0.26300）、真实用户会话
+`q9560`。所有终端证据都来自真实 ConPTY shell，不是 mock。
+
+**先记录一次红/绿。** `a_temporary_terminal_writes_nothing_to_the_app_data_roots` 第一轮是红的：
+
+```text
+a temporary terminal wrote run metadata: ...\metadata exists
+```
+
+断言的原意是「临时终端不落盘」，而 `docs/LOGGING.md` §6 的规则是每个受管运行都有一条运行
+记录（「『这次运行发生过』本身就是记录」）。红的结果说明我把「不落盘输出」读成了「不落盘
+任何东西」。按规范改的是**断言与文档**（输出不落盘、配置不写、运行记录照写且 `log_file`
+为空），不是实现；这条边界现在由用例名、`docs/DECISIONS.md` D-031 第 6 条一起说明。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | **231 passed / 15 files**（基线 209） |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test -- --test-threads=1` | **368 lib + 11 `tests/mvp_matrix.rs`，0 failed**（基线 341 + 10） |
+
+本片新增的用例与它们各自钉住的行为：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `session::temporary::tests`（12 条） | 装了 PowerShell 7 就用它、没有就用 Windows PowerShell、两个都没有时按名字报错；入口不给目录用主目录、给了就用它、目录不存在按该目录报错；身份唯一且可作日志目录名；带空格的程序路径被引用 |
+| `core::tests` 的 4 条拒绝 | 机器没有 PowerShell / 目录不存在时不注册、不宣布；已配置会话不能从窗口删除；未知 id 的删除是 `unknown_session` |
+| `temporary_tests::one_click_creates_a_running_terminal_in_the_entrys_directory` | 一次点击产生真实运行中的 shell，cwd 是入口给的目录，shell 是解析出的那一个，日志策略是 `off`/`none` |
+| `temporary_tests::a_creation_is_announced_before_any_of_its_states` | `session-created` 先于该会话的第一条状态事件，且载荷里 `temporary` 为真 |
+| `temporary_tests::every_click_creates_a_separate_terminal` | 两次点击是两个 id、两个名字、两个进程 |
+| `temporary_tests::a_terminal_that_cannot_start_leaves_no_row` | 解析通过而启动失败时撤回注册表项，命令回答启动的失败，事件流里 created 与 removed 成对 |
+| `temporary_tests::a_running_terminal_cannot_be_removed` | 运行中删除被拒（「stop it before removing it」），会话原样保留 |
+| `temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed` | shell 退出后滚动缓冲仍在、行仍在；删除后 `snapshot` 为空、删后发布不再产生事件（迟到结果不复活） |
+| `temporary_tests::a_temporary_terminal_persists_no_output_and_writes_no_config` | `logs/` 与 `config.yaml` 都没被创建，运行记录在但 `log_file` 为空，输出只在内存缓冲里 |
+| 集成 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace` | 真实配置文件 + 真实临时终端共存（3 配置 + 1 临时），打字与退出，删除后回到 3；配置文件字节不变；重新加载同一文件不恢复临时项 |
+| 前端 `session-registry.test.ts` 的 membership（10 条） | 创建被并入视图并归入 `temporary` 组；状态事件跟得上；初始化期间的创建/删除与快照乱序合并；删除后迟到状态不复活；命令答复与事件重复不重复插入；停止后不再应用 |
+| 前端 `derivations` / `types` 的 5 条 | 只有「临时 + 已结束」才给删除动作；临时项归入自己的组；`temporary` 缺省即配置会话；三类新载荷的守卫（含「状态载荷不会被读成删除」） |
+
+**第 3 层（视觉）。** 本轮 agent **第一次真正驱动并截到原生窗口**（机制见下），因此比对用的是
+真实应用的三张截图，而不是浏览器预览：空工作区、单击入口后的临时终端、以及运行中终端的
+「更多操作」菜单。与 `assets/ui/ui-v2-terminal.png` 逐区域核对，布局、侧栏分组与 hint、头部
+（名称 / 类型 / 状态徽标 / 动作）、页签、终端面板、状态栏一致。本片有四处不同，均已记入
+`docs/DESIGN_SPEC_EXTRACTED.md` §5：
+
+1. `TEMPORARY` 组（参考图本来就有这一组，此前只是 fixture，现在由真实临时终端产生）；
+2. 侧栏底部入口文案改为 `新建 PowerShell`（规格 #59 决策 7 取消混合文案）；
+3. 空工作区多了一个入口卡（参考图没有这一态）；
+4. 活动中终端若没有配置的 `close_impact`，callout 直接使用 Hub 自己那句
+   `停止该终端会同时结束它启动的子进程。`，不再先渲染一行 `关闭影响 —`——临时终端正是没有
+   配置文字的会话，而 `—` 看起来像加载失败。
+
+**第 2 层（原生窗口）。** 本轮以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`
+启动 debug 构建（同一份 `npm run dev` 前端），用 WebView2 的 DevTools 通道连接真实窗口，
+做真实 DOM 点击（`Input.dispatchMouseEvent`）与真实键盘事件（`Input.dispatchKeyEvent`）。
+所以下面的结果都是「真实窗口 + 真实 IPC + 真实 ConPTY」的结果，但边界要说清楚：**输入来自
+WebView2 的 DevTools 通道，不是 OS 级 `SendInput`**；托盘、任务栏、窗口装饰未参与；退出走的是
+结束进程，不是托盘的「退出」。
+
+| 条目 | 观测 | 结果 |
+| --- | --- | --- |
+| H03（已有工作区） | 点侧栏入口 → 新行 `PowerShell 1` 出现在新的 `TEMPORARY` 组、被选中、状态徽标 `Ready`、`ConPTY · interactive`、`cwd C:\Users\q9560`、`log buffer only`、活动元素是终端的文本框；配置里的 5 个会话原样 | 通过 |
+| H03（空工作区，story 7） | 用 `sessions: []` 启动（用户配置先备份）→ 空工作区显示入口卡 → 点击后同样得到一个运行中的真实终端并聚焦 | 通过 |
+| H05 输入/输出 | 真实按键 `Write-Host LCH62-REAL` → 终端渲染出 `LCH62-REAL` | 通过 |
+| H05 Ctrl+C | `Start-Sleep -Seconds 300` 后按 Ctrl+C → 提示符回来，会话仍是 `connected`，随后 `Write-Host LCH62-AFTER` 正常执行 | 通过 |
+| H05 视图尺寸 | `Emulation.setDeviceMetricsOverride` 改变视图 → 面板重新适配（125 → 102 → 125 列）并重新上报尺寸；PTY 侧 resize 由 `pty::tests` / `terminal_tests` 覆盖 | 部分（窗口尺寸的 OS 级拖动未做） |
+| H05 切换保留 | 切到另一个会话再切回 → 滚动缓冲整段replay（`LCH62-REAL`、被打断的 sleep、`LCH62-AFTER`） | 通过 |
+| H06 | 本机装有 PowerShell 7：新终端跑的是 `PowerShell 7.6.6`；无 PowerShell 7 的回退由 `temporary::tests` 与「两个都没有」的拒绝用例覆盖 | 部分（本机无法摘掉 pwsh） |
+| H07 | 日志页显示 `Off`/`None`、`仅内存缓冲，不写磁盘`、`该会话不写磁盘日志（仅内存缓冲），因此没有伪造的空记录`；文件系统上 `logs/terminal-*` 不存在 | 通过 |
+| H08 结束后保留 | `exit` 后行仍在、徽标 `Exited`、终端仍显示本次输出；停止（而非退出）时同样是可删除的结束态 | 通过 |
+| H08 移除 | 「更多操作 → 移除临时终端」后行消失、列表回到 5 个配置会话、`TEMPORARY` 组消失；4 秒后再看没有复活 | 通过 |
+| H08 真正退出 | 结束进程后重启同一构建 → 只有配置里的 5 个会话、没有 `TEMPORARY` 组；`config.yaml` 前后 sha256 一致（`11b4c073…`，mtime 仍是 9-29） | 通过 |
+| 进程清理 | 进程被结束后没有遗留 pwsh（作业对象的 kill-on-close；系统里余下的 pwsh 父进程是 CLI agent 自己的） | 通过 |
+
+**一次无法归因的观察（不记为缺陷，也不记为通过）。** 运行中途列表里多出两个我方脚本没有点击
+过的临时终端（`PowerShell 3`/`PowerShell 4`）。随后用 10 次以上「一次点击 + 一次按键」的组合
+都无法复现：一次点击始终只产生一个会话，终端拿到焦点后按键只进入终端，单独按 Enter 不产生
+任何会话。窗口当时在用户桌面上可见，同一时段另一个会话（#60）也在用不同实例做单实例验收；
+我没有找到脚本侧的成因，也没有证据指向应用侧，故留作未解释现象：**若再现，先确认是否还有
+第二个驱动源**。
+
+**未执行 / 留待。** H15（关闭窗口隐藏到托盘、从托盘恢复后继续交互）与 H16（标题栏与各处图标）
+属于 #68/#69 的组合原生轮次；H14 的「在原生窗口点一次停止 + 任务管理器旁证」仍归 #69；
+H04/H09–H13 属于后续工单（外部入口、添加应用、应用复用）。本轮的键盘与鼠标都来自 WebView2 的
+DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过」。
+
+**清理。** 临时终端随应用结束，用户配置先备份后原样还原（sha256 一致，备份已删），
+`npm run dev` 的 dev server 已停。
+
 ---
 
 ## 7. 当前已知缺口与验收边界
@@ -754,6 +851,10 @@ Hub 图标 + 应用名 + `UI 预览`，右边全局摘要 + 三个窗口按钮�
 - **#61 的终端进程树行为已按第 1 层与界面渲染证据记录。** 原生窗口里的那一次「点停止 +
   任务管理器」未由 agent 执行，与 H05/H15 的生命周期部分一并归 #69 的组合原生验收；
   见 §6 的 2026-09-30 #61 记录。
+- **#62 的临时终端已按第 1 层与原生窗口证据记录，输入通道要说清。** 2026-09-30 那一轮 agent
+  通过 WebView2 的 DevTools 通道驱动了真实窗口（真实 IPC 与真实 ConPTY），因此 H03 与
+  H05/H07/H08 的主体有了窗口内证据；但输入不是 OS 级 `SendInput`，托盘与任务栏未参与，
+  H14/H15/H16 仍归 #69 的组合原生验收，且该轮出现过两个无法归因的额外临时终端（见 §6）。
 - **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
   一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
   DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。
