@@ -200,6 +200,11 @@ fn saved_entry(config: &SessionConfig, form: &SaveTerminal) -> Result<RawSession
         shell: Some(shell),
         // Never: this is the field that would replay a command (story 25).
         initial_command: None,
+        // Never either (#66): a terminal is typed into in the Hub's own window
+        // and ended by the Hub, which is what the absence of these two keys has
+        // always meant.
+        display: None,
+        lifecycle: None,
         // Never: the terminal default is what a saved terminal should keep, and
         // writing `logging: {}` would freeze a policy nobody chose.
         logging: None,

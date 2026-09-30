@@ -150,7 +150,9 @@ fn status_word(status: SessionStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
+    use crate::config::{
+        DisplayMode, EffectiveLogMode, EffectiveLogging, LifecycleOwner, LogSource,
+    };
     use crate::session::state::ALL_STATUSES;
 
     fn config(id: &str, name: &str) -> SessionConfig {
@@ -166,6 +168,8 @@ mod tests {
             close_impact: None,
             shell: None,
             initial_command: None,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging: EffectiveLogging {
                 mode: EffectiveLogMode::Off,
                 source: LogSource::Captured,

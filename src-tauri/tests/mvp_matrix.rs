@@ -36,8 +36,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use local_console_hub_lib::config::{
-    load_from_file, AppPaths, EffectiveLogMode, LogSource, SessionConfig, SessionConfigDto,
-    SessionType,
+    load_from_file, AppPaths, DisplayMode, EffectiveLogMode, LifecycleOwner, LogSource,
+    SessionConfig, SessionConfigDto, SessionType,
 };
 use local_console_hub_lib::logging::{session_run_files, BufferSummary, LogRoots, LogState};
 use local_console_hub_lib::session::core::SessionCore;
@@ -974,6 +974,10 @@ fn an_added_application_joins_a_real_config_and_opens_once() {
             close_impact: None,
             port: Some(8188),
             url: Some("http://127.0.0.1:8188/".to_owned()),
+            // Left alone: the two #66 dimensions then come out as the
+            // Hub-internal, Hub-managed entry every config had before them.
+            display: None,
+            lifecycle: None,
             logging: None,
         },
     )
@@ -1103,9 +1107,26 @@ fn a_saved_terminal_joins_a_real_config_and_keeps_its_run() {
     assert_eq!(saved.id, id);
     terminal.assert_kept(&fixture);
     assert_eq!(fixture.status(&id), SessionStatus::Running);
+
+    // …and the same output on screen. Compared up to the marker rather than
+    // byte-for-byte: a live shell repaints its prompt as soon as the command
+    // it just ran finishes, so the buffer can gain a prompt at any moment —
+    // including between the two readings here — and that is the shell's
+    // timing, not something saving did. What saving could have changed is
+    // everything up to and including what the user was reading when they
+    // saved it, and that has to be identical. (A duplicate would show up as a
+    // second marker, and a restart as a different run and process — which
+    // `assert_kept` above and this comparison together rule out.)
+    let through_marker = |text: &str| {
+        let end = text
+            .find("LCH-T65-LIVE")
+            .map(|at| at + "LCH-T65-LIVE".len())
+            .expect("the marker the terminal printed before the save");
+        text[..end].to_owned()
+    };
     assert_eq!(
-        fixture.scrollback(&id),
-        scrollback_before,
+        through_marker(&fixture.scrollback(&id)),
+        through_marker(&scrollback_before),
         "the output the user was reading belongs to the run that produced it"
     );
     service.assert_kept(&fixture);
@@ -1247,4 +1268,384 @@ fn a_refused_save_leaves_a_running_terminal_temporary() {
     );
 
     fixture.core.stop(&id).expect("cleanup");
+}
+
+/// A standalone-window application, from the real config file to the process
+/// that outlives the registry that started it (#66, spec #59 decisions 11 and
+/// 12).
+///
+/// The things this pins are the ones the ticket asks for, and none of them can
+/// be shown by a stand-in: the entry loads from `config.yaml` like any other;
+/// opening it starts exactly one process and a second open finds that one; the
+/// run presents a window the Hub can find again; and when the Hub's registry
+/// goes away — which is what exiting the app does — the application *and the
+/// child it started* are still working.
+#[test]
+fn a_standalone_application_keeps_its_window_and_outlives_the_hub() {
+    let work = StandaloneWork::new("lives-on");
+    let fixture = Fixture::new(&work.config("launcher", "ComfyUI 启动器", None));
+
+    let loaded = fixture.config("launcher");
+    assert_eq!(loaded.display, DisplayMode::Window);
+    assert_eq!(
+        loaded.lifecycle,
+        LifecycleOwner::Independent,
+        "a standalone entry the user did not ask the Hub to manage is independent"
+    );
+    assert_eq!(
+        loaded.logging.source,
+        LogSource::None,
+        "nothing about the application's console is captured"
+    );
+
+    // Opening it starts it once — and it is not hosted on a Hub console.
+    let opened = fixture
+        .core
+        .activate("launcher")
+        .expect("the application opens");
+    assert!(
+        opened.started,
+        "nothing was running, so this call started it"
+    );
+    assert_eq!(opened.runtime.status, SessionStatus::Running);
+    assert!(
+        !opened.runtime.pty_attached,
+        "a standalone application is not attached to a Hub terminal"
+    );
+    assert_eq!(
+        fixture.buffer_summary("launcher").bytes,
+        0,
+        "no output is taken from it, because it kept its own console"
+    );
+    let pid = fixture.pid("launcher");
+
+    // The instance the Hub holds is the one a second open answers with: no
+    // second copy, whatever the user clicks.
+    let again = fixture
+        .core
+        .activate("launcher")
+        .expect("the second open answers");
+    assert!(!again.started, "the run was already there");
+    assert_eq!(
+        again.runtime.pid,
+        Some(pid),
+        "the same process, not another"
+    );
+
+    // It presents a window the Hub can find again by the run it holds — the
+    // console this application opened for itself (H10's held-instance part,
+    // H12's "does not repeat a console the application already provides").
+    fixture.wait_until("the application to present a window", || {
+        fixture
+            .core
+            .application_window("launcher", Duration::ZERO)
+            .is_some()
+    });
+
+    // The application and its child are both working: the child writes a tick
+    // every second, so activity is observable rather than assumed.
+    let running_ticks = work.wait_for_ticks(3);
+
+    // Exiting the Hub: the registry — and with it every handle the Hub held on
+    // this run — goes away. Nothing else is done; no stop, no detach.
+    let core = fixture.core.clone();
+    drop(fixture);
+    drop(core);
+
+    assert!(
+        is_alive(pid),
+        "a standalone application must still be running after the Hub exits"
+    );
+    let after_exit = work.wait_for_ticks(running_ticks + 3);
+    assert!(
+        after_exit > running_ticks,
+        "the child it started must still be working after the Hub exits: \
+         {running_ticks} ticks before, {after_exit} after"
+    );
+
+    // Cleanup, so the test leaves nothing behind.
+    kill_tree(pid);
+}
+
+/// A standalone GUI application: the Hub finds the window it opened, and the
+/// application ends itself by that window being closed (#66, spec #59 decisions
+/// 11 and 12; the controllable-GUI half of H10/H12/H13).
+///
+/// This is the shape the mode exists for. The application has a window of its
+/// own, so the Hub renders nothing for it and embeds nothing of it; the run it
+/// started is the thing it can point at, and the window is found through that
+/// run rather than through a name or a title. Closing the window is the
+/// application ending *itself* — the one lifecycle action an unmanaged entry
+/// has — and the Hub reports what happened instead of pretending it did it.
+#[test]
+fn a_standalone_gui_application_is_found_by_its_run_and_ends_through_its_own_window() {
+    // A GUI program every Windows installation ships, with a top-level window
+    // of its own and no save prompt on close. Absolute, like `POWERSHELL`
+    // above, so the test does not depend on how `PATH` is set — and with
+    // forward slashes, because this path lands in a YAML double-quoted scalar,
+    // where a backslash is an escape (Windows accepts either separator).
+    const GUI_APP: &str = "C:/Windows/System32/charmap.exe";
+
+    let work = StandaloneWork::new("gui");
+    let config = format!(
+        "sessions:\n  - id: gui-app\n    name: 字符映射表\n    type: service\n    \
+         cwd: {cwd}\n    command: \"{GUI_APP}\"\n    display: window\n",
+        cwd = work
+            .cwd()
+            .display()
+            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/"),
+    );
+    let fixture = Fixture::new(&config);
+
+    fixture
+        .core
+        .activate("gui-app")
+        .expect("the application opens");
+    let pid = fixture.pid("gui-app");
+
+    // The window it opened belongs to the run the Hub is holding — found by
+    // process, not by title, and reported with the facts a caller can act on.
+    let deadline = Instant::now() + STARTUP;
+    let window = loop {
+        match fixture
+            .core
+            .application_window("gui-app", Duration::from_millis(500))
+        {
+            Some(window) => break window,
+            None if Instant::now() < deadline => continue,
+            None => panic!("the GUI application never presented a window"),
+        }
+    };
+    assert_eq!(
+        window.pid, pid,
+        "the window belongs to the run's own process"
+    );
+    assert!(window.visible, "it is on screen: {window:?}");
+    assert!(!window.owned, "a top-level window is owned by nothing");
+
+    // Bringing it forward is a real request with a real answer; Windows may
+    // refuse the foreground change, and a refusal is an answer, not a failure.
+    let outcome = window.focus();
+    assert!(
+        matches!(
+            outcome,
+            local_console_hub_lib::window::FocusOutcome::Focused
+                | local_console_hub_lib::window::FocusOutcome::Refused
+        ),
+        "{outcome:?}"
+    );
+
+    // Closing the application's own window is the application ending itself.
+    assert!(window.close(), "the close request is delivered");
+
+    fixture.wait_until("the application to end itself", || {
+        !is_alive(pid) && fixture.status("gui-app") != SessionStatus::Running
+    });
+    assert!(
+        matches!(
+            fixture.status("gui-app"),
+            SessionStatus::Exited | SessionStatus::Error
+        ),
+        "a run that ends on its own is Exited (or Error with a failing code), saw {:?}",
+        fixture.status("gui-app")
+    );
+    // Nothing was left behind by the ending: the tree is gone as well.
+    assert!(!is_alive(pid));
+    kill_tree(pid);
+}
+
+/// A standalone entry the user asked the Hub to manage is the Hub's to stop —
+/// and one they did not is not.
+#[test]
+fn only_a_managed_standalone_entry_can_be_stopped_from_the_hub() {
+    let work = StandaloneWork::new("managed");
+    let config = [
+        work.config("self-managed", "自己管理", None),
+        work.entry("hub-managed", "Hub 管理", "    lifecycle: managed\n"),
+    ]
+    .concat();
+    let fixture = Fixture::new(&config);
+    assert_eq!(
+        fixture.config("self-managed").lifecycle,
+        LifecycleOwner::Independent
+    );
+    assert_eq!(
+        fixture.config("hub-managed").lifecycle,
+        LifecycleOwner::Managed
+    );
+
+    fixture.core.activate("self-managed").expect("it opens");
+    fixture.core.activate("hub-managed").expect("it opens");
+    let independent_pid = fixture.pid("self-managed");
+    let managed_pid = fixture.pid("hub-managed");
+
+    // The refusal is the answer for the independent one, and it names the way
+    // out rather than only the reason.
+    let refused = fixture
+        .core
+        .stop("self-managed")
+        .expect_err("the Hub does not stop what it does not manage");
+    assert!(refused.message.contains("lifecycle: managed"), "{refused}");
+    assert_eq!(fixture.status("self-managed"), SessionStatus::Running);
+    assert!(is_alive(independent_pid));
+
+    // The managed one stops by the ordinary rules: asked gracefully first, and
+    // the tree confirmed gone before the session reports it. Which of the two
+    // endings it is (`Stopped` for a run that answered the request, `Exited`
+    // for one that had to be terminated) is the stop's own business — a
+    // console application's close is answered by the console host, and Windows
+    // allows it the same seconds this stop waits before escalating (`D-007`).
+    fixture
+        .core
+        .stop("hub-managed")
+        .expect("a managed entry stops");
+    assert!(
+        !is_alive(managed_pid),
+        "a managed standalone run is stopped exactly"
+    );
+    assert!(
+        matches!(
+            fixture.status("hub-managed"),
+            SessionStatus::Stopped | SessionStatus::Exited
+        ),
+        "a stopped run is Stopped or Exited, saw {:?}",
+        fixture.status("hub-managed")
+    );
+
+    kill_tree(independent_pid);
+}
+
+/// A configured application whose command is a batch launcher: the launch
+/// method most portable applications actually ship.
+///
+/// Two files, because "the application is running" and "the process the Hub
+/// started is running" are different facts and the standalone mode is about the
+/// first one: the launcher starts a ticker and then stays alive itself, so the
+/// run has both an own process and a child.
+struct StandaloneWork {
+    dir: PathBuf,
+    ticks: PathBuf,
+}
+
+impl StandaloneWork {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "lch-standalone-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is after the epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("the scratch directory is created");
+        let ticks = dir.join("ticks.txt");
+
+        // The child: one line appended per second, for a bounded number of
+        // iterations so a failing test cannot leave a ticker running forever.
+        // `ping` is the sleep, because `timeout` refuses a redirected stdin.
+        std::fs::write(
+            dir.join("ticker.cmd"),
+            format!(
+                "@echo off\r\nfor /l %%i in (1,1,600) do (\r\n  \
+                 echo tick>>\"{ticks}\"\r\n  ping -n 2 127.0.0.1 >nul\r\n)\r\n",
+                ticks = ticks.display()
+            ),
+        )
+        .expect("the ticker is written");
+
+        // The launcher: starts the ticker detached, then keeps its own console
+        // window open — which is what a user sees for a launcher-shaped
+        // application, and what the Hub must be able to find again.
+        std::fs::write(
+            dir.join("launcher.cmd"),
+            format!(
+                "@echo off\r\nstart \"\" /b \"{child}\"\r\nping -n 300 127.0.0.1 >nul\r\n",
+                child = dir.join("ticker.cmd").display()
+            ),
+        )
+        .expect("the launcher is written");
+
+        StandaloneWork { dir, ticks }
+    }
+
+    /// One entry for this fixture's launcher, in the phrase each test needs.
+    ///
+    /// Forward slashes in the paths: they land in a YAML document, and Windows
+    /// accepts them in a path, so the config layer never sees a difference.
+    fn entry(&self, id: &str, name: &str, extra: &str) -> String {
+        let path = |path: PathBuf| {
+            path.display()
+                .to_string()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        };
+        format!(
+            "  - id: {id}\n    name: {name}\n    type: service\n    cwd: {cwd}\n    \
+             command: \"{command}\"\n    display: window\n{extra}",
+            cwd = path(self.dir.clone()),
+            command = path(self.dir.join("launcher.cmd")),
+        )
+    }
+
+    /// The scratch directory a configured command runs in.
+    fn cwd(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// A whole config file with this fixture's launcher as its only entry.
+    fn config(&self, id: &str, name: &str, extra: Option<&str>) -> String {
+        format!("sessions:\n{}", self.entry(id, name, extra.unwrap_or("")))
+    }
+
+    /// How many ticks the ticker has written so far.
+    fn ticks(&self) -> usize {
+        std::fs::read_to_string(&self.ticks)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Wait for the ticker to reach `wanted` ticks, and answer with what it got.
+    fn wait_for_ticks(&self, wanted: usize) -> usize {
+        let deadline = Instant::now() + STARTUP;
+        while self.ticks() < wanted {
+            assert!(
+                Instant::now() < deadline,
+                "the ticker never reached {wanted} ticks, saw {}",
+                self.ticks()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.ticks()
+    }
+}
+
+impl Drop for StandaloneWork {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Whether a pid belongs to a live process, for the checks that are about
+/// processes the Hub is not holding.
+///
+/// `tasklist` rather than an `OpenProcess` call: this test links the library
+/// from outside, and liveness of a foreign process is not something the library
+/// offers (its own checks are internal). Asking the OS by name is the honest
+/// version of the same question.
+fn is_alive(pid: u32) -> bool {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .expect("tasklist runs");
+    String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+}
+
+/// End a process and everything it started, so a failed assertion cannot leave
+/// a pinger or a ticker behind.
+fn kill_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }

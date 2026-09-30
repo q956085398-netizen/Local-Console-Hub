@@ -100,6 +100,8 @@ fn config(id: &str, name: &str, session_type: SessionType) -> SessionConfig {
             SessionType::Service => None,
         },
         initial_command: None,
+        display: local_console_hub_lib::config::DisplayMode::Internal,
+        lifecycle: local_console_hub_lib::config::LifecycleOwner::Managed,
         // Each session's persistence is what the report at the end shows:
         // terminals keep their scrollback and write nothing
         // (`docs/LOGGING.md` §1.2), the service writes one file for its run.

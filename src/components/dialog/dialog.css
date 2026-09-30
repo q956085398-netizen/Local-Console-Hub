@@ -166,8 +166,49 @@
   font-size: 11px;
 }
 
-.dialog__mode {
-  margin: 0;
+/* The two display modes (#66), as a pair of toggle buttons rather than a
+ * select: there are exactly two, both are real, and a segmented control shows
+ * the alternative instead of hiding it behind a dropdown. Same surface tokens
+ * as the inputs, with the selected one carrying the accent border the header
+ * uses for its active control. */
+.dialog__choices {
+  display: flex;
+  gap: 6px;
+}
+
+.dialog__choice {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
   color: var(--idle-fg);
-  font-size: 11px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dialog__choice--on {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+.dialog__choice:focus-visible {
+  outline: 1px solid var(--fg-dim);
+  outline-offset: 1px;
+}
+
+/* A checkbox field: the box and its label share one line, and the explanation
+ * sits under both. */
+.dialog__field--check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.dialog__field--check .dialog__hint,
+.dialog__field--check .dialog__field-error {
+  grid-column: 2;
 }

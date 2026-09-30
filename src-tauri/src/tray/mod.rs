@@ -343,7 +343,7 @@ fn restart_failed<R: Runtime>(app: &AppHandle<R>) {
 /// Split out so the selection and the calls can be exercised against a real
 /// `SessionCore` and real processes, with no window and no tray.
 fn restart_failed_in(core: &SessionCore) {
-    for session_id in actions::restart_targets(&core.snapshots()) {
+    for session_id in actions::restart_targets(&core.snapshots(), &core.entries()) {
         let _ = core.restart(&session_id);
     }
 }
@@ -376,7 +376,7 @@ fn stop_all<R: Runtime>(app: &AppHandle<R>) {
 /// the tree it was stopping, so the caller is told about that session rather
 /// than left to assume.
 fn stop_all_in(core: &SessionCore) -> Vec<SessionError> {
-    let stops: Vec<_> = actions::stop_targets(&core.snapshots())
+    let stops: Vec<_> = actions::stop_targets(&core.snapshots(), &core.entries())
         .into_iter()
         .map(|session_id| {
             let core = core.clone();
@@ -412,7 +412,7 @@ fn exit<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
 
-    let plan = actions::exit_plan(&core.snapshots());
+    let plan = actions::exit_plan(&core.snapshots(), &core.entries());
     let configs = core.configs();
 
     if let Some(message) = plan.blocked_message(&configs) {
@@ -453,7 +453,7 @@ fn exit<R: Runtime>(app: &AppHandle<R>) {
 fn clear_for_exit(core: &SessionCore) -> Vec<SessionError> {
     let mut failures = stop_all_in(core);
     failures.extend(blockers_as_failures(
-        actions::exit_plan(&core.snapshots()).blockers,
+        actions::exit_plan(&core.snapshots(), &core.entries()).blockers,
     ));
     failures
 }
@@ -521,6 +521,8 @@ mod tests {
             close_impact: None,
             shell: Some("powershell".to_owned()),
             initial_command: None,
+            display: "internal".to_owned(),
+            lifecycle: "managed".to_owned(),
             logging: crate::config::EffectiveLoggingDto {
                 mode: "off".to_owned(),
                 source: "none".to_owned(),
@@ -652,7 +654,7 @@ mod tests {
     const LONG_RUNNING: &str = "cmd.exe /c ping -n 120 127.0.0.1";
 
     fn service(id: &str, command: &str) -> crate::config::SessionConfig {
-        use crate::config::SessionType;
+        use crate::config::{DisplayMode, LifecycleOwner, SessionType};
 
         crate::config::SessionConfig {
             id: id.to_owned(),
@@ -666,6 +668,8 @@ mod tests {
             close_impact: None,
             shell: None,
             initial_command: None,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging: EffectiveLogging {
                 mode: EffectiveLogMode::Off,
                 source: LogSource::Captured,

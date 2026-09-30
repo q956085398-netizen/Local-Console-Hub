@@ -94,6 +94,27 @@ impl Job {
     /// Create a job that terminates everything still in it when its last handle
     /// closes, and report what could not be configured as the Win32 cause.
     pub fn create() -> Result<Self, String> {
+        Job::create_with(true)
+    }
+
+    /// Create a job that owns a run's tree **without** ending it when the last
+    /// handle closes (#66).
+    ///
+    /// This is what makes a standalone-window application outlive the Hub that
+    /// started it, and it is a property of the object from the moment it is
+    /// created: spec #59 decision 12 requires that an entry nobody asked the
+    /// Hub to manage is not merely *reported* as independent while sitting in a
+    /// resource that dies with the supervising process.
+    ///
+    /// Ownership is unaffected. The job still knows exactly which processes
+    /// belong to the run, so a stop can still end the tree and the tree can
+    /// still be enumerated for window discovery — what it does not do is kill
+    /// anything because a handle went away.
+    pub fn create_independent() -> Result<Self, String> {
+        Job::create_with(false)
+    }
+
+    fn create_with(kill_on_close: bool) -> Result<Self, String> {
         let created = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as usize;
         if created == 0 {
             return Err(last_error("CreateJobObjectW"));
@@ -101,7 +122,11 @@ impl Job {
         let job = Job(created);
 
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags = if kill_on_close {
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        } else {
+            0
+        };
         let sized = size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
         let configured = unsafe {
             SetInformationJobObject(
@@ -187,9 +212,11 @@ impl Job {
 
 impl Drop for Job {
     fn drop(&mut self) {
-        // The kill-on-close limit is what makes the token RAII: a handle going
-        // away terminates whatever is still assigned, so a run cannot outlive
-        // the thing that accounts for it.
+        // With the kill-on-close limit set — every job [`Job::create`] makes —
+        // the token is RAII: a handle going away terminates whatever is still
+        // assigned, so a run cannot outlive the thing that accounts for it.
+        // A job from [`Job::create_independent`] has no such limit, so this is
+        // only a handle going away.
         unsafe { CloseHandle(self.0 as _) };
     }
 }

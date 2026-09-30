@@ -86,6 +86,15 @@ The terminal must be a real PTY view, not a read-only log box.
 
 The UI may state when stdin is not persisted so users can distinguish terminal interaction from logging.
 
+**A standalone-window session has no Hub terminal, and the pane must not pretend
+otherwise** (spec #59 decision 16, DECISIONS.md D-034). An entry configured
+`display: window` keeps the window and console its application provides, so the
+content region says where that console is and offers the one action that makes
+sense — opening the application, which brings its own window forward. Drawing an
+empty terminal for it would be a surface that looks like the application's
+console and never becomes one. The region keeps the terminal pane's geometry,
+so switching between the two kinds of session does not move the workspace.
+
 ## 8. Logs
 
 The Logs tab shows the effective logging policy before showing history.

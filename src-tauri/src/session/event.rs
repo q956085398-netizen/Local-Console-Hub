@@ -350,6 +350,8 @@ mod tests {
             close_impact: None,
             shell: None,
             initial_command: None,
+            display: "internal".to_owned(),
+            lifecycle: "managed".to_owned(),
             logging: crate::config::EffectiveLoggingDto {
                 mode: "off".to_owned(),
                 source: "none".to_owned(),
