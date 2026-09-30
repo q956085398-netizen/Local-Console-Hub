@@ -21,6 +21,13 @@
 # cannot prove anything about the ConPTY path -- a terminal shell is on a
 # pseudoconsole and never had a window to lose.
 #
+# The runner having no console of its own is also what makes this measurement
+# noisy: from that state *every* console child the test binary starts is given a
+# console, including the throwaway ones tests spawn for their own reasons
+# (`taskkill`, a PowerShell helper, a fixture executable). Windows for those say
+# nothing about the supervised path, which is why the default filter names one
+# supervised test rather than a whole suite.
+#
 # What it cannot prove: that a real Hub process behaves the same way (the
 # condition is reproduced with a console-less test binary, not with the packaged
 # app), nor anything about the tray, the taskbar or window decorations.
@@ -118,6 +125,10 @@ public static class ConsoleWindows {
         return rows;
     }
 
+    /// The pid of the run started by `RunDetachedAsync`, so a run that outlives
+    /// the measurement can be stopped instead of left spawning windows.
+    public static int LastPid;
+
     /// Start the command with no console and its output in `logPath`, and hand
     /// back a task that completes when it exits.
     public static System.Threading.Tasks.Task<int> RunDetachedAsync(string commandLine, string cwd, string logPath) {
@@ -138,6 +149,7 @@ public static class ConsoleWindows {
                     IntPtr.Zero, cwd, ref si, out pi)) {
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             }
+            LastPid = pi.dwProcessId;
             WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
             uint code;
             GetExitCodeProcess(pi.hProcess, out code);
@@ -168,6 +180,13 @@ while (!$task.IsCompleted -and ($polls * $PollMilliseconds) -lt ($TimeoutSeconds
     foreach ($row in [ConsoleWindows]::Visible()) {
         if ($seen.Add($row)) { Write-Output ("APPEARED after {0}ms: {1}" -f ($polls * $PollMilliseconds), $row) }
     }
+}
+if (!$task.IsCompleted) {
+    # A run that outlives the measurement is stopped rather than left behind: it
+    # has no console of its own, so every console child it starts from here on
+    # would add a window to the desktop after the measurement had ended.
+    Write-Output ("runner exceeded {0}s and is being stopped" -f $TimeoutSeconds)
+    Stop-Process -Id ([ConsoleWindows]::LastPid) -Force -ErrorAction SilentlyContinue
 }
 $exit = $task.Result
 
