@@ -225,6 +225,7 @@ sessions:
 - [Roadmap](docs/ROADMAP.md)
 - [开发与贡献规范](docs/DEVELOPMENT.md)
 - [端到端验证与回归清单](docs/VERIFICATION.md)
+- [单实例入口验收](docs/SINGLE_INSTANCE_ACCEPTANCE.md)
 - [Windows 打包与安装验收](docs/RELEASE.md)
 - [v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md)
 - [关键设计决策](docs/DECISIONS.md)
@@ -242,6 +243,15 @@ npm run lint       # ESLint
 npm run format     # Prettier 格式化
 npm run tauri build # 产出 Windows 安装包（MSI + NSIS）
 ```
+
+**日常打开请用安装版**（开始菜单的「Local Console Hub」）。同一个入口再次点击只会把已有
+窗口恢复回来，不会起第二个 Hub：一个 Windows 登录会话里只有一个 Hub，第二次调用把请求
+交给它然后自己结束（`docs/DECISIONS.md` D-030）。
+
+`npm run tauri dev` 与 `scripts\verify-*.cmd` 是**开发入口**，不是日常入口：debug 构建是
+控制台子系统程序，它会带着一个启动窗口活到应用退出。日常入口（release / 安装版）是
+GUI 子系统，不会多出那个窗口。来源与实测见
+[单实例入口验收](docs/SINGLE_INSTANCE_ACCEPTANCE.md)。
 
 安装包装到哪、用户数据放在哪、装 / 卸 / 升怎么验，见
 [打包与安装验收](docs/RELEASE.md)。当前版本的已知限制见

@@ -59,6 +59,16 @@ cargo run --example multi_session_smoke
 同时跑，其中一个被灌到超出 256 KiB / 5000 行的滚动缓冲上限，然后停一个、重启一个，
 最后打印每会话的 pid / run / 缓冲 / 丢弃字节 / 落盘日志文件数。
 
+单实例入口（#60）：同一入口连开两次、冷启动竞争、最小化与关闭后的恢复，测量进程数、
+退出码、窗口可见性与有没有多带一个终端。**它不进 CI**：要起真实窗口，并且会拒绝在已有
+Hub 运行时执行。
+
+```bash
+powershell -NoProfile -File scripts\verify-single-instance.ps1
+```
+
+结论与未运行项记在 [单实例入口验收](SINGLE_INSTANCE_ACCEPTANCE.md)。
+
 视觉截图（§5）：
 
 ```bash
@@ -72,6 +82,16 @@ npm install --no-save puppeteer-core
 ```bash
 node scripts/capture-ui-states.mjs
 ```
+
+图标四角（改图标源、或想知道产物是不是白底时）：
+
+```bash
+node scripts/check-icon-alpha.mjs
+```
+
+它用同一个浏览器把 `src-tauri/icons/` 里交付的 PNG / ICO 画进 canvas 再读像素，
+四角 alpha 超出容差就退出码 1。这是**栅格产物的读数**，不是外观验收——任务栏、托盘、
+快捷方式长什么样仍归 §4 的 W-6 与 I-7。
 
 ---
 
@@ -732,6 +752,22 @@ Hub 图标 + 应用名 + `UI 预览`，右边全局摘要 + 三个窗口按钮�
 重新生成整套 `src-tauri/icons/`（`tauri icon` 顺带产出的 `android/`、`ios/` 已删除）；
 生成的 `icon.png` 与 `icon.ico` 已**看图确认**是 Hub mark（深色圆角方块 + 绿点 + 三条列表行）。
 `release.rs` 的 `the_icon_set_comes_from_the_one_hub_mark` 钉住「图标集只有一个来源」。
+
+**补记（小尺寸清晰度，D-029 的 2026-09-30 补记）。** 用户反馈图标在真实尺寸下太糊，源文件
+因此换成上游设计工程原件的 `public/favicon.svg`（16 单位网格、元素更粗、tile 满画布），
+按同一套命令重新生成。核对方式与结果：
+
+- **小尺寸可读性**：把旧、新两份 `32x32.png` 并排按 4 倍最近邻放大看（Chrome 截图，
+  非仓库产物）。旧的 tile 只占画布 75%、描边与列表行在 32px 下已互相糊在一起；新的满画布
+  tile 下绿点与三条列表行仍各自成形。这是**尺寸对照的观感证据**，不等于任务栏外观验收。
+- **四角透明**：`node scripts/check-icon-alpha.mjs`（§2）——把交付的 `icon.png`、
+  `32x32.png`、`64x64.png`、`icon.ico` 画进 canvas 再读像素，四角 alpha 分别是全 `0`、
+  全 `3`（圆角抗锯齿，RGBA 为 `(0,0,0,3)`——黑，不是白）、全 `0`、全 `0`，退出码 0；
+  tile 内侧一点是 `rgba(24,26,33,255)`，即设计里的内层面板 `#181a21`。四份产物都没有白底。
+- 标题栏里那颗 20px 的 mark 渲染同一个文件，`dist/` fixture 截图（3 倍）确认它在应用名
+  左侧清晰成形，没有变化到需要改布局。
+
+仍归 #69 的原生部分不变：任务栏/托盘/快捷方式在真机上的外观与 16px 下的实际可辨认度。
 
 **未运行（native-only，本轮没有能力执行）：**
 
