@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { runWindowControl, trackMaximized, type WindowControl } from "./window-controls";
+import { runWindowControl, trackMaximized, type WindowControl } from "../state/window-controls";
 import { tauriWindowHost } from "./tauriWindowHost";
 
 /**
  * The title bar's window controls, wired to the real window.
  *
- * An adapter, and only that: `window-controls.ts` decides what a control means
+ * An adapter, and only that: `state/window-controls.ts` decides what a control means
  * and how the maximize reading is kept current, `tauriWindowHost.ts` supplies
  * the window, and this hook hands both to a component. Everything the rules
  * depend on is on one side or the other of it.

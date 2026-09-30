@@ -70,13 +70,13 @@ export default function TitleBar({
 }
 
 /**
- * Application mark: the Hub icon, rendered from the asset the native icon set
+ * Application mark: the Hub icon, rendered from the file the native icon set
  * is generated from (`assets/brand/hub-mark.svg`, D-028).
  *
- * It is the file rather than a copy of it because a second drawing of the same
- * mark is exactly the drift this ticket removed: one source, the same bytes in
- * the title bar and in the taskbar.
+ * It is that file rather than a copy of it because a second drawing of the same
+ * mark is exactly the drift this ticket removed: one drawing, rasterized for
+ * the taskbar, the tray and the installers, and rendered here as it is.
  */
-export function HubMark({ className }: { className?: string }) {
+function HubMark({ className }: { className?: string }) {
   return <img className={className} src={hubMarkUrl} alt="" draggable={false} />;
 }

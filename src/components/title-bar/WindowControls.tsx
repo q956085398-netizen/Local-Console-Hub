@@ -1,4 +1,5 @@
 import { useWindowControls } from "../../app/useWindowControls";
+import { WINDOW_CONTROL_LABELS, windowControlLabel } from "../../state/window-controls";
 import "./WindowControls.css";
 
 export interface WindowControlsProps {
@@ -11,8 +12,9 @@ export interface WindowControlsProps {
  *
  * The window is undecorated (`src-tauri/tauri.conf.json`), so these are the
  * window's only controls and the bar they sit in is also its drag handle and
- * its resize-border host. What the buttons *mean* is decided in
- * `src/app/window-controls.ts`; this file is their markup and their glyphs.
+ * its resize-border host. What the buttons *mean* — and what they are called —
+ * is decided in `src/state/window-controls.ts`; this file is their markup and
+ * their glyphs.
  *
  * Close is the same gesture the system's X was: the app's close handler hides
  * the window to the tray and keeps every managed session running (D-006).
@@ -26,15 +28,17 @@ export interface WindowControlsProps {
  */
 export default function WindowControls({ onNotice }: WindowControlsProps) {
   const { available, maximized, run } = useWindowControls(onNotice);
-  const maximizeLabel = maximized ? "还原窗口" : "最大化窗口";
+  const minimizeLabel = WINDOW_CONTROL_LABELS.minimize;
+  const maximizeLabel = windowControlLabel("toggle-maximize", maximized);
+  const closeLabel = WINDOW_CONTROL_LABELS.close;
 
   return (
     <div className="window-controls">
       <button
         type="button"
         className="window-control"
-        aria-label="最小化窗口"
-        title="最小化窗口"
+        aria-label={minimizeLabel}
+        title={minimizeLabel}
         disabled={!available}
         onClick={() => run("minimize")}
       >
@@ -65,8 +69,8 @@ export default function WindowControls({ onNotice }: WindowControlsProps) {
       <button
         type="button"
         className="window-control"
-        aria-label="关闭窗口"
-        title="关闭窗口（会话继续运行）"
+        aria-label={closeLabel}
+        title={`${closeLabel}（会话继续运行）`}
         disabled={!available}
         onClick={() => run("close")}
       >

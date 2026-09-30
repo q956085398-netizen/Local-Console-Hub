@@ -3,6 +3,7 @@ import {
   WINDOW_CONTROL_LABELS,
   runWindowControl,
   trackMaximized,
+  windowControlLabel,
   type WindowControl,
   type WindowHost,
 } from "./window-controls";
@@ -67,6 +68,17 @@ function fakeHost(start: { maximized: boolean }) {
 
 /** Let every already-settled promise in the microtask queue run. */
 const settled = () => new Promise((done) => setTimeout(done, 0));
+
+describe("windowControlLabel", () => {
+  /** One name per control, in the two places a person reads it: a button says
+   * what it will do, and a failure message says what the control was. */
+  it("names each control, and lets maximize say which of its two it will do", () => {
+    expect(windowControlLabel("minimize")).toBe(WINDOW_CONTROL_LABELS.minimize);
+    expect(windowControlLabel("close")).toBe(WINDOW_CONTROL_LABELS.close);
+    expect(windowControlLabel("toggle-maximize", false)).toBe("最大化窗口");
+    expect(windowControlLabel("toggle-maximize", true)).toBe("还原窗口");
+  });
+});
 
 describe("runWindowControl", () => {
   it("asks the host for the operation the control names", async () => {

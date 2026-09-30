@@ -2,9 +2,10 @@
 
 The window's only title bar (T06 #7, #68; `docs/UI_STYLE_GUIDE.md` §3, D-028).
 
-Left: the Hub icon (`assets/brand/hub-mark.svg`, rendered straight from the file
-the Windows icon set is generated from) and the application name, plus the
-dev-only `UI 预览` pill. Right: the global run summary and the window controls.
+Left: the Hub icon (`assets/brand/hub-mark.svg`, rendered from the same file the
+Windows icon set is rasterized from — one drawing, two sizes) and the
+application name, plus the dev-only `UI 预览` pill. Right: the global run
+summary and the window controls.
 
 ## It is the window's title bar, not a picture of one
 

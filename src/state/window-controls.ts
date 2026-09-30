@@ -16,10 +16,10 @@
  *    Aero Snap, Win+Up).
  *
  * The window is injected (`WindowHost`) for the same reason the backend ping
- * is (`src/state/backend-connection.ts`): the rules above run in the node test
- * environment, with no DOM and no Tauri host. The desktop app's own host is
- * `src/app/tauriWindowHost.ts`; a browser preview has none, which is why the
- * caller gets `null` rather than a host that throws on use.
+ * is (`backend-connection.ts`, its neighbour here): the rules above run in the
+ * node test environment, with no DOM and no Tauri host. The desktop app's own
+ * host is `src/app/tauriWindowHost.ts`; a browser preview has none, which is
+ * why the caller gets `null` rather than a host that throws on use.
  *
  * What this module deliberately does not own: the close *semantics*.
  * `close()` asks the window to close, and the app's close handler hides it to
@@ -33,14 +33,30 @@ export type WindowControl = "minimize" | "toggle-maximize" | "close";
 /**
  * What each control is called where a person reads it.
  *
- * The label is used for the button's accessible name and for the failure
- * message, so "which button was that" is answered once rather than twice.
+ * The same names a button shows and a failure message uses, so "which control
+ * was that" is answered once rather than twice — a message that renamed the
+ * button the user just clicked would be its own small lie.
  */
 export const WINDOW_CONTROL_LABELS: Record<WindowControl, string> = {
   minimize: "最小化窗口",
   "toggle-maximize": "最大化或还原窗口",
   close: "关闭窗口",
 };
+
+/**
+ * The name one control shows, which for maximize depends on what it would do.
+ *
+ * `WINDOW_CONTROL_LABELS` has to name the operation for the failure message
+ * ("最大化或还原窗口没有生效"), because by then the click is over. A button is
+ * read *before* it is pressed, so it says which of the two it will do — and
+ * that is a reading of the window, like the glyph beside it.
+ */
+export function windowControlLabel(control: WindowControl, maximized = false): string {
+  if (control === "toggle-maximize") {
+    return maximized ? "还原窗口" : "最大化窗口";
+  }
+  return WINDOW_CONTROL_LABELS[control];
+}
 
 /**
  * The window, as the title bar reaches it.

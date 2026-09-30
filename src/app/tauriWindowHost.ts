@@ -1,10 +1,10 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { WindowHost } from "./window-controls";
+import type { WindowHost } from "../state/window-controls";
 
 /**
  * The main window as the desktop app reaches it.
  *
- * The only place that knows both sides: `window-controls.ts` decides what a
+ * The only place that knows both sides: `state/window-controls.ts` decides what a
  * window control means, and `tauri.conf.json` + `capabilities/default.json`
  * declare the window the desktop app actually opens (undecorated, resizable,
  * with the four `core:window:` permissions the controls need). Keeping this
