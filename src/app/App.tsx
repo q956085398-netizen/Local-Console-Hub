@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FolderPlus, Terminal } from "lucide-react";
 import TitleBar from "../components/title-bar/TitleBar";
@@ -27,6 +28,7 @@ import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from ".
 import { LIVE_GROUPS } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
 import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
+import { SESSION_OPENED, isSessionOpenedDto } from "../types/launch";
 import { copyPathToClipboard } from "./clipboard";
 import { useBackendPing } from "./useBackendPing";
 import { useSessionRegistry } from "./useSessionRegistry";
@@ -93,12 +95,43 @@ export default function App() {
   }, [notice]);
 
   /**
-   * The tray's "show me this session" request (T09 #10).
+   * Put the workspace on one session and the keyboard in its terminal.
    *
-   * A click on a tray row is a request to *look at* a session, not an operation
-   * on it, so it arrives as a selection and nothing else: no lifecycle command
-   * is implied, and a session name the workspace cannot resolve falls back to
-   * the derived selection exactly as a stale deep link does.
+   * The three steps "新建 PowerShell" takes (#62), named so the two other
+   * callers can take them too: a launch request that made a terminal (#63) and
+   * a click on a tray row. All three mean "show me this one" — a user who
+   * asked for a shell and got a window showing something else has not been
+   * answered, and a tray row whose terminal the keyboard is not in is a look
+   * that costs a second click.
+   */
+  const showSession = useCallback((sessionId: string) => {
+    setSelectedId(sessionId);
+    setTab("terminal");
+    setFocusRequest((request) => request + 1);
+    setDrawerOpen(false);
+  }, []);
+
+  /**
+   * "Show me this session" — two requests, from two places, doing two things.
+   *
+   * A click on a tray row (T09 #10) is a request to *look at* a session: it
+   * arrives as a selection and nothing else — no lifecycle command is implied,
+   * no tab is switched, and a session name the workspace cannot resolve falls
+   * back to the derived selection exactly as a stale deep link does. That is
+   * the behaviour the tray shipped with, and this listener keeps it.
+   *
+   * A launch request that made a terminal (#63) asks for more, because the
+   * user clicked their own PowerShell entry: the new terminal has to be showing
+   * and holding the keyboard, or the entry did not do what it says. That one
+   * arrives as `session-opened` and goes through `showSession`.
+   *
+   * The read beside the listeners is what a *cold start* needs. A shortcut that
+   * starts the Hub is answered while the page is still loading, so its event is
+   * published to a window with no listener yet; the backend keeps the ask
+   * (`take_launch_focus`) and this reads it once, **after** subscribing — so a
+   * request that arrives between the two is delivered by the event, and one
+   * that arrived before is found here. A request caught by both halves shows
+   * the same session twice, which is what showing it once means.
    *
    * Only registered once a backend answers. A tray exists only in the desktop
    * app, and in the browser preview there is no IPC channel to listen on — the
@@ -107,15 +140,32 @@ export default function App() {
    */
   useEffect(() => {
     if (connection.state !== "connected") return;
-    const subscription = listen<unknown>(SESSION_FOCUS_REQUESTED, (event) => {
-      if (isSessionFocusRequestedDto(event.payload)) {
-        setSelectedId(event.payload.sessionId);
-      }
-    });
+    const subscription = Promise.all([
+      listen<unknown>(SESSION_FOCUS_REQUESTED, (event) => {
+        if (isSessionFocusRequestedDto(event.payload)) {
+          setSelectedId(event.payload.sessionId);
+        }
+      }),
+      listen<unknown>(SESSION_OPENED, (event) => {
+        if (isSessionOpenedDto(event.payload)) {
+          showSession(event.payload.sessionId);
+        }
+      }),
+    ]);
+    void subscription
+      .then(() => invoke<unknown>("take_launch_focus"))
+      .then((pending) => {
+        if (typeof pending === "string") showSession(pending);
+      })
+      // A window that cannot read this is still a usable window: the event
+      // above is what a running Hub uses, and this is only the cold-start half.
+      .catch(() => {});
     return () => {
-      void subscription.then((unlisten) => unlisten());
+      void subscription.then((unlisten) => {
+        for (const stop of unlisten) stop();
+      });
     };
-  }, [connection.state]);
+  }, [connection.state, showSession]);
 
   const filtered = useMemo(() => filterSessions(sessions, query), [sessions, query]);
   const groups = useMemo(
@@ -154,6 +204,10 @@ export default function App() {
    * A failure is a message, not a row: the backend withdraws a terminal it
    * could not start, and what is left is the reason — a shell that is not on
    * this machine, or a directory that is not there (story 17).
+   *
+   * This is the same terminus as the shortcut's request (#63): both end in
+   * `showSession`, so a terminal made by the button and one made by the user's
+   * own PowerShell entry are shown the same way.
    */
   const onCreateTerminal = () => {
     if (!registry.live) {
@@ -162,10 +216,7 @@ export default function App() {
     }
     void registry.createTerminal().then((sessionId) => {
       if (sessionId === null) return;
-      setSelectedId(sessionId);
-      setTab("terminal");
-      setFocusRequest((request) => request + 1);
-      setDrawerOpen(false);
+      showSession(sessionId);
     });
   };
 

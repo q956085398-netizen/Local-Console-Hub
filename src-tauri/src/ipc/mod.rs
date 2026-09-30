@@ -8,12 +8,13 @@
 //! Current surface: the `ping` bootstrap command proving the typed invoke path
 //! end to end (T00), startup config diagnostics, the session lifecycle and
 //! service-action commands (T04, T08), the logging read/action commands (T05),
-//! the terminal commands (T07) and the logs view's file and retention commands
-//! (T10).
+//! the terminal commands (T07), the logs view's file and retention commands
+//! (T10) and the launch request a shortcut made (#63).
 
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module
 // path (`ipc::session::start_session`) rather than re-exported here.
+pub mod launch;
 pub mod logs;
 pub mod session;
 pub mod terminal;
