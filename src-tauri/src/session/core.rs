@@ -572,6 +572,22 @@ pub struct SessionEntry {
     pub temporary: bool,
 }
 
+impl SessionEntry {
+    /// The configuration as the frontend reads it, flag and all.
+    ///
+    /// The one place a [`SessionConfig`] becomes a listing row, so a surface
+    /// that shows "which of these are temporary" cannot be written against a
+    /// conversion that forgot the flag.
+    pub fn config_dto(&self) -> SessionConfigDto {
+        let dto = SessionConfigDto::from(&self.config);
+        if self.temporary {
+            dto.temporary()
+        } else {
+            dto
+        }
+    }
+}
+
 /// What a session created on demand answered with.
 ///
 /// Both halves of the new session: the window selects it by id and renders it
@@ -587,16 +603,32 @@ pub struct CreatedSession {
     pub runtime: SessionRuntime,
 }
 
-/// Whether a session is between runs rather than in the middle of one.
+/// Whether a session can be taken out of the registry (#62).
 ///
-/// `Stopped`, `Exited` and `Error` are the states a session can be forgotten
-/// from; the other three name a run that exists, and a session is removed only
-/// once there is nothing left to own (#62).
-fn settled(status: SessionStatus) -> bool {
-    matches!(
-        status,
-        SessionStatus::Stopped | SessionStatus::Exited | SessionStatus::Error
-    )
+/// `Stopped` and `Exited` are only ever reached through an ending that was
+/// observed and confirmed — the terminal's own tree included, which is what
+/// `Pty::kill` returning `Ok` means (D-028) — so those are the states a
+/// session may be forgotten from.
+///
+/// `Error` is not one of them, because it says two different things: a start
+/// that never got a run (which is nothing to own, so it may be removed) and a
+/// **stop that could not confirm the tree was gone** (`RunEnding::Failed`,
+/// where the handle is still the only thing accounting for a live process
+/// tree). Dropping that handle to tidy a list is exactly the "close without
+/// settling ownership" #61 exists to prevent — and #62 forbids it explicitly
+/// ("使用 #61 的安全结束能力，不绕过归属"). The run is what tells the two
+/// apart: a failed start leaves none, a failed stop still holds one.
+///
+/// A configured session is never removable, whatever its state; that is
+/// [`SessionCore::remove_session`]'s caller-facing answer rather than this
+/// predicate's, and both are checked.
+fn removable(temporary: bool, status: SessionStatus, owns_run: bool) -> bool {
+    temporary
+        && match status {
+            SessionStatus::Stopped | SessionStatus::Exited => true,
+            SessionStatus::Error => !owns_run,
+            SessionStatus::Starting | SessionStatus::Running | SessionStatus::Stopping => false,
+        }
 }
 
 /// Lock a mutex, surviving a previous holder's panic.
@@ -791,12 +823,12 @@ impl SessionCore {
     /// no name to render, and reading `list_session_configs` to find one would
     /// make every listener poll for a change it was just told about.
     fn publish_created(&self, session_id: &str) {
-        let Some(config) = self.session_config(session_id) else {
+        let Some(entry) = self.session_entry(session_id) else {
             return;
         };
         self.sink.publish(SessionEvent::Created(SessionCreated {
             session_id: session_id.to_owned(),
-            config: SessionConfigDto::from(&config).temporary(),
+            config: entry.config_dto(),
         }));
         self.publish_summary();
     }
@@ -1536,10 +1568,11 @@ impl SessionCore {
     /// Remove a temporary session from the registry (#62).
     ///
     /// Refused for a configured session — that one belongs to the config file,
-    /// and the window is not the place it is edited — and refused while the
-    /// session is still live: removing it would drop the only handle
+    /// and the window is not the place it is edited — and refused for anything
+    /// still owning a run: removing such a session would drop the only handle
     /// accounting for its process tree, which is the same reason
-    /// [`SessionCore::register`] refuses a duplicate id.
+    /// [`SessionCore::register`] refuses a duplicate id, and is what
+    /// [`removable`] spells out.
     ///
     /// What a removal actually frees is the session's retained scrollback, so
     /// the offer is the ended one: "回看本次输出，然后把它从列表里去掉"
@@ -1567,14 +1600,25 @@ impl SessionCore {
                     None,
                 ));
             }
-            if !settled(state.runtime.status) {
+            if !removable(state.temporary, state.runtime.status, state.run.is_some()) {
+                let message = match state.runtime.status {
+                    // The one refusal that is not "wait for it to stop": this
+                    // session's stop could not confirm its tree was gone, so
+                    // the handle it still holds is the only thing accounting
+                    // for that tree (§61's rule, upheld by #62).
+                    SessionStatus::Error => format!(
+                        "session `{session_id}` could not confirm that its process tree ended; \
+                         restart it and end it cleanly before removing it"
+                    ),
+                    status => format!(
+                        "session `{session_id}` is {}; stop it before removing it",
+                        status.as_str()
+                    ),
+                };
                 return Err(SessionError::failed(
                     session_id,
                     OPERATION,
-                    format!(
-                        "session `{session_id}` is {}; stop it before removing it",
-                        state.runtime.status.as_str()
-                    ),
+                    message,
                     Some(state.runtime.status),
                 ));
             }
@@ -1825,10 +1869,19 @@ impl SessionCore {
             .collect()
     }
 
-    /// One session's validated configuration.
-    fn session_config(&self, session_id: &str) -> Option<SessionConfig> {
-        self.handle(session_id)
-            .map(|state| lock(&state).config.clone())
+    /// One session's configuration together with its provenance.
+    ///
+    /// The pair travel together because both halves of an answer need both:
+    /// a listing that marks which rows are temporary, and the creation event
+    /// that files one under the same rule.
+    fn session_entry(&self, session_id: &str) -> Option<SessionEntry> {
+        self.handle(session_id).map(|state| {
+            let state = lock(&state);
+            SessionEntry {
+                config: state.config.clone(),
+                temporary: state.temporary,
+            }
+        })
     }
 
     /// The URL "open this session's page" should hand to the OS (spec §9).
@@ -5210,6 +5263,36 @@ mod tests {
 
         assert_eq!(error.kind, SessionErrorKind::UnknownSession);
         assert_eq!(error.operation, "remove_session");
+    }
+
+    /// The removal gate as a table (#62, with #61's ownership rule behind it).
+    ///
+    /// The row that matters is `Error` with a run: that is how a stop which
+    /// could not confirm the tree was gone is reported (`RunEnding::Failed`),
+    /// and such a session still owns the only handle accounting for a live
+    /// process tree — dropping it to tidy a list is exactly what #62 forbids.
+    /// `Error` without a run is the other `Error`: a start that never got one.
+    #[test]
+    fn only_a_settled_temporary_session_is_removable() {
+        use crate::session::state::ALL_STATUSES;
+        use SessionStatus::*;
+
+        for status in ALL_STATUSES {
+            for owns_run in [false, true] {
+                let expected = matches!(status, Stopped | Exited) || (status == Error && !owns_run);
+                assert_eq!(
+                    removable(true, status, owns_run),
+                    expected,
+                    "temporary session in {}, owning a run: {owns_run}",
+                    status.as_str()
+                );
+                assert!(
+                    !removable(false, status, owns_run),
+                    "a configured session is never removable ({})",
+                    status.as_str()
+                );
+            }
+        }
     }
 
     /// The terminal half of Session Core (T07 #8).

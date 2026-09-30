@@ -91,7 +91,7 @@ node scripts/capture-ui-states.mjs
 | 调整尺寸 | `terminal_tests::a_resize_of_a_live_terminal_reaches_the_shell`、`a_resize_before_the_start_geometries_the_shell`、`pty::tests::resize_reaches_the_shell` |
 | 切换会话不销毁 PTY | `terminal_tests::a_terminal_keeps_running_while_no_view_is_attached`、集成 `a_terminal_keeps_running_with_no_view_attached_and_replays_on_attach` |
 | **关闭终端结束所属进程树**（#61、D-028） | `pty::tests::kill_ends_the_shells_children_without_the_handle_going_away`、`the_terminal_owns_the_processes_its_shell_starts`、`a_start_that_cannot_own_the_shell_leaves_no_shell_running`（三个启动步骤的失败清理）、`terminal_tests::stopping_a_terminal_ends_the_processes_its_shell_started`、`a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`、`closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone`。集成侧不重复：`tests/mvp_matrix.rs` 的文档注释把这一层划归各模块自己的套件 |
-| **一键新建临时 PowerShell**（#62、D-031） | `session::temporary::tests`（shell 偏好 `pwsh`→`powershell`、主目录/入口目录、缺目录按名报错、身份唯一且可作路径分量、带空格路径的引用）、`session::core::tests` 的四条拒绝（无 shell / 目录不存在 / 已配置不可删 / 未知会话）、`temporary_tests` 七条（一次点击得到家目录里的真实 shell、创建早于它的状态事件、两次点击两个会话、启动失败不留行、运行中不可删、结束后保留输出并可移除且迟到发布不复活、不落盘输出不写配置）、集成 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace`（真实配置 + 真实终端 + 重载后不恢复） |
+| **一键新建临时 PowerShell**（#62、D-031） | `session::temporary::tests`（shell 偏好 `pwsh`→`powershell`、主目录/入口目录、缺目录按名报错、身份唯一且可作路径分量、带空格路径的引用）、`session::core::tests` 的四条拒绝（无 shell / 目录不存在 / 已配置不可删 / 未知会话）与 `only_a_settled_temporary_session_is_removable`（六态 × 有无 run 的删除门槛表，含「error 且仍握有 run 时不可删」）、`temporary_tests` 七条（一次点击得到家目录里的真实 shell、创建早于它的状态事件、两次点击两个会话、启动失败不留行、运行中不可删、结束后保留输出并可移除且迟到发布不复活、不落盘输出不写配置）、集成 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace`（真实配置 + 真实终端 + 重载后不恢复） |
 | **托盘隐藏/恢复不销毁 PTY** | **手工**（§4 托盘段）。自动侧只有它的两半：隐藏路径不碰 Session Core（`tray::tests::only_the_main_window_hides_on_close`），以及「没有视图挂着时终端照跑」（上一条） |
 | **空工作区也能新建**（#62、story 7） | 后端与「已有工作区」是同一条路径（`temporary_tests` 与集成那条都不依赖预置会话）；空工作区那一屏是 `App.tsx` 的渲染分支，**自动侧无覆盖**，由 §6 的 2026-09-30 #62 原生轮次在真实窗口里核对 |
 
@@ -783,6 +783,7 @@ a temporary terminal wrote run metadata: ...\metadata exists
 | `temporary_tests::every_click_creates_a_separate_terminal` | 两次点击是两个 id、两个名字、两个进程 |
 | `temporary_tests::a_terminal_that_cannot_start_leaves_no_row` | 解析通过而启动失败时撤回注册表项，命令回答启动的失败，事件流里 created 与 removed 成对 |
 | `temporary_tests::a_running_terminal_cannot_be_removed` | 运行中删除被拒（「stop it before removing it」），会话原样保留 |
+| `only_a_settled_temporary_session_is_removable` | 删除门槛的整张表：只有 `stopped`/`exited` 可删，`error` 仅在**没有** run 时（启动失败）可删，其余一律不可；配置会话任何状态都不可。前端的 `availableActions.remove` 与它同表，由 `derivations.test.ts` 的「error 态不给删除」用例钉住 |
 | `temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed` | shell 退出后滚动缓冲仍在、行仍在；删除后 `snapshot` 为空、删后发布不再产生事件（迟到结果不复活） |
 | `temporary_tests::a_temporary_terminal_persists_no_output_and_writes_no_config` | `logs/` 与 `config.yaml` 都没被创建，运行记录在但 `log_file` 为空，输出只在内存缓冲里 |
 | 集成 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace` | 真实配置文件 + 真实临时终端共存（3 配置 + 1 临时），打字与退出，删除后回到 3；配置文件字节不变；重新加载同一文件不恢复临时项 |

@@ -17,7 +17,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::config::{ConfigReportDto, SessionConfigDto};
-use crate::session::core::{CreatedSession, SessionCore, SessionError};
+use crate::session::core::{CreatedSession, SessionCore, SessionEntry, SessionError};
 use crate::session::runtime::SessionRuntime;
 use crate::shell;
 
@@ -76,14 +76,7 @@ pub fn list_sessions(core: State<'_, SessionCore>) -> Vec<SessionRuntime> {
 pub fn list_session_configs(core: State<'_, SessionCore>) -> Vec<SessionConfigDto> {
     core.entries()
         .iter()
-        .map(|entry| {
-            let config = SessionConfigDto::from(&entry.config);
-            if entry.temporary {
-                config.temporary()
-            } else {
-                config
-            }
-        })
+        .map(SessionEntry::config_dto)
         .collect()
 }
 

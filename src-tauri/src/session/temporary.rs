@@ -29,32 +29,17 @@ pub const POWERSHELL_7: &str = "pwsh";
 pub const WINDOWS_POWERSHELL: &str = "powershell";
 
 /// A shell a temporary terminal can host.
+///
+/// Just the resolved program — no "which family" tag, because nothing needs
+/// one: the path is what the session's config carries and what a surface can
+/// show (`…\PowerShell\7\pwsh.exe` says which one it is), and a flavour enum
+/// beside it would be a second spelling of what the path already states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shell {
     /// The resolved program, as an absolute path where one was found: the
     /// session's config carries this, so what the terminal runs is a fact the
     /// registry can report rather than a lookup repeated at every start.
     pub program: PathBuf,
-    /// Which PowerShell family this is, for the sentence a failure or a
-    /// surface has to say.
-    pub flavor: ShellFlavor,
-}
-
-/// The two PowerShell families the quick entry knows (spec #59 decision 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellFlavor {
-    PowerShell7,
-    WindowsPowerShell,
-}
-
-impl ShellFlavor {
-    /// The name a surface shows for this shell.
-    pub fn label(&self) -> &'static str {
-        match self {
-            ShellFlavor::PowerShell7 => "PowerShell 7",
-            ShellFlavor::WindowsPowerShell => "Windows PowerShell",
-        }
-    }
 }
 
 /// Whether a named shell exists on this machine, and where.
@@ -89,16 +74,10 @@ impl ShellLookup for SystemLookup {
 /// cannot open a terminal, and the user is the one who can fix that.
 pub fn resolve_shell(lookup: &dyn ShellLookup) -> Result<Shell, String> {
     if let Some(program) = lookup.find(POWERSHELL_7) {
-        return Ok(Shell {
-            program,
-            flavor: ShellFlavor::PowerShell7,
-        });
+        return Ok(Shell { program });
     }
     if let Some(program) = lookup.find(WINDOWS_POWERSHELL) {
-        return Ok(Shell {
-            program,
-            flavor: ShellFlavor::WindowsPowerShell,
-        });
+        return Ok(Shell { program });
     }
     Err(format!(
         "no PowerShell is available: neither PowerShell 7 (`{POWERSHELL_7}.exe`) nor Windows \
@@ -271,7 +250,6 @@ mod tests {
             shell.program,
             PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe")
         );
-        assert_eq!(shell.flavor, ShellFlavor::PowerShell7);
     }
 
     /// …and Windows PowerShell when it is not, so a fresh machine can start.
@@ -284,8 +262,10 @@ mod tests {
 
         let shell = resolve_shell(&machine).expect("a shell is available");
 
-        assert_eq!(shell.flavor, ShellFlavor::WindowsPowerShell);
-        assert_eq!(shell.flavor.label(), "Windows PowerShell");
+        assert_eq!(
+            shell.program,
+            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
     }
 
     /// A machine with neither says so, by both names, in one message.

@@ -160,20 +160,33 @@ export function watchSessionRegistry(
   /** Apply a creation to the rendered list, in arrival order. */
   const addSession = (config: SessionConfigDto) => {
     if (configuredIds === null) return;
-    const existing = sessions.findIndex((session) => session.config.id === config.id);
-    if (existing >= 0) {
-      // A repeat of the same fact (its event and its command answer) is not a
-      // change: nothing is published for it.
-      if (sessions[existing].config === config) return;
-      const next = [...sessions];
-      next[existing] = viewOf(config, sessions[existing].runtime);
-      sessions = next;
-    } else {
-      sessions = [...sessions, viewOf(config)];
-    }
+    // A session already in the list is not news: its event and the command
+    // answer that carried it are the same fact, and a configuration does not
+    // change under a running app (the file is read at startup, and a new entry
+    // is a new id). So a repeat publishes nothing rather than re-rendering a
+    // row whose runtime the state events have already moved on from.
+    if (sessions.some((session) => session.config.id === config.id)) return;
     configuredIds.add(config.id);
+    sessions = [...sessions, viewOf(config)];
     sessionRevision += 1;
     publish();
+  };
+
+  /** The two facts a caller can learn before the event stream delivers them. */
+  const applyCreation = (config: SessionConfigDto) => {
+    if (ready()) {
+      addSession(config);
+    } else {
+      rememberCreation(config);
+    }
+  };
+
+  const applyRemoval = (sessionId: string) => {
+    if (ready()) {
+      dropSession(sessionId);
+    } else {
+      rememberRemoval(sessionId);
+    }
   };
 
   /** Apply a removal to the rendered list. */
@@ -227,19 +240,11 @@ export function watchSessionRegistry(
         return;
       }
       if (isSessionCreatedDto(payload)) {
-        if (!ready()) {
-          rememberCreation(payload.config);
-          return;
-        }
-        addSession(payload.config);
+        applyCreation(payload.config);
         return;
       }
       if (isSessionRemovedDto(payload)) {
-        if (!ready()) {
-          rememberRemoval(payload.sessionId);
-          return;
-        }
-        dropSession(payload.sessionId);
+        applyRemoval(payload.sessionId);
       }
     };
 
@@ -352,19 +357,11 @@ export function watchSessionRegistry(
     },
     adopt(created) {
       if (stopped) return;
-      if (!ready()) {
-        rememberCreation(created.config);
-        return;
-      }
-      addSession(created.config);
+      applyCreation(created.config);
     },
     forget(sessionId) {
       if (stopped) return;
-      if (!ready()) {
-        rememberRemoval(sessionId);
-        return;
-      }
-      dropSession(sessionId);
+      applyRemoval(sessionId);
     },
   };
 }

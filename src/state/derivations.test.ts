@@ -251,13 +251,26 @@ describe("availableActions", () => {
   // belongs to the config file.
   it("offers removal for an ended temporary terminal and nobody else", () => {
     const ended = runtime({ status: "exited" });
+    const stopped = runtime({ status: "stopped" });
     expect(availableActions(config({ temporary: true }), ended).remove).toBe(true);
+    expect(availableActions(config({ temporary: true }), stopped).remove).toBe(true);
     expect(availableActions(config({ temporary: true }), runtime()).remove).toBe(false);
     expect(
       availableActions(config({ temporary: true }), runtime({ status: "starting" })).remove,
     ).toBe(false);
     expect(availableActions(config(), ended).remove).toBe(false);
     expect(availableActions(config({ temporary: false }), ended).remove).toBe(false);
+  });
+
+  // `error` is not "ended": a stop that could not confirm the terminal's tree
+  // was gone reports it while still owning that tree, so the control that
+  // would drop the last handle accounting for it must not appear (#62's
+  // 不绕过归属). The backend's `removable` applies the same rule.
+  it("withholds removal from a temporary terminal in an error state", () => {
+    const failed = runtime({ status: "error" });
+    expect(availableActions(config({ temporary: true }), failed).remove).toBe(false);
+    // …while Start, a legal move from that state, stays offered.
+    expect(availableActions(config({ temporary: true }), failed).start).toBe(true);
   });
 
   it("offers Start only when idle, Stop only when live", () => {

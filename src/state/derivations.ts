@@ -204,6 +204,13 @@ export interface ActionAvailability {
    * when there is nothing left to own and the row is only holding scrollback
    * (story 22). A configured session never gets it — it lives in the config
    * file, and Session Core refuses the removal anyway.
+   *
+   * "Ended" is `stopped` or `exited` and not merely "not live", which is the
+   * distinction `error` makes: a stop that could not confirm the terminal's
+   * process tree was gone reports `error` **while still owning that tree**, and
+   * the control that would drop the last handle accounting for it must not be
+   * offered (#62: "使用 #61 的安全结束能力，不绕过归属"). The backend's own
+   * gate is `session::core::removable`, and this mirrors it.
    */
   remove: boolean;
 }
@@ -228,7 +235,8 @@ export function availableActions(
     directory: hasDirectory,
     copyPath: hasDirectory,
     forceStop: isLive(runtime.status),
-    remove: config.temporary === true && idle,
+    remove:
+      config.temporary === true && (runtime.status === "stopped" || runtime.status === "exited"),
   };
 }
 
