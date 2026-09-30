@@ -1,0 +1,11 @@
+# Dedicated native acceptance fixture for issue #54.
+# Back up %APPDATA%\LocalConsoleHub\config.yaml before copying this file there.
+sessions:
+  - id: init-powershell
+    name: 初始化验收 PowerShell
+    type: terminal
+    shell: powershell
+    cwd: .
+    logging:
+      mode: off
+      source: none

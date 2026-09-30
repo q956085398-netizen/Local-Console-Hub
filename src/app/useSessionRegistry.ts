@@ -7,6 +7,10 @@ import { FIXTURE_SESSIONS } from "../state/fixtures";
 import type { SessionView } from "../state/session-view";
 import type { BackendConnection } from "../state/backend-connection";
 import { watchSessionRegistry, type SessionRegistrySnapshot } from "../state/session-registry";
+import {
+  installVerificationReload,
+  readVerificationSnapshot,
+} from "./session-initialization-verification";
 
 /** The workspace the shell renders, and the actions its controls call. */
 export interface SessionRegistry {
@@ -70,6 +74,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(installVerificationReload, []);
+
   useEffect(() => {
     if (!live) return;
     const activeConnection = connection;
@@ -78,8 +84,10 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       {
         subscribe: (receive) =>
           listen<unknown>(SESSION_STATE_CHANGED, (event) => receive(event.payload)),
-        listConfigs: () => invoke<unknown>("list_session_configs"),
-        listSessions: () => invoke<unknown>("list_sessions"),
+        listConfigs: () =>
+          readVerificationSnapshot("configs", () => invoke<unknown>("list_session_configs")),
+        listSessions: () =>
+          readVerificationSnapshot("runtimes", () => invoke<unknown>("list_sessions")),
         getConfigReport: () => invoke<unknown>("get_config_report"),
       },
       (snapshot) => {
