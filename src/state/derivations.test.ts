@@ -5,6 +5,7 @@ import type { RunRecordDto, RuntimeEffectiveLoggingDto, SessionRuntimeDto } from
 import {
   availableActions,
   bufferDiscardNotice,
+  closeMechanics,
   dependenciesOf,
   filterSessions,
   formatDuration,
@@ -494,6 +495,7 @@ describe("headerCallout", () => {
       kind: "impact",
       title: "关闭影响",
       text: "仅结束本终端；不会停止其它受管服务。",
+      note: "停止该终端会同时结束它启动的子进程。",
     });
   });
 
@@ -502,7 +504,48 @@ describe("headerCallout", () => {
       config({ sessionType: "terminal", closeImpact: undefined }),
       runtime(),
     );
-    expect(callout).toEqual({ kind: "impact", title: "关闭影响", text: "—" });
+    expect(callout).toEqual({
+      kind: "impact",
+      title: "关闭影响",
+      text: "—",
+      note: "停止该终端会同时结束它启动的子进程。",
+    });
+  });
+
+  it("tells a live terminal what stopping it does to its process tree (D-028)", () => {
+    // The configured text is kept, and the Hub's own consequence is added to
+    // it rather than replacing it: `close_impact` is the user's sentence.
+    const callout = headerCallout(
+      config({
+        sessionType: "terminal",
+        shell: "powershell",
+        closeImpact: "不会停止其它受管服务。",
+      }),
+      runtime(),
+    );
+    expect(callout?.text).toBe("不会停止其它受管服务。");
+    expect(callout?.note).toContain("子进程");
+  });
+
+  it("notes nothing extra for a service, whose stop rules are its own", () => {
+    expect(headerCallout(config(), runtime())).not.toHaveProperty("note");
+  });
+});
+
+describe("closeMechanics", () => {
+  it("names the graceful-then-force ladder for a service (D-007)", () => {
+    const note = closeMechanics(config());
+    expect(note).toContain("优雅结束");
+    expect(note).toContain("强制结束");
+  });
+
+  it("tells a terminal what stopping it ends, with no ladder it does not have (D-018, D-028)", () => {
+    // The sentence that used to stand here offered every session a gentle path.
+    // A terminal has none — Ctrl+C is input, not a stop — so this says the one
+    // thing that is true of closing it, the same fact the header warns with.
+    const note = closeMechanics(config({ sessionType: "terminal", shell: "powershell" }));
+    expect(note).toBe("停止该终端会同时结束它启动的子进程。");
+    expect(note).not.toContain("优雅");
   });
 
   it("shows the last error instead once stopped", () => {

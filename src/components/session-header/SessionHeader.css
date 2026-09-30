@@ -180,6 +180,14 @@
   margin: 2px 0 0;
   font-size: 14px;
 }
+/* The Hub's own sentence about what stopping does, under the user's own
+   `close_impact` text: quieter than it, because the configured words are the
+   reason the callout is read and this is the fact it cannot carry. */
+.callout__note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted-fg);
+}
 
 .session-header__meta {
   display: flex;
