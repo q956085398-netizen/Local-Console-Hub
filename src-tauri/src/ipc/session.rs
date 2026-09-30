@@ -247,9 +247,9 @@ pub fn resolve_session_open(
 ) -> Result<ActivationDto, SessionError> {
     const OPERATION: &str = "resolve_session_open";
 
-    let outcome = match resolution.kind.as_str() {
-        "new" => crate::app::activation::open_new(&core, &session_id),
-        "associate" => {
+    let outcome = match resolution.kind {
+        OpenResolutionKind::New => crate::app::activation::open_new(&core, &session_id),
+        OpenResolutionKind::Associate => {
             let created_at = resolution
                 .created_at
                 .as_deref()
@@ -262,19 +262,12 @@ pub fn resolve_session_open(
                     return Err(SessionError::failed(
                         &session_id,
                         OPERATION,
-                        "关联一个实例需要它的进程号和创建时间；这次请求缺少其中之一".to_owned(),
+                        "associating an instance needs both its pid and its creation time, and                          this request was missing one of them"
+                            .to_owned(),
                         None,
                     ))
                 }
             }
-        }
-        other => {
-            return Err(SessionError::failed(
-                &session_id,
-                OPERATION,
-                format!("无法识别的选择 `{other}`；只能是 `associate` 或 `new`"),
-                None,
-            ))
         }
     }?;
     Ok(ActivationDto::from(outcome))
@@ -330,30 +323,48 @@ pub struct ExternalCandidateDto {
     pub image_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Whether the instance has a window the Hub could bring forward, so the
+    /// dialog can say which candidate is one the user can actually be shown.
     pub has_window: bool,
-    /// Whether the Hub confirmed this process is the configured program.
-    pub verified: bool,
     /// Whether associating it is something the Hub can do safely.
+    ///
+    /// The one field the dialog's "associate" control turns on, and the reason
+    /// `verified` is not sent beside it: the flag is the *action's* answer, and
+    /// what makes it false is already in `reason` in the user's words.
     pub associable: bool,
     /// Whether the arguments it was started with are the configured ones;
     /// absent when the configuration passes none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments_agree: Option<bool>,
     /// Why this one is uncertain, for the dialog to show beside it.
-    pub why: String,
+    pub reason: String,
 }
 
 /// What the user answered when the Hub asked (#67).
+///
+/// `kind` is a type rather than a string matched against two literals: the
+/// window models the same two answers as a union, and a command that could be
+/// sent a third one has a branch that can never be reached and no way to say
+/// so.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenResolution {
-    /// `"associate"` or `"new"`.
-    pub kind: String,
+    pub kind: OpenResolutionKind,
     /// The process the user picked; required for `associate`.
     pub pid: Option<u32>,
     /// Its creation time as it was shown, as a decimal string; required for
     /// `associate`. The half that survives the pid being reused.
     pub created_at: Option<String>,
+}
+
+/// The two answers there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenResolutionKind {
+    /// Take the instance the user picked.
+    Associate,
+    /// Start the Hub's own copy and leave the other one alone.
+    New,
 }
 
 /// What bringing an application's own window forward did (#66).
@@ -417,10 +428,9 @@ impl From<crate::app::activation::OpenOutcome> for ActivationDto {
                             .map(|path| path.to_string_lossy().into_owned()),
                         title: candidate.title,
                         has_window: candidate.has_window,
-                        verified: candidate.verified,
                         associable,
                         arguments_agree: candidate.arguments_agree,
-                        why: candidate.why,
+                        reason: candidate.reason,
                     }
                 })
                 .collect(),

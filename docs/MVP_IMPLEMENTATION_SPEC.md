@@ -187,9 +187,17 @@ At minimum:
 - start time
 - exit code when known
 - PTY attachment state
+- whether the run is one the Hub did **not** start (#67)
 - effective logging mode
 - terminal buffer reference
 - last structured error
+
+The "did not start it" flag is the third answer beside D-034's two. Both of those
+are the Hub's — it started them and holds a handle on the tree — while an
+instance the user was already running is only *reported* by the Hub, and nothing
+that acts on a run may act on it (D-036). It rides the snapshot because the
+decision it guards is made in two places that only see snapshots: the tray's bulk
+actions and the window's action availability.
 
 The buffer reference is a **summary** (bytes held, lines held, bytes discarded),
 not the scrollback itself. The scrollback is read on demand, so a session with a
@@ -223,6 +231,13 @@ Stopping -> Error
 Exited -> Starting
 Error -> Starting
 ~~~
+
+One move is deliberately **not** in this table: a session with nothing of the
+Hub's running may become `Running` because the user associated an instance they
+were already running (#67). The table describes runs the Hub creates, and that
+move creates none — it changes only what the Hub accounts for, and D-036 records
+the reasoning. It comes from the same three states a start may come from
+(`Stopped`, `Exited`, `Error`), and from those alone.
 
 Rules:
 

@@ -42,7 +42,7 @@
 }
 
 .open-choice__detail,
-.open-choice__why {
+.open-choice__reason {
   font-size: 12px;
   color: var(--muted-fg);
   overflow-wrap: anywhere;

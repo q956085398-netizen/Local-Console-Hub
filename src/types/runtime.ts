@@ -468,15 +468,19 @@ export interface ExternalCandidateDto {
   fileName: string;
   imagePath?: string;
   title?: string;
+  /** Whether it has a window the Hub could bring forward. */
   hasWindow: boolean;
-  /** Whether the Hub confirmed this process is the configured program. */
-  verified: boolean;
-  /** Whether associating it is something the Hub can do safely. */
+  /**
+   * Whether associating it is something the Hub can do safely.
+   *
+   * The one flag the dialog's "associate" control turns on. What makes it false
+   * is in `reason`, in the user's words.
+   */
   associable: boolean;
   /** Absent when the configuration passes no arguments to compare. */
   argumentsAgree?: boolean;
   /** Why this one is uncertain, for the dialog to show beside it. */
-  why: string;
+  reason: string;
 }
 
 /** The question, and what it is about (#67). */
@@ -516,10 +520,9 @@ function isExternalCandidateDto(value: unknown): value is ExternalCandidateDto {
     optionalString(candidate, "imagePath") &&
     optionalString(candidate, "title") &&
     typeof candidate.hasWindow === "boolean" &&
-    typeof candidate.verified === "boolean" &&
     typeof candidate.associable === "boolean" &&
     (candidate.argumentsAgree === undefined || typeof candidate.argumentsAgree === "boolean") &&
-    typeof candidate.why === "string"
+    typeof candidate.reason === "string"
   );
 }
 

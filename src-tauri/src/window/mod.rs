@@ -124,24 +124,35 @@ pub fn console_window(pid: u32) -> Option<TopLevelWindow> {
 /// both are tried — the by-pid enumeration over everything the application
 /// started, then the console host.
 ///
-/// `lead` is the process the application is identified by, and
-/// `lead_is_current` says whether that number still answers for the process it
-/// was taken from. It gates only the console lookup, which is a lookup *by
-/// number*: a pid Windows has reused would answer with a console belonging to
-/// somebody else (spec #59 decision 11).
-pub fn application_window(
-    pids: &[u32],
-    lead: u32,
-    lead_is_current: bool,
-) -> Option<TopLevelWindow> {
-    let windows = windows_of(pids);
+pub fn application_window(processes: &Processes) -> Option<TopLevelWindow> {
+    let windows = windows_of(&processes.pids);
     if let Some(found) = main_window(&windows) {
         return Some(found.clone());
     }
-    if !lead_is_current {
+    if !processes.lead_is_current {
         return None;
     }
-    console_window(lead)
+    console_window(processes.lead)
+}
+
+/// The processes one running application is made of, as the caller read them.
+///
+/// Three facts that always travel together and mean little apart: the pids to
+/// search, the one pid the application is *identified* by, and whether that
+/// number still answers for the process it was taken from. The last exists
+/// because the console lookup is a lookup by number ([`console_window`]), and a
+/// pid Windows has since reused would answer with somebody else's console
+/// (spec #59 decision 11).
+///
+/// A type rather than three arguments because three callers rebuild it —
+/// `process::independent` from the run's job, `session::core` from an adopted
+/// instance, `app::external` from a candidate — and a triple that has to be
+/// passed in the right order is one transposition away from a wrong answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Processes {
+    pub pids: Vec<u32>,
+    pub lead: u32,
+    pub lead_is_current: bool,
 }
 
 /// How often the bounded wait looks again.
@@ -155,13 +166,12 @@ const WINDOW_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 /// still be found. `timeout` of zero is a single read, which is what a caller
 /// asking about something that has been running for a while wants.
 pub fn wait_for_application_window(
-    processes: impl Fn() -> (Vec<u32>, u32, bool),
+    processes: impl Fn() -> Processes,
     timeout: std::time::Duration,
 ) -> Option<TopLevelWindow> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        let (pids, lead, lead_is_current) = processes();
-        if let Some(window) = application_window(&pids, lead, lead_is_current) {
+        if let Some(window) = application_window(&processes()) {
             return Some(window);
         }
         if std::time::Instant::now() >= deadline {

@@ -1833,7 +1833,11 @@ impl SessionCore {
                 || {
                     let mut pids = vec![lead];
                     pids.extend(crate::process::descendants(lead));
-                    (pids, lead, adopted.is_current())
+                    crate::window::Processes {
+                        pids,
+                        lead,
+                        lead_is_current: adopted.is_current(),
+                    }
                 },
                 timeout,
             );

@@ -250,14 +250,14 @@ impl IndependentProcess {
     /// A tree that cannot be read is an empty one rather than a failure: the
     /// console fallback below it is still a real answer, and reporting "no
     /// window" is more honest than reporting the read failure as one.
-    fn tree_and_identity(&self) -> (Vec<u32>, u32, bool) {
-        (
-            self.tree_pids().unwrap_or_default(),
-            self.pid(),
+    fn tree_and_identity(&self) -> window::Processes {
+        window::Processes {
+            pids: self.tree_pids().unwrap_or_default(),
+            lead: self.pid(),
             // A console window found for a pid Windows has since reused would
             // be somebody else's console (spec #59 decision 11).
-            self.shared.identity.matches(),
-        )
+            lead_is_current: self.shared.identity.matches(),
+        }
     }
 
     /// The run's window, waiting up to `timeout` for one to appear.

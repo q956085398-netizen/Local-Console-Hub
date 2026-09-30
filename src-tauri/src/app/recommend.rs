@@ -180,7 +180,14 @@ fn existing(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn is_batch(path: &Path) -> bool {
+/// Whether this file is a batch script — read by `cmd.exe` rather than loaded
+/// as an image.
+///
+/// Shared with the association search (#67) rather than copied: "is this a
+/// script" decides both what the advice says about the launch method and which
+/// process the Hub looks for, and two answers to it would be two chances to
+/// disagree about the same file.
+pub(crate) fn is_batch(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|extension| extension.to_str())

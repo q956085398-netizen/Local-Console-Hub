@@ -40,7 +40,7 @@
 //! - one confirmed instance — associate it and bring its window forward, and
 //!   start nothing;
 //! - anything else — answer with the question
-//!   ([`OpenChoice`]) and change nothing at all, because which of two
+//!   ([`external::Ambiguity`]) and change nothing at all, because which of two
 //!   running programs is "the" application is the user's to say, and a Hub
 //!   that guessed would be guessing about somebody's work.
 
@@ -76,16 +76,11 @@ pub struct OpenOutcome {
     ///
     /// Present means nothing was started and nothing was associated: what
     /// happened is a question, and it is the caller's to put to the user.
-    pub choice: Option<OpenChoice>,
-}
-
-/// Why the Hub is asking, and what it is asking about (#67).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenChoice {
-    /// What the Hub could not establish, in a sentence.
-    pub reason: String,
-    /// The instances it found, so the answer is about real things.
-    pub candidates: Vec<external::Candidate>,
+    ///
+    /// [`external::Ambiguity`] itself rather than a wrapper around it: the
+    /// question and the finding are one value, and a second type holding the
+    /// same two fields would only be a place for them to drift.
+    pub choice: Option<external::Ambiguity>,
 }
 
 /// The outcome of asking an application's window to come forward.
@@ -181,10 +176,7 @@ pub fn open(core: &SessionCore, session_id: &str) -> Result<OpenOutcome, Session
                         started: false,
                     },
                     window: None,
-                    choice: Some(OpenChoice {
-                        reason: ambiguity.reason,
-                        candidates: ambiguity.candidates,
-                    }),
+                    choice: Some(ambiguity),
                 });
             }
             Outside::None => {}
@@ -196,7 +188,7 @@ pub fn open(core: &SessionCore, session_id: &str) -> Result<OpenOutcome, Session
 
 /// Open the Hub's own copy, whatever is running outside (#67).
 ///
-/// The "明确新开" half of [`OpenChoice`]. Releasing the association first is
+/// The "明确新开" half of the choice. Releasing the association first is
 /// what makes it a *decision* rather than a retry: without it the open would
 /// look outside again, find the same instance, and ask the same question
 /// forever. The instance itself is not touched — the Hub never owned it — and
@@ -207,7 +199,7 @@ pub fn open_new(core: &SessionCore, session_id: &str) -> Result<OpenOutcome, Ses
     open_now(core, session_id)
 }
 
-/// Answer this session's [`OpenChoice`] by associating a candidate (#67).
+/// Answer the open's question by associating a candidate (#67).
 ///
 /// The candidate is re-verified rather than trusted: what the window sent back
 /// is a pid and a creation time, and both are facts about a moment that has
@@ -256,7 +248,7 @@ fn attach(
         SessionError::failed(
             session_id,
             "activate",
-            format!("无法关联已在运行的实例：{error}"),
+            format!("associating the running instance failed: {error}"),
             None,
         )
     })?;

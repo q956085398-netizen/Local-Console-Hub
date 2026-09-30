@@ -113,7 +113,7 @@ pub struct Candidate {
     /// `None` when the configuration claims none.
     pub arguments_agree: Option<bool>,
     /// Why this one is uncertain, in the words the dialog shows.
-    pub why: String,
+    pub reason: String,
 }
 
 impl Candidate {
@@ -148,7 +148,7 @@ pub fn find(config: &SessionConfig) -> Outside {
         // "ambiguous" out of it would replace it with a worse one.
         return Outside::None;
     };
-    let readings = process::processes_named(std::slice::from_ref(&target.file_name));
+    let readings = process::processes_named(&target.file_names);
     let mut found = classify(&target, &readings);
     decorate(&mut found, &readings);
     found
@@ -167,15 +167,20 @@ pub fn confirm(
     created_at: u64,
 ) -> Result<ExternalInstance, String> {
     let Some(target) = Target::of(config) else {
-        return Err("这条配置的启动命令无法解析，Hub 不能对照它确认任何实例。".to_owned());
+        return Err(
+            "this entry's command cannot be resolved, so the Hub has nothing to confirm an \
+             instance against"
+                .to_owned(),
+        );
     };
-    let readings = process::processes_named(std::slice::from_ref(&target.file_name));
+    let readings = process::processes_named(&target.file_names);
     let Some(reading) = readings
         .iter()
         .find(|reading| reading.pid == pid && reading.created_at == Some(created_at))
     else {
         return Err(format!(
-            "进程 {pid} 已经不在了，或者已经不是刚才被找到的那一个；请重新打开这个应用再选一次。"
+            "process {pid} is no longer the one that was found a moment ago; open the \
+             application again and pick it once more"
         ));
     };
 
@@ -186,11 +191,13 @@ pub fn confirm(
                 .expect("a reading that matched on identity carries one"),
             image: reading.image_path.clone(),
         }),
-        Verdict::Unknown { why } => Err(format!(
-            "无法确认进程 {pid} 就是要打开的程序：{why}。Hub 没有关联它。"
+        Verdict::Unknown { reason } => Err(format!(
+            "process {pid} could not be confirmed as the configured program: {reason}; the Hub \
+             did not associate it"
         )),
         Verdict::No => Err(format!(
-            "进程 {pid} 运行的并不是这条配置指定的程序，Hub 没有关联它。"
+            "process {pid} is not running the program this entry names; the Hub did not \
+             associate it"
         )),
     }
 }
@@ -200,10 +207,22 @@ pub fn confirm(
 struct Target {
     /// The file the configuration's program resolves to.
     program: PathBuf,
-    /// The name the process table is filtered by. Reading a process' image path
-    /// means opening it, so the table is narrowed by name first — the one place
-    /// a name is used, and only to decide what to *look at*.
-    file_name: String,
+    /// The executable names the process table is narrowed by.
+    ///
+    /// Reading a process's image path means opening it, so the table is filtered
+    /// by name first — the one place a name decides anything, and only what to
+    /// *look at*.
+    ///
+    /// The program's own name plus, for a batch script, the interpreter Windows
+    /// runs it with. A `.bat` is not a process: Explorer hands it to `cmd.exe`,
+    /// and the process that is really running the configuration is a `cmd.exe`
+    /// whose *command line* names the script. Filtering by the script's name
+    /// alone never sees it, and the entry starts a second copy of something
+    /// already running — which is the failure this module exists to prevent.
+    /// (The #67 review caught exactly that: `classify` had the rule and the
+    /// test called `classify` directly, so the filter in front of it was never
+    /// exercised.)
+    file_names: Vec<String>,
     /// The arguments the configuration passes to the program.
     args: Vec<String>,
 }
@@ -221,10 +240,17 @@ impl Target {
             .map(|cwd| cwd.to_string_lossy().into_owned());
         let program =
             crate::app::recommend::resolve_program(&token.to_string_lossy(), cwd.as_deref())?;
-        let file_name = program.file_name()?.to_string_lossy().into_owned();
+
+        let mut file_names = vec![program.file_name()?.to_string_lossy().into_owned()];
+        if crate::app::recommend::is_batch(&program) {
+            // The shell a batch file is handed to. Named once, here, because
+            // this is where "what am I looking for in the process table?" is
+            // decided.
+            file_names.push("cmd.exe".to_owned());
+        }
         Some(Target {
             program,
-            file_name,
+            file_names,
             args,
         })
     }
@@ -235,7 +261,7 @@ enum Verdict {
     /// This process runs the configured program.
     Match { arguments: Arguments },
     /// This process might, and the Hub could not find out.
-    Unknown { why: String },
+    Unknown { reason: String },
     /// This process runs something else.
     No,
 }
@@ -271,7 +297,7 @@ fn verdict(target: &Target, reading: &ProcessReading) -> Verdict {
         // decision 11 says is not evidence, so it is not a candidate either.
         Some(_) => Verdict::No,
         None => Verdict::Unknown {
-            why: "无法读取这个进程的映像路径（通常是权限不足）".to_owned(),
+            reason: "无法读取这个进程的映像路径（通常是权限不足）".to_owned(),
         },
     }
 }
@@ -342,7 +368,7 @@ fn classify(target: &Target, readings: &[ProcessReading]) -> Outside {
     for reading in readings {
         match verdict(target, reading) {
             Verdict::Match { arguments } => matched.push((reading, arguments)),
-            Verdict::Unknown { why } => unknown.push((reading, why)),
+            Verdict::Unknown { reason } => unknown.push((reading, reason)),
             Verdict::No => {}
         }
     }
@@ -382,7 +408,7 @@ fn classify(target: &Target, readings: &[ProcessReading]) -> Outside {
                 Arguments::Agree => Some(true),
                 Arguments::Disagree => Some(false),
             },
-            why: if reading.created_at.is_none() {
+            reason: if reading.created_at.is_none() {
                 "它是同一个程序，但 Hub 读不到它的创建时间，无法安全地记住这个实例".to_owned()
             } else if *arguments == Arguments::Disagree {
                 "它是同一个程序，但启动参数与配置不同".to_owned()
@@ -391,7 +417,7 @@ fn classify(target: &Target, readings: &[ProcessReading]) -> Outside {
             },
         })
         .collect();
-    candidates.extend(unknown.iter().map(|(reading, why)| Candidate {
+    candidates.extend(unknown.iter().map(|(reading, reason)| Candidate {
         pid: reading.pid,
         created_at: reading.created_at,
         file_name: reading.file_name.clone(),
@@ -400,7 +426,7 @@ fn classify(target: &Target, readings: &[ProcessReading]) -> Outside {
         has_window: false,
         verified: false,
         arguments_agree: None,
-        why: why.clone(),
+        reason: reason.clone(),
     }));
 
     Outside::Ambiguous(Ambiguity {
@@ -481,7 +507,12 @@ fn decorate(outside: &mut Outside, readings: &[ProcessReading]) {
             .find(|reading| reading.pid == candidate.pid)
             .and_then(ProcessReading::identity)
             .is_some_and(|identity| identity.matches());
-        if let Some(window) = window::application_window(&pids, candidate.pid, current) {
+        let processes = window::Processes {
+            pids,
+            lead: candidate.pid,
+            lead_is_current: current,
+        };
+        if let Some(window) = window::application_window(&processes) {
             candidate.title = titled(&window);
             candidate.has_window = true;
         }
@@ -542,12 +573,19 @@ mod tests {
     }
 
     fn target(program: &str, args: &[&str]) -> Target {
+        let program = PathBuf::from(program);
+        // The same names `Target::of` would filter the table by, so a
+        // synthetic case cannot pass through a filter the product applies.
+        let mut file_names = vec![program
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()];
+        if crate::app::recommend::is_batch(&program) {
+            file_names.push("cmd.exe".to_owned());
+        }
         Target {
-            program: PathBuf::from(program),
-            file_name: Path::new(program)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            program,
+            file_names,
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
         }
     }
@@ -875,29 +913,55 @@ pub(crate) mod native_tests {
         /// user clicks an entry — seconds after the application appeared — so
         /// what a test has to wait for is the reading, not the spawn.
         pub(crate) fn wait_until_listed(&self, child: &mut Child) {
-            let pid = child.id();
-            let name = self
-                .0
+            wait_until_listed_as(&self.program_name(), child);
+        }
+
+        /// The file name of the copied program.
+        pub(crate) fn program_name(&self) -> String {
+            self.0
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            loop {
-                if process::processes_named(std::slice::from_ref(&name))
-                    .iter()
-                    .any(|reading| reading.pid == pid)
-                {
-                    return;
-                }
-                if let Ok(Some(status)) = child.try_wait() {
-                    panic!("the fixture process {pid} ended before it could be found: {status:?}");
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the fixture process {pid} never appeared in the process table"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
+                .unwrap_or_default()
+        }
+
+        /// A script beside the fixture program, for the shapes that are not the
+        /// program itself (a batch file is run by a shell, not by the loader).
+        pub(crate) fn write(&self, name: &str, contents: &str) -> PathBuf {
+            let path = self
+                .0
+                .parent()
+                .expect("the fixture program has a directory")
+                .join(name);
+            std::fs::write(&path, contents).expect("the fixture script is written");
+            path
+        }
+
+        /// A window entry whose command is `command`, run in the fixture's
+        /// directory.
+        pub(crate) fn config_for(&self, command: String) -> SessionConfig {
+            let raw = RawSessionConfig {
+                id: "fixture".to_owned(),
+                name: "Fixture".to_owned(),
+                r#type: "service".to_owned(),
+                cwd: Some(
+                    self.0
+                        .parent()
+                        .expect("the fixture program has a directory")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                command: Some(command),
+                url: None,
+                port: None,
+                purpose: None,
+                close_impact: None,
+                shell: None,
+                initial_command: None,
+                display: Some(DisplayMode::Window),
+                lifecycle: Some(LifecycleOwner::Managed),
+                logging: None,
+            };
+            validate_entry(0, &raw).expect("the fixture entry validates")
         }
 
         pub(crate) fn start(&self) -> Child {
@@ -914,29 +978,7 @@ pub(crate) mod native_tests {
         /// Management is on so that a test which starts the Hub's own copy can
         /// end it again; nothing about the association search reads this.
         pub(crate) fn config(&self) -> SessionConfig {
-            let raw = RawSessionConfig {
-                id: "fixture".to_owned(),
-                name: "Fixture".to_owned(),
-                r#type: "service".to_owned(),
-                cwd: Some(
-                    self.0
-                        .parent()
-                        .expect("the fixture program has a directory")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                command: Some(format!("\"{}\" {}", self.0.display(), LIFETIME.join(" "))),
-                url: None,
-                port: None,
-                purpose: None,
-                close_impact: None,
-                shell: None,
-                initial_command: None,
-                display: Some(DisplayMode::Window),
-                lifecycle: Some(LifecycleOwner::Managed),
-                logging: None,
-            };
-            validate_entry(0, &raw).expect("the fixture entry validates")
+            self.config_for(format!("\"{}\" {}", self.0.display(), LIFETIME.join(" ")))
         }
     }
 
@@ -945,6 +987,35 @@ pub(crate) mod native_tests {
             if let Some(directory) = self.0.parent() {
                 let _ = std::fs::remove_dir_all(directory);
             }
+        }
+    }
+
+    /// Wait until the process table lists `pid` under `name`, so a test asks
+    /// about a machine that has settled rather than one mid-churn.
+    ///
+    /// The process table is a reading of a *live* system: it is taken while
+    /// processes are being created and destroyed, including by the rest of this
+    /// test suite. The product takes that reading when the user clicks an entry
+    /// — seconds after the application appeared — so what a test has to wait
+    /// for is the reading, not the spawn.
+    pub(crate) fn wait_until_listed_as(name: &str, child: &mut Child) {
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if process::processes_named(&[name.to_owned()])
+                .iter()
+                .any(|reading| reading.pid == pid)
+            {
+                return;
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!("the process {pid} ended before it could be found: {status:?}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the process {pid} never appeared in the process table as `{name}`"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
 
@@ -998,6 +1069,48 @@ pub(crate) mod native_tests {
         assert!(
             instance.identity.matches(),
             "the identity the Hub kept answers for the process it was read from"
+        );
+    }
+
+    /// A batch script is run by a *shell*, so the process that appears in the
+    /// table is `cmd.exe` and the script is an argument of it. This is the
+    /// shape of the launcher the spec names (秋叶启动器), and the one the whole
+    /// search used to miss: the table was filtered by the script's file name,
+    /// no process is called that, and the answer was "nothing is running" — so
+    /// the Hub started a second copy of an application already up. Caught by
+    /// the #67 review, because the synthetic case had called `classify`
+    /// directly and never went through the filter in front of it.
+    #[test]
+    fn a_batch_script_running_under_a_shell_is_found() {
+        let fixture = Fixture::new("batch");
+        let script = fixture.write(
+            "stay.cmd",
+            "@echo off
+ping -n 120 127.0.0.1 > NUL
+",
+        );
+        let mut child = KillOnDrop(
+            Command::new("cmd.exe")
+                .args(["/d", "/c"])
+                .arg(&script)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the shell starts"),
+        );
+        // The process the search must find is the shell, not the script.
+        wait_until_listed_as("cmd.exe", &mut child.0);
+
+        let found = find(&fixture.config_for(script.to_string_lossy().into_owned()));
+
+        let instance = match &found {
+            Outside::Certain(instance) => instance,
+            other => panic!("expected the running launcher, got {other:?}"),
+        };
+        assert_eq!(
+            instance.identity.pid(),
+            child.0.id(),
+            "the instance is the shell that is running the script"
         );
     }
 
@@ -1064,6 +1177,6 @@ pub(crate) mod native_tests {
         // "Windows reused the number": refused, and nothing is associated.
         let refused = confirm(&config, pid, created_at.wrapping_add(1))
             .expect_err("a pid whose creation time does not match is not confirmed");
-        assert!(refused.contains("已经不在了"), "{refused}");
+        assert!(refused.contains("no longer the one"), "{refused}");
     }
 }

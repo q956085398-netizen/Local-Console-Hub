@@ -33,10 +33,11 @@ export interface OpenChoiceDialogProps {
  * ## What it says about each instance
  *
  * Everything the Hub actually looked at: the image path it verified, the
- * window caption, and why this one is not certain. An instance it could not
- * inspect is still listed — knowing that *something* is running is what stops
- * the Hub from silently starting a second copy — but it cannot be chosen,
- * because there is no identity the Hub could remember and check again
+ * window caption, whether there is a window to bring forward at all, and why
+ * this one is not certain. An instance it could not inspect is still listed —
+ * knowing that *something* is running is what stops the Hub from silently
+ * starting a second copy — but it cannot be chosen, because there is no
+ * identity the Hub could remember and check again
  * (`ExternalCandidateDto.associable`), and the row says so rather than
  * offering a control that would be refused.
  */
@@ -47,9 +48,11 @@ export default function OpenChoiceDialog({
   onClose,
 }: OpenChoiceDialogProps) {
   const associable = choice.candidates.filter((candidate) => candidate.associable);
-  const [selected, setSelected] = useState<string | null>(() =>
-    associable[0] === undefined ? null : key(associable[0]),
-  );
+  // Nothing is preselected, deliberately: which of two running programs is
+  // "the" application is the question being asked, and a default answer would
+  // let one stray press of the primary button decide it. The control that
+  // answers stays inert until the user has pointed at something.
+  const [selected, setSelected] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -108,7 +111,10 @@ export default function OpenChoiceDialog({
                         进程 {candidate.pid}
                         {candidate.imagePath === undefined ? "" : ` · ${candidate.imagePath}`}
                       </span>
-                      <span className="open-choice__why">{candidate.why}</span>
+                      <span className="open-choice__reason">
+                        {candidate.reason}
+                        {candidate.hasWindow ? "" : " · 现在没有可以唤起的窗口"}
+                      </span>
                     </span>
                   </label>
                 </li>

@@ -16,9 +16,8 @@ function candidate(overrides: Partial<ExternalCandidateDto> = {}): ExternalCandi
     fileName: "python.exe",
     imagePath: "D:\\ComfyUI\\python.exe",
     hasWindow: true,
-    verified: true,
     associable: true,
-    why: "还有别的进程在运行同一个程序",
+    reason: "还有别的进程在运行同一个程序",
     ...overrides,
   };
 }
@@ -69,11 +68,10 @@ describe("OpenChoiceDialog", () => {
       reason: "另有 1 个同名进程，Hub 没有权限确认它们是不是同一个程序。",
       candidates: [
         candidate({
-          verified: false,
           associable: false,
           imagePath: undefined,
           createdAt: undefined,
-          why: "无法读取这个进程的映像路径（通常是权限不足）",
+          reason: "无法读取这个进程的映像路径（通常是权限不足）",
         }),
       ],
     });
@@ -95,6 +93,28 @@ describe("OpenChoiceDialog", () => {
     for (const answer of ["取消", "新开一份", "关联选中的实例"]) {
       expect(markup).toContain(answer);
     }
+  });
+
+  it("preselects nothing, so the answer is the user's", () => {
+    const markup = render({
+      reason: "有 2 个进程都在运行这条配置指定的程序。",
+      candidates: [candidate(), candidate({ pid: 4300 })],
+    });
+
+    // The primary control is inert until a row is picked: a default would let
+    // one stray press decide which running program the entry means.
+    // The primary control is inert until a row is picked: a default would let
+    // one stray press decide which running program the entry means.
+    expect(markup).toMatch(/disabled[^>]*>关联选中的实例/);
+  });
+
+  it("says when a candidate has no window to bring forward", () => {
+    const markup = render({
+      reason: "有 2 个进程都在运行这条配置指定的程序。",
+      candidates: [candidate({ hasWindow: false })],
+    });
+
+    expect(markup).toContain("现在没有可以唤起的窗口");
   });
 
   it("carries the identity the backend needs back, not a re-derived one", () => {
