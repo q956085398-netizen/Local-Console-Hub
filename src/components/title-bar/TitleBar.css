@@ -30,11 +30,17 @@
   color: var(--fg);
 }
 
-/* The Hub icon asset itself, not a copy of it (D-029). */
+/* The Hub icon asset itself, not a copy of it (D-029).
+ *
+ * 30px, not the reference's 20px: with the mark now drawn full-bleed (its tile
+ * fills the box instead of 75% of it), the product owner asked for it 1.5x
+ * bigger so it reads as the app's identity rather than as a bullet beside the
+ * name. It still clears the 44px bar with room to spare, and it is `flex: none`
+ * so it can never be squeezed into the window controls at a narrow width. */
 .title-bar__mark {
   display: block;
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   margin-left: 4px;
   flex: none;
 }
