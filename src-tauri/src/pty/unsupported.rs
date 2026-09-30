@@ -51,6 +51,11 @@ impl PtyBackend {
     pub fn terminate(&self) -> Result<(), String> {
         Err(unsupported("terminating the terminal"))
     }
+
+    /// Never reached: no terminal exists to enumerate.
+    pub fn tree_pids(&self) -> Result<Vec<u32>, String> {
+        Err(unsupported("enumerating the terminal's process tree"))
+    }
 }
 
 /// Never produced: [`require_backend`] fails before a terminal can start.

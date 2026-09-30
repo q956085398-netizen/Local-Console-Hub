@@ -20,12 +20,6 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
-use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-};
 use windows_sys::Win32::System::Threading::{
     OpenThread, ResumeThread, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
     INFINITE, THREAD_SUSPEND_RESUME,
@@ -37,16 +31,12 @@ pub fn require_backend(_operation: &'static str) -> Result<(), super::ProcessErr
     Ok(())
 }
 
-/// Processes reported per tree query.
-const MAX_TREE_PROCESSES: usize = 512;
-
 /// Handle to a run's job object.
 ///
-/// Stored as an integer rather than as a `HANDLE` so the token stays `Send +
-/// Sync` regardless of how `windows-sys` spells the type, and so nothing outside
-/// this module names a raw handle.
-#[derive(Debug)]
-pub struct TreeHandle(usize);
+/// The job object itself is shared with the PTY backend, which owns a terminal
+/// shell's tree the same way (`super::tree`); what this module adds on top is
+/// the *service* startup sequence — create suspended, assign, resume.
+pub use super::tree::Job as TreeHandle;
 
 #[cfg(test)]
 thread_local! {
@@ -78,16 +68,6 @@ fn fail_start_step(point: StartFailurePointForTest) -> bool {
     })
 }
 
-impl Drop for TreeHandle {
-    fn drop(&mut self) {
-        // `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: closing the last handle to a job
-        // terminates whatever is still assigned to it. That is the backstop
-        // behind `ManagedProcess`'s RAII ownership, so the supervisor's handle
-        // has to live exactly as long as the run should.
-        unsafe { CloseHandle(self.0 as _) };
-    }
-}
-
 /// Put the run in a process group of its own, so a `CTRL_BREAK` can be aimed at
 /// this run alone (see [`request_graceful_stop`]).
 pub fn prepare(command: &mut Command) {
@@ -109,36 +89,14 @@ pub fn attach(child: &Child) -> Result<TreeHandle, String> {
         return Err("test-injected CreateJobObjectW failure".to_owned());
     }
 
-    let created = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as usize;
-    if created == 0 {
-        return Err(last_error("CreateJobObjectW"));
-    }
-    let job = TreeHandle(created);
-
-    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let sized = size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
-    let configured = unsafe {
-        SetInformationJobObject(
-            job.0 as _,
-            JobObjectExtendedLimitInformation,
-            std::ptr::from_ref(&limits).cast(),
-            sized,
-        )
-    };
-    if configured == 0 {
-        return Err(last_error("SetInformationJobObject"));
-    }
+    let job = TreeHandle::create()?;
 
     #[cfg(test)]
     if fail_start_step(StartFailurePointForTest::JobAssignment) {
         return Err("test-injected AssignProcessToJobObject failure".to_owned());
     }
 
-    let assigned = unsafe { AssignProcessToJobObject(job.0 as _, child.as_raw_handle() as _) };
-    if assigned == 0 {
-        return Err(last_error("AssignProcessToJobObject"));
-    }
+    job.assign(child.as_raw_handle() as usize)?;
 
     resume_initial_thread(child.id())?;
     Ok(job)
@@ -213,43 +171,13 @@ impl Drop for ScopedHandle {
 /// Members exit with code 1; a caller distinguishes a forced stop from a natural
 /// exit through the report it gets back, never through the code.
 pub fn terminate_tree(tree: &TreeHandle) -> Result<(), String> {
-    let terminated = unsafe { TerminateJobObject(tree.0 as _, 1) };
-    if terminated == 0 {
-        return Err(last_error("TerminateJobObject"));
-    }
-    Ok(())
+    tree.terminate()
 }
 
 /// Processes currently assigned to the job, including the run's own process.
-///
-/// The OS reports at most `MAX_TREE_PROCESSES` ids per query, so a larger tree is
-/// truncated. Emptiness — the property a stop barrier relies on — is still
-/// reported faithfully.
+/// An empty list means nothing of the run is left.
 pub fn tree_pids(tree: &TreeHandle) -> Result<Vec<u32>, String> {
-    // The id list is variable-length: two `u32` counters followed by the
-    // entries. Sizing the buffer in `usize` units keeps it aligned for them.
-    let mut buffer = vec![0usize; 1 + MAX_TREE_PROCESSES];
-    let mut returned_bytes: u32 = 0;
-    let queried = unsafe {
-        QueryInformationJobObject(
-            tree.0 as _,
-            JobObjectBasicProcessIdList,
-            buffer.as_mut_ptr().cast(),
-            (buffer.len() * size_of::<usize>()) as u32,
-            &mut returned_bytes,
-        )
-    };
-    if queried == 0 {
-        return Err(last_error("QueryInformationJobObject"));
-    }
-
-    let list = unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
-    // An id list is variable-length: the OS reports how many entries are valid.
-    let listed = list.NumberOfProcessIdsInList as usize;
-    let count = listed.min(MAX_TREE_PROCESSES);
-    let first = list.ProcessIdList.as_ptr();
-    let ids = (0..count).map(|index| unsafe { *first.add(index) as u32 });
-    Ok(ids.collect())
+    tree.pids()
 }
 
 /// The value `WaitForSingleObject` can block on for this run's process.

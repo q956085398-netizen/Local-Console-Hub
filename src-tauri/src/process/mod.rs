@@ -65,6 +65,12 @@ mod unsupported;
 #[cfg(windows)]
 mod win;
 
+// The job object that owns a managed process tree, shared with the PTY
+// backend: a terminal shell's tree is the same Win32 object supervised under
+// the same rules, and `tree` is where the spec puts "kill tree".
+#[cfg(windows)]
+pub(crate) mod tree;
+
 #[cfg(not(windows))]
 use unsupported as backend;
 #[cfg(windows)]

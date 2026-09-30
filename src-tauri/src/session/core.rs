@@ -306,7 +306,8 @@ impl Run {
     /// graceful gesture is *input* — Ctrl+C, which the user sends through the
     /// keyboard and which does not close the session (spec §7). Closing a
     /// terminal is closing the console, so there is nothing to ask gracefully;
-    /// [`Pty::kill`] terminates the shell and confirms it is gone.
+    /// [`Pty::kill`] terminates the terminal's process tree and confirms it is
+    /// gone.
     fn stop(&self, timeout: std::time::Duration) -> Result<StopReport, String> {
         match self {
             Run::Process(run) => run.stop(timeout).map_err(|error| error.to_string()),
@@ -321,16 +322,37 @@ impl Run {
             Run::Terminal(pty) => stop_terminal(pty),
         }
     }
+
+    /// End whatever of this run is still alive after its own process has gone.
+    ///
+    /// The process the Hub watched is not necessarily the whole run: a terminal
+    /// shell can hand a child off and exit, and the session has not ended while
+    /// that child runs (spec #59 decision 13). This is the barrier between the
+    /// two, called once the run's own exit has been observed so nothing of the
+    /// run outlives the ending that reports it.
+    ///
+    /// A supervised service is deliberately left alone. Its exit rules are
+    /// D-007's, a service that ends on its own is reported through its own
+    /// watcher, and widening this to services would change how a service that
+    /// leaves a detached child behind is reported — which is not what the
+    /// terminal's close semantics were asked to settle.
+    fn settle_tree(&self) -> Result<(), String> {
+        match self {
+            Run::Process(_) => Ok(()),
+            Run::Terminal(pty) => pty.end_tree().map_err(|error| error.to_string()),
+        }
+    }
 }
 
-/// Close a terminal and confirm the shell is gone.
+/// Close a terminal and confirm its process tree is gone.
 ///
 /// `Pty::kill` is its own barrier — it returns `Ok` only once the shell's exit
-/// has been observed (`crate::pty`) — so the report describes an outcome that
-/// has already happened. `graceful_delivered` is `false` because no signal was
-/// delivered: there is no graceful channel to a console, and claiming one
-/// would tell the UI a courtesy was extended that never was (the same reason
-/// the process layer reports that flag rather than assuming it).
+/// *and* the absence of everything the shell started have been observed
+/// (`crate::pty`) — so the report describes an outcome that has already
+/// happened. `graceful_delivered` is `false` because no signal was delivered:
+/// there is no graceful channel to a console, and claiming one would tell the
+/// UI a courtesy was extended that never was (the same reason the process
+/// layer reports that flag rather than assuming it).
 fn stop_terminal(pty: &Pty) -> Result<StopReport, String> {
     let already_exited = pty.exit_status();
     pty.kill().map_err(|error| error.to_string())?;
@@ -2422,6 +2444,13 @@ fn watch_run(
         }
     }
 
+    // The run's own process ending is not the run ending. A terminal's shell
+    // can hand a child off and exit, and the session must not be presented as
+    // ended while the tree the Hub owns for it is still running (spec #59
+    // decision 13). Settled before the state is closed, so nothing of the run
+    // outlives the ending that reports it.
+    let settled = run.settle_tree();
+
     let ending = {
         let mut state = lock(&handle);
         // Superseded by a restart, or a stop/report already owns this ending.
@@ -2430,30 +2459,44 @@ fn watch_run(
         }
         let code = run.exit_status().and_then(|exit| exit.code);
 
-        // Spec §5 allows both `Running -> Exited` and `Running -> Error`, so
-        // the two are not interchangeable. A run that ends by itself with a
-        // failing status has failed — saying `Exited` would show a crashed
-        // service as a cleanly stopped one, leave the error count at zero, and
-        // leave §11's "Restart Failed" with nothing to notice. A run with no
-        // code to inspect is not called a failure.
-        let ended = match code {
-            Some(0) | None => SessionStatus::Exited,
-            Some(_) => SessionStatus::Error,
-        };
-        if ended == SessionStatus::Error {
+        if let Err(message) = settled {
+            // The shell ended but its tree did not: saying `Exited` here would
+            // be exactly the claim the barrier exists to prevent, so the run is
+            // reported as the failure it was and the reason is carried on the
+            // snapshot (§4 keeps a last structured error for this).
             state.runtime.last_error = Some(SessionErrorInfo {
                 operation: "run".to_owned(),
-                message: format!(
-                    "the run ended on its own with exit code {}",
-                    code.unwrap_or_default()
-                ),
+                message,
             });
-        }
-        state.close_run(ended, code);
-        match ended {
-            SessionStatus::Error => RunEnding::Failed,
-            // `Exited` after nobody asked: a clean exit that was not requested.
-            _ => RunEnding::OnItsOwn,
+            state.close_run(SessionStatus::Error, code);
+            RunEnding::Failed
+        } else {
+            // Spec §5 allows both `Running -> Exited` and `Running -> Error`, so
+            // the two are not interchangeable. A run that ends by itself with a
+            // failing status has failed — saying `Exited` would show a crashed
+            // service as a cleanly stopped one, leave the error count at zero,
+            // and leave §11's "Restart Failed" with nothing to notice. A run
+            // with no code to inspect is not called a failure.
+            let ended = match code {
+                Some(0) | None => SessionStatus::Exited,
+                Some(_) => SessionStatus::Error,
+            };
+            if ended == SessionStatus::Error {
+                state.runtime.last_error = Some(SessionErrorInfo {
+                    operation: "run".to_owned(),
+                    message: format!(
+                        "the run ended on its own with exit code {}",
+                        code.unwrap_or_default()
+                    ),
+                });
+            }
+            state.close_run(ended, code);
+            match ended {
+                SessionStatus::Error => RunEnding::Failed,
+                // `Exited` after nobody asked: a clean exit that was not
+                // requested.
+                _ => RunEnding::OnItsOwn,
+            }
         }
     };
 
@@ -5026,6 +5069,231 @@ mod tests {
                 "unexpected message: {}",
                 error.message
             );
+        }
+
+        /// A private directory for the batch-file handshake these tests use.
+        ///
+        /// The same shape `process`'s startup regression uses: the child
+        /// publishes its own pid, so an assertion about the tree is about a
+        /// process the test can name rather than about a name that might match
+        /// anything (`docs/DEVELOPMENT.md` §6).
+        struct TerminalFixtureDir(PathBuf);
+
+        impl TerminalFixtureDir {
+            fn new() -> Self {
+                use std::sync::atomic::{AtomicU32, Ordering};
+
+                static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+                let unique = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("the clock is after the epoch")
+                    .as_nanos();
+                let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir().join(format!(
+                    "lch-t61-{}-{unique}-{sequence}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&path).expect("the fixture directory is created");
+                TerminalFixtureDir(path)
+            }
+
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+
+        impl Drop for TerminalFixtureDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        /// A shell that starts a child of its own, plus the file that child
+        /// publishes its pid through.
+        ///
+        /// `keep_shell` picks which half of the close is under test: a shell
+        /// that stays alive is the close the user asks for, and one that waits
+        /// for the handshake and then exits is the run ending while part of its
+        /// tree is still running.
+        fn shell_with_a_child(dir: &std::path::Path, keep_shell: bool) -> (String, PathBuf) {
+            let ready = dir.join("child-ready.txt");
+            // `start /b` gives the child the shell's console and, with it, the
+            // shell's job: the descendant is a child in every sense the Hub
+            // cares about, not a process that detached from the tree. It
+            // publishes its own pid, then stays alive to be found.
+            std::fs::write(
+                dir.join("child.cmd"),
+                "@echo off\r\nstart \"\" /b powershell.exe -NoProfile -Command \"Set-Content -LiteralPath '%~dp0child-ready.txt' -Value $PID; Start-Sleep -Seconds 300\"\r\n",
+            )
+            .expect("the child launcher script is written");
+
+            let (name, script) = if keep_shell {
+                (
+                    "holder.cmd",
+                    "@echo off\r\ncall \"%~dp0child.cmd\"\r\nping -n 60 127.0.0.1 > NUL\r\n",
+                )
+            } else {
+                (
+                    "launcher.cmd",
+                    // The shell outlives the handshake, not the child: it exits
+                    // the moment this test can name the process it left behind.
+                    "@echo off\r\ncall \"%~dp0child.cmd\"\r\n:wait\r\nif not exist \"%~dp0child-ready.txt\" (ping -n 1 -w 200 127.0.0.1 > NUL & goto wait)\r\nexit /b 0\r\n",
+                )
+            };
+            std::fs::write(dir.join(name), script).expect("the shell script is written");
+
+            (
+                format!("cmd.exe /d /c \"{}\"", dir.join(name).display()),
+                ready,
+            )
+        }
+
+        /// The descendant's pid, once it has published it.
+        fn wait_for_handshake(ready: &std::path::Path) -> u32 {
+            let deadline = std::time::Instant::now() + STARTUP;
+            loop {
+                if let Ok(text) = std::fs::read_to_string(ready) {
+                    if let Ok(pid) = text.trim().parse::<u32>() {
+                        return pid;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the shell's child never published its pid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        /// A process the Hub never started, with the same executable name the
+        /// terminal's shell has.
+        struct UnrelatedCmd(std::process::Child);
+
+        impl UnrelatedCmd {
+            fn start() -> Self {
+                let child = std::process::Command::new("cmd.exe")
+                    .args(["/c", "ping -n 60 127.0.0.1 > NUL"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("the unrelated process starts");
+                UnrelatedCmd(child)
+            }
+
+            /// Whether it is still running. Asked of the process object rather
+            /// than of a process list, so a pid that has been terminated is
+            /// never reported as alive.
+            fn is_running(&mut self) -> bool {
+                self.0
+                    .try_wait()
+                    .expect("the process is waitable")
+                    .is_none()
+            }
+        }
+
+        impl Drop for UnrelatedCmd {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &self.0.id().to_string(), "/T", "/F"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                let _ = self.0.wait();
+            }
+        }
+
+        /// Closing a terminal ends the shell *and* what the shell started.
+        #[test]
+        fn stopping_a_terminal_ends_the_processes_its_shell_started() {
+            let dir = TerminalFixtureDir::new();
+            let (shell, ready) = shell_with_a_child(dir.path(), true);
+            let (core, _sink) = core_with_terminal("term", |config| {
+                config.cwd = Some(dir.path().to_path_buf());
+                config.shell = Some(shell);
+            });
+
+            core.start("term").expect("start succeeds");
+            let descendant = wait_for_handshake(&ready);
+            assert!(
+                pid_is_alive(descendant),
+                "the shell's child should be running before the close"
+            );
+
+            let stopped = core.stop("term").expect("stop succeeds");
+
+            assert_eq!(stopped.status, SessionStatus::Stopped);
+            wait_until("the shell's child to be gone", || !pid_is_alive(descendant));
+        }
+
+        /// A shell that exits first does not take the run with it: the session
+        /// is not allowed to say it has ended while the tree it owned is still
+        /// running (spec #59 decision 13).
+        ///
+        /// Nobody asks for this ending, so the assertion is on the *order* the
+        /// watcher publishes in — the run's own process is gone well before the
+        /// status stops saying `Running`, and the child is what has to be gone
+        /// by then.
+        #[test]
+        fn a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends() {
+            let dir = TerminalFixtureDir::new();
+            let (shell, ready) = shell_with_a_child(dir.path(), false);
+            let (core, _sink) = core_with_terminal("term", |config| {
+                config.cwd = Some(dir.path().to_path_buf());
+                config.shell = Some(shell);
+            });
+
+            core.start("term").expect("start succeeds");
+            let descendant = wait_for_handshake(&ready);
+
+            wait_until("the terminal to end on its own", || {
+                core.snapshot("term")
+                    .expect("the session is registered")
+                    .status
+                    != SessionStatus::Running
+            });
+            assert!(
+                !pid_is_alive(descendant),
+                "the session reported an ending while the tree it owned was still running"
+            );
+        }
+
+        /// A close ends one tree: not the sessions next to it, and not a
+        /// process that merely shares the shell's name. Everything here is
+        /// `cmd.exe`, which is the point — the Hub owns processes, not names
+        /// (`docs/DEVELOPMENT.md` §6).
+        #[test]
+        fn closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone() {
+            let dir = TerminalFixtureDir::new();
+            let (shell, ready) = shell_with_a_child(dir.path(), true);
+            let (core, _sink) = core_with_terminal("term", |config| {
+                config.cwd = Some(dir.path().to_path_buf());
+                config.shell = Some(shell);
+            });
+            core.register(terminal("other"))
+                .expect("the neighbouring session registers");
+
+            core.start("term").expect("start succeeds");
+            let descendant = wait_for_handshake(&ready);
+            let neighbour = core.start("other").expect("the neighbour starts");
+            let neighbour_pid = neighbour.pid.expect("a running terminal has a pid");
+            let mut unrelated = UnrelatedCmd::start();
+
+            core.stop("term").expect("stop succeeds");
+
+            assert!(
+                !pid_is_alive(descendant),
+                "the closed terminal's own child must still be gone"
+            );
+            assert!(
+                unrelated.is_running(),
+                "an unrelated cmd.exe must not be part of anyone's tree"
+            );
+            let neighbour = core.snapshot("other").expect("the neighbour is registered");
+            assert_eq!(neighbour.status, SessionStatus::Running);
+            assert_eq!(neighbour.pid, Some(neighbour_pid));
+
+            core.stop("other").expect("cleanup");
         }
 
         #[test]
