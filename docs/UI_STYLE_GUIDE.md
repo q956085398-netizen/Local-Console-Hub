@@ -42,7 +42,9 @@ The sidebar is grouped by workload or purpose and contains:
 - compact secondary metadata such as port/type/logging mode;
 - optional runtime duration or stopped state;
 - search by name, port or purpose;
-- one clear add-session entry.
+- the two creation entries, in the footer and clearly apart: the quick one
+  creates an interactive terminal on the click, and the secondary one opens a
+  form that saves a launch configuration (spec #59 decision 7).
 
 Session rows use status dots, not decorative app logos. The selected row uses a restrained highlight.
 

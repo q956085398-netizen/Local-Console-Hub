@@ -71,6 +71,17 @@ pub struct SessionOpened {
     pub session_id: String,
 }
 
+/// What a new-terminal request is told when the Hub has no registry to add one
+/// to.
+///
+/// The condition [`NO_SESSION_CORE`] names for an application, in the words a
+/// terminal request needs — a Hub publishes its handle only after `manage` has
+/// run — and answered for the same reason: a hopeful `delivered` would be a lie
+/// about a terminal that was never made.
+const NO_REGISTRY: &str = "已经有一个 Hub 在运行，但它现在无法新建终端。
+
+                           请从托盘打开它，或退出后重新启动；本次启动不会另开一个 Hub。";
+
 /// What a launch is told when the Hub never got as far as being able to answer.
 ///
 /// Deliberately about the *request* rather than about the window: it answers
@@ -86,6 +97,15 @@ const NOT_READY: &str = "已经有一个 Hub 在运行，但它还没有完成�
 /// running but not in a shape a launch can do anything with.
 const NO_WINDOW: &str = "已经有一个 Hub 在运行，但它现在没有可以恢复的主窗口。\n\n\
                          请从托盘打开它，或退出后重新启动；本次启动不会另开一个 Hub。";
+
+/// What an application request is told when the Hub has no registry to open it
+/// on.
+///
+/// A Hub publishes its handle only after `manage` has run, so this is the
+/// answer to a Hub that is running in a shape a launch cannot act on — the
+/// same condition [`NO_WINDOW`] covers for a plain open.
+const NO_SESSION_CORE: &str = "已经有一个 Hub 在运行，但它现在无法启动或唤起配置的应用。\n\n\
+                               请从托盘打开它；本次启动不会另开一个 Hub。";
 
 /// One value, published once, waited for by anyone who arrives first.
 ///
@@ -261,21 +281,14 @@ impl Hub {
     }
 
     /// What a new-terminal request does once the Hub can act on it.
-    fn new_terminal(&self, directory: Option<String>) -> Response {
-        let Some(app) = self.ready.wait(READY_TIMEOUT) else {
-            return Response::failed(NOT_READY);
-        };
-        // Unreachable in the running app — the core is managed before
-        // `publish`, and `ready` yields only after it — but answered rather
-        // than assumed: the alternative is a request answered with a hopeful
-        // `delivered` for a terminal that was never made.
+    fn new_terminal(&self, app: &AppHandle<Wry>, directory: Option<String>) -> Response {
         let Some(core) = app.try_state::<SessionCore>() else {
-            return Response::failed(NOT_READY);
+            return Response::failed(NO_REGISTRY);
         };
 
         match core.create_temporary_terminal(directory.as_deref()) {
             Ok(created) => {
-                self.open_session(&app, &created.config.id);
+                self.open_session(app, &created.config.id);
                 Response::delivered()
             }
             Err(error) => {
@@ -284,7 +297,7 @@ impl Hub {
                 // the sentence itself is carried back to the process that
                 // asked (`lib.rs` shows it when this Hub is the one that
                 // answered its own start-up request).
-                crate::tray::show_window(&app);
+                crate::tray::show_window(app);
                 Response::failed(format!("新建终端失败：{}", error.message))
             }
         }
@@ -320,28 +333,54 @@ impl Hub {
 
 impl RequestHandler for Hub {
     fn handle(&self, request: Request) -> Response {
+        let Some(app) = self.ready.wait(READY_TIMEOUT) else {
+            return Response::failed(NOT_READY);
+        };
         match request {
-            Request::Open => match self.ready.wait(READY_TIMEOUT) {
-                Some(app) => {
-                    // The answer says what the Hub did, not what the screen
-                    // shows: the restore is issued here and drawn afterwards
-                    // (see `tray::show_window`). "There was no window to
-                    // restore" is the failure that can be told apart without
-                    // racing the window thread, so it is the one reported
-                    // instead of a `delivered` that observed nothing.
-                    if crate::tray::show_window(&app) {
-                        Response::delivered()
-                    } else {
-                        Response::failed(NO_WINDOW)
-                    }
+            Request::Open => {
+                // The answer says what the Hub did, not what the screen
+                // shows: the restore is issued here and drawn afterwards
+                // (see `tray::show_window`). "There was no window to
+                // restore" is the failure that can be told apart without
+                // racing the window thread, so it is the one reported
+                // instead of a `delivered` that observed nothing.
+                if crate::tray::show_window(&app) {
+                    Response::delivered()
+                } else {
+                    Response::failed(NO_WINDOW)
                 }
-                None => Response::failed(NOT_READY),
-            },
+            }
             // A normal open must stay a normal open: this arm is the whole of
             // what a shortcut asking for a shell does differently (stories 10
             // and 12, and H01's "no terminal comes with an open").
-            Request::NewTerminal { directory } => self.new_terminal(directory),
+            Request::NewTerminal { directory } => self.new_terminal(&app, directory),
+            Request::OpenApplication { id } => open_application(&app, &id),
         }
+    }
+}
+
+/// Open one configured application and bring the window to it (#64).
+///
+/// The activation itself is Session Core's ([`SessionCore::activate`]) — the
+/// same call the window's own control makes, so the two entries cannot drift
+/// apart (spec #59 §2). What is decided here is only what a *launch request*
+/// adds: the Hub's window comes forward on the application it opened, and a
+/// refusal is reported as the reason it was refused rather than as a
+/// delivered request that did nothing.
+fn open_application(app: &AppHandle<Wry>, id: &str) -> Response {
+    let Some(core) = app.try_state::<SessionCore>() else {
+        return Response::failed(NO_SESSION_CORE);
+    };
+    match core.activate(id) {
+        Ok(_) => {
+            // Shown, then pointed at the session, in that order — the same
+            // pair the tray uses when a row is clicked (`tray::focus_session`).
+            // Whether this call started the run or found it already going is
+            // not the answer the caller needs: both are "it is open".
+            crate::tray::focus_session(app, id);
+            Response::delivered()
+        }
+        Err(error) => Response::failed(error.message),
     }
 }
 

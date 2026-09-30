@@ -304,6 +304,8 @@ force_stop_session
 restart_session
 create_temporary_terminal
 remove_session
+add_application
+activate_session
 attach_terminal
 terminal_write
 terminal_resize
@@ -343,6 +345,16 @@ else Windows PowerShell; the user's home directory unless an entry names one),
 and a creation that cannot resolve or start one leaves no row behind. A
 configured session is refused by `remove_session`: it lives in the config file,
 and this command is not a way to delete one.
+
+`add_application` is the secondary entry ("添加应用", D-032): it validates one
+form against the config layer, saves it into the user's `config.yaml` as an
+appended entry, and registers the session so the window lists it immediately.
+The save is an edit of the user's own text — unrelated entries, ordering and
+comments survive, and a file this build cannot safely extend (broken YAML, an
+unknown root key, an inline `sessions: []`) is refused rather than rewritten.
+`activate_session` is the one way an entry opens an application: start it when
+nothing is running, answer with the run it already has when something is, and
+refuse while it is stopping. It is deliberately not `restart_session`.
 
 `attach_terminal` is what a terminal view calls when it appears: it answers with
 the retained scrollback, the byte offset that scrollback reaches, and the run

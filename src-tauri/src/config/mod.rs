@@ -9,6 +9,7 @@
 mod dto;
 mod model;
 mod paths;
+mod save;
 mod validate;
 
 pub use dto::{
@@ -20,9 +21,10 @@ pub use model::{
     RawSessionConfig, SessionConfig, SessionType,
 };
 pub use paths::{
-    local_utc_offset_secs, run_file_name, run_log_filename, run_log_path, run_metadata_path,
-    session_log_dir, AppPaths,
+    is_filesystem_safe_component, local_utc_offset_secs, run_file_name, run_log_filename,
+    run_log_path, run_metadata_path, session_log_dir, AppPaths,
 };
+pub use save::{append_session, save_session, session_ids, SaveError};
 // Crate-visible, and only under `cargo test`: the release guards in
 // `crate::release` compare the bundle's product name against this. The
 // app-data layout is documented for users to read; the constant itself does

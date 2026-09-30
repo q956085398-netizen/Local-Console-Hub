@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Terminal } from "lucide-react";
+import { FolderPlus, Terminal } from "lucide-react";
 import TitleBar from "../components/title-bar/TitleBar";
 import Sidebar from "../components/sidebar/Sidebar";
 import SessionHeader from "../components/session-header/SessionHeader";
@@ -11,6 +11,8 @@ import LogsPanel from "../components/logs/LogsPanel";
 import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
+import AddApplicationDialog from "../components/add-application/AddApplicationDialog";
+import type { NewApplicationFormDto } from "../types/config";
 import {
   filterSessions,
   groupSessions,
@@ -75,6 +77,8 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   /** Bumped for each "新建 PowerShell" the workspace carried out (#62). */
   const [focusRequest, setFocusRequest] = useState(0);
+  /** Whether the "添加应用" form is open (#64). */
+  const [addApplicationOpen, setAddApplicationOpen] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -214,6 +218,37 @@ export default function App() {
   };
 
   /**
+   * "添加应用" (#64): a form, then a saved launch configuration.
+   *
+   * A preview workspace has no backend to save to and no file to save into, so
+   * the entry says that instead of opening a form whose save could only fail.
+   * The dialog itself stays open on a refusal — the user's input is the thing
+   * they need to fix, and closing would throw it away (story 31).
+   */
+  const onOpenAddApplication = () => {
+    if (!registry.live) {
+      onPreviewAction("添加应用");
+      return;
+    }
+    setAddApplicationOpen(true);
+    setDrawerOpen(false);
+  };
+
+  const onAddApplication = async (form: NewApplicationFormDto) => {
+    // The answer goes back untouched on a refusal, so the dialog places the
+    // message on the field the backend named; a success closes the form and
+    // selects what was added.
+    const result = await registry.addApplication(form);
+    if (result.ok) {
+      setAddApplicationOpen(false);
+      setSelectedId(result.sessionId);
+      setTab("terminal");
+      setNotice(`已保存「${form.name}」，下次打开 Hub 仍然可用`);
+    }
+    return result;
+  };
+
+  /**
    * What a session control was asked for.
    *
    * Every one of these but two is a named Session Core operation (T08 #9 added
@@ -242,8 +277,10 @@ export default function App() {
       return;
     }
     switch (action) {
+      // Opening, not starting (#64): the activation semantics are what keep a
+      // second click from creating a second run of the same application.
       case "start":
-        registry.start(selected.config.id);
+        registry.activate(selected.config.id);
         break;
       case "stop":
         registry.stop(selected.config.id);
@@ -267,6 +304,14 @@ export default function App() {
         setNotice(`「${label}」尚未接入`);
     }
   };
+
+  /** The form, in whichever branch of the shell is on screen. */
+  const addApplicationDialog = addApplicationOpen ? (
+    <AddApplicationDialog
+      onSubmit={onAddApplication}
+      onClose={() => setAddApplicationOpen(false)}
+    />
+  ) : null;
 
   if (selected === undefined) {
     // There is no selected session while the live registry is initializing,
@@ -324,21 +369,33 @@ export default function App() {
                   {registry.live ? "还没有会话" : "预览工作区"}
                 </p>
                 <p className="workspace__quick-entry-hint">
-                  点击“新建 PowerShell”立即在 Hub 内打开一个临时终端，不需要填写配置。
+                  点击“新建 PowerShell”立即在 Hub 内打开一个临时终端，不需要填写配置；
+                  长期使用的服务用“添加应用”保存启动方式。
                 </p>
-                <button
-                  type="button"
-                  className="btn btn--primary btn--sm"
-                  onClick={onCreateTerminal}
-                >
-                  <Terminal size={14} />
-                  新建 PowerShell
-                </button>
+                <div className="workspace__quick-entry-actions">
+                  <button
+                    type="button"
+                    className="btn btn--primary btn--sm"
+                    onClick={onCreateTerminal}
+                  >
+                    <Terminal size={14} />
+                    新建 PowerShell
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    onClick={onOpenAddApplication}
+                  >
+                    <FolderPlus size={14} />
+                    添加应用
+                  </button>
+                </div>
               </div>
             )}
           </section>
         </div>
         <StatusBar counts={counts} connection={connection} notice={statusNotice} />
+        {addApplicationDialog}
       </div>
     );
   }
@@ -374,6 +431,7 @@ export default function App() {
               setDrawerOpen(false);
             }}
             onAdd={onCreateTerminal}
+            onAddApplication={onOpenAddApplication}
           />
         </div>
         <section className="workspace">
@@ -401,7 +459,7 @@ export default function App() {
                 focusRequest={focusRequest}
                 onStart={() =>
                   registry.live
-                    ? registry.start(selected.config.id)
+                    ? registry.activate(selected.config.id)
                     : onPreviewAction(`启动 ${selected.config.name}`)
                 }
               />
@@ -416,6 +474,7 @@ export default function App() {
         </section>
       </div>
       <StatusBar counts={counts} connection={connection} notice={statusNotice} />
+      {addApplicationDialog}
     </div>
   );
 }

@@ -603,6 +603,23 @@ pub struct CreatedSession {
     pub runtime: SessionRuntime,
 }
 
+/// What asking an application to be open answered with (#64, spec #59
+/// decision 10).
+///
+/// Opening is idempotent: a session that is already running — or already
+/// starting — answers with the run it has instead of making a second one, and
+/// only a session with nothing in flight is started. `started` says which of
+/// the two happened, so a caller can tell "I opened it" from "it was already
+/// open" without comparing timestamps or run ids.
+#[derive(Debug, Clone)]
+pub struct Activation {
+    /// The session's state after the call: the new run's for a start, the
+    /// existing one's for an activation that found it already open.
+    pub runtime: SessionRuntime,
+    /// Whether this call created the run.
+    pub started: bool,
+}
+
 /// Whether a session can be taken out of the registry (#62).
 ///
 /// `Stopped` and `Exited` are only ever reached through an ending that was
@@ -822,7 +839,7 @@ impl SessionCore {
     /// a state event cannot carry: a listener that has never seen this id has
     /// no name to render, and reading `list_session_configs` to find one would
     /// make every listener poll for a change it was just told about.
-    fn publish_created(&self, session_id: &str) {
+    pub(crate) fn publish_created(&self, session_id: &str) {
         let Some(entry) = self.session_entry(session_id) else {
             return;
         };
@@ -1355,6 +1372,113 @@ impl SessionCore {
         self.start(session_id)
     }
 
+    /// Open a session: start it if nothing is running, otherwise answer with
+    /// the run it already has (#64, spec #59 decision 10).
+    ///
+    /// This is the single operation behind every "open this configured
+    /// application" entry — the window's start control, and the launch request
+    /// a later invocation hands to the Hub — so no two entries can disagree
+    /// about what opening means, and none of them can create a second run by
+    /// asking twice (user stories 33–34).
+    ///
+    /// It deliberately does not restart. Clicking an entry is not a request to
+    /// interrupt what is already running; that is [`SessionCore::restart`], and
+    /// a control that meant both would be the "点击打开被解释为重启" the spec
+    /// forbids.
+    ///
+    /// A session caught mid-stop is refused rather than queued: `Stopping`
+    /// cannot be interrupted (spec §5), so opening now would be exactly the
+    /// parallel run the stop barrier exists to prevent. The caller gets the
+    /// reason and the session keeps its own transition.
+    ///
+    /// ## Why this re-reads instead of deciding once
+    ///
+    /// The question ("is anything running?") and the claim ([`SessionCore::start`]
+    /// setting `Starting`) are two separate acquisitions of the session lock,
+    /// so two opens that arrive together — the window's control and a launch
+    /// request handed to the Hub, on their own threads — can both see a stopped
+    /// session. Only one of them then wins the claim; the loser is *not* an
+    /// error, because the run it was about to create is the run the winner is
+    /// already creating. It reads the session again and answers with that one,
+    /// which is what "运行或启动中重复打开选中同一运行" has to mean when the
+    /// two opens really are simultaneous.
+    pub fn activate(&self, session_id: &str) -> Result<Activation, SessionError> {
+        const OPERATION: &str = "activate";
+        // Bounded rather than `loop`: each retry means another thread claimed
+        // this session's start in the window between the read and the claim,
+        // and a session cannot keep being claimed forever without one of those
+        // starts ending. The bound keeps that reasoning from being the only
+        // thing standing between a caller and a hang.
+        const ATTEMPTS: usize = 4;
+
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        for attempt in 0..ATTEMPTS {
+            let (status, runtime) = {
+                let state = lock(&handle);
+                (state.runtime.status, state.runtime.clone())
+            };
+
+            match status {
+                // Already open — running, or starting and about to be. The
+                // run in flight is the answer; asking again changes nothing.
+                SessionStatus::Starting | SessionStatus::Running => {
+                    return Ok(Activation {
+                        runtime,
+                        started: false,
+                    })
+                }
+                // Stopping is the one state an open must not interrupt: the
+                // run going away has not gone away yet.
+                SessionStatus::Stopping => {
+                    return Err(SessionError {
+                        kind: SessionErrorKind::InvalidTransition,
+                        session_id: session_id.to_owned(),
+                        operation: OPERATION.to_owned(),
+                        message: format!(
+                            "session `{session_id}` is stopping; opening it now would start a \
+                             second run before the previous one is gone — wait for it to end, \
+                             then open it again"
+                        ),
+                        from: Some(SessionStatus::Stopping),
+                    })
+                }
+                // Stopped, Exited and Error all mean nothing is running, and
+                // all three may start (spec §5).
+                SessionStatus::Stopped | SessionStatus::Exited | SessionStatus::Error => {
+                    match self.start(session_id) {
+                        Ok(runtime) => {
+                            return Ok(Activation {
+                                runtime,
+                                started: true,
+                            })
+                        }
+                        // Someone claimed `Starting` between the read and the
+                        // claim. Their start is the open this call asked for.
+                        Err(error)
+                            if error.kind == SessionErrorKind::InvalidTransition
+                                && error.from == Some(SessionStatus::Starting)
+                                && attempt + 1 < ATTEMPTS =>
+                        {
+                            continue
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        // Unreachable in practice: the last attempt reports the claim that beat
+        // it rather than retrying past the bound.
+        Err(SessionError::failed(
+            session_id,
+            OPERATION,
+            "the session kept being claimed by another start; try opening it again",
+            None,
+        ))
+    }
+
     fn end_run(
         &self,
         session_id: &str,
@@ -1563,6 +1687,36 @@ impl SessionCore {
                 Err(error)
             }
         }
+    }
+
+    /// Take back a registration that never became the user's (#64).
+    ///
+    /// It exists for one caller and one reason: adding an application
+    /// registers the session *before* the config file is written, so a
+    /// duplicate id is refused while nothing has been written at all — and a
+    /// write that then fails has to undo that registration, or the window
+    /// would list an application the next start would not have (spec #59
+    /// decision 15: 失败不虚报或留幽灵项).
+    ///
+    /// Silent on purpose. Nothing announced this session — the caller
+    /// publishes it only once the save succeeded — so there is no listener to
+    /// tell, and a `Removed` for an id nobody was told about would be an event
+    /// about nothing.
+    ///
+    /// A session holding a run is never taken back: dropping its handle is the
+    /// "close without settling ownership" #61 forbids. That cannot happen to
+    /// this caller (a registration never has a run), and the check is here so
+    /// it stays that way.
+    pub(crate) fn unregister(&self, session_id: &str) -> bool {
+        let mut sessions = lock(&self.sessions);
+        let Some(state) = sessions.get(session_id) else {
+            return false;
+        };
+        if lock(state).run.is_some() {
+            return false;
+        }
+        sessions.remove(session_id);
+        true
     }
 
     /// Remove a temporary session from the registry (#62).
@@ -3604,6 +3758,209 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    /// Put a session into `status` without walking the lifecycle.
+    ///
+    /// `Starting` and `Stopping` are states a test cannot reliably catch from
+    /// the outside — each is exactly as long-lived as the spawn or the stop it
+    /// describes. What is under test here is the *decision* activation makes
+    /// about each state, so the state is set directly; the transitions that
+    /// really produce them have their own tests.
+    fn force_status(core: &SessionCore, session_id: &str, status: SessionStatus) {
+        let handle = core.handle(session_id).expect("the session is registered");
+        lock(&handle).runtime.status = status;
+    }
+
+    /// Opening a session that is not running is a start — and opening it again
+    /// while that start lives reuses it, with no second process (#64, spec #59
+    /// decision 10, stories 33–34).
+    #[test]
+    fn activating_starts_a_stopped_session_and_reuses_the_run_afterwards() {
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+
+        let opened = core.activate("svc").expect("a stopped session opens");
+        assert!(
+            opened.started,
+            "nothing was running, so this created the run"
+        );
+        assert_eq!(opened.runtime.status, SessionStatus::Running);
+        let pid = opened.runtime.pid;
+        assert!(pid.is_some(), "a started run has a process");
+
+        let again = core.activate("svc").expect("an open session opens again");
+        assert!(
+            !again.started,
+            "the second open found the run already there"
+        );
+        assert_eq!(again.runtime.pid, pid, "the same process, not a second one");
+        assert_eq!(again.runtime.run_id, opened.runtime.run_id);
+
+        core.stop("svc").expect("cleanup");
+    }
+
+    /// Two opens that arrive together must not fail, and must not make two
+    /// runs (#64, spec #59 decision 10, stories 33–34).
+    ///
+    /// The window's control and a launch request handed to the Hub are on
+    /// different threads, so "at the same time" is the case the decision is
+    /// actually about — and the one a lock held across the whole decision would
+    /// pass by accident rather than by design.
+    #[test]
+    fn two_opens_that_arrive_together_create_one_run() {
+        use std::sync::mpsc;
+
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+
+        let (sender, receiver) = mpsc::channel();
+        let openers: Vec<_> = (0..8)
+            .map(|_| {
+                let core = core.clone();
+                let sender = sender.clone();
+                std::thread::spawn(move || {
+                    let _ = sender.send(core.activate("svc").map(|opened| opened.started));
+                })
+            })
+            .collect();
+        drop(sender);
+        let outcomes: Vec<Result<bool, SessionError>> = receiver.iter().collect();
+        for opener in openers {
+            opener.join().expect("no opener panicked");
+        }
+
+        let failures: Vec<&SessionError> =
+            outcomes.iter().filter_map(|o| o.as_ref().err()).collect();
+        assert!(
+            failures.is_empty(),
+            "every open has to answer: {failures:?}"
+        );
+        assert_eq!(
+            outcomes.iter().filter(|o| matches!(**o, Ok(true))).count(),
+            1,
+            "exactly one open creates the run: {outcomes:?}"
+        );
+        assert_eq!(
+            core.snapshots().len(),
+            1,
+            "and there is one session, not two"
+        );
+
+        core.stop("svc").expect("cleanup");
+    }
+
+    /// A start already in flight is the answer: opening again must not add a
+    /// second run beside the one being created.
+    #[test]
+    fn activating_a_starting_session_answers_with_the_start_in_flight() {
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+        force_status(&core, "svc", SessionStatus::Starting);
+
+        let opened = core.activate("svc").expect("a starting session answers");
+
+        assert!(!opened.started, "the run being created is the one to keep");
+        assert_eq!(opened.runtime.status, SessionStatus::Starting);
+        assert!(
+            core.snapshot("svc").expect("registered").run_id.is_none(),
+            "no second run may be created while the first is starting"
+        );
+    }
+
+    /// A stop in progress is the one state an open must not queue behind: the
+    /// barrier has not finished, so starting now would be the parallel run it
+    /// exists to prevent.
+    #[test]
+    fn activating_a_stopping_session_is_refused_rather_than_queued() {
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+        force_status(&core, "svc", SessionStatus::Stopping);
+
+        let error = core
+            .activate("svc")
+            .expect_err("a stopping session cannot be opened");
+
+        assert_eq!(error.kind, SessionErrorKind::InvalidTransition);
+        assert_eq!(error.from, Some(SessionStatus::Stopping));
+        assert!(error.message.contains("stopping"), "{}", error.message);
+        assert!(
+            core.snapshot("svc").expect("registered").run_id.is_none(),
+            "a refused open must not have started anything"
+        );
+    }
+
+    /// A session that ended — on its own, or by being stopped — is openable
+    /// again: opening is not a restart, it is "there is nothing running, so
+    /// make one".
+    #[test]
+    fn activating_an_ended_session_starts_a_fresh_run() {
+        let (core, _sink) = core_with_command("svc", "cmd.exe /c ping -n 2 127.0.0.1");
+        core.start("svc").expect("the first start succeeds");
+        wait_for_status(
+            &core,
+            "svc",
+            SessionStatus::Exited,
+            std::time::Duration::from_secs(30),
+        );
+
+        let reopened = core.activate("svc").expect("an ended session opens again");
+
+        assert!(
+            reopened.started,
+            "nothing was running, so this created the run"
+        );
+        assert_eq!(reopened.runtime.status, SessionStatus::Running);
+        core.stop("svc").expect("cleanup");
+    }
+
+    /// Opening a session that does not exist says so, by name.
+    #[test]
+    fn activating_an_unknown_session_is_refused() {
+        let core = SessionCore::without_listener();
+
+        let error = core
+            .activate("nobody")
+            .expect_err("there is no such session");
+
+        assert_eq!(error.kind, SessionErrorKind::UnknownSession);
+        assert_eq!(error.operation, "activate");
+        assert!(error.message.contains("nobody"), "{}", error.message);
+    }
+
+    /// The registration a failed save has to take back (#64): it goes away
+    /// without a word, because nothing ever told a listener it existed.
+    #[test]
+    fn a_registration_can_be_taken_back_before_it_is_announced() {
+        let (core, sink) = core_with("svc");
+        let events = sink.events().len();
+
+        assert!(
+            core.unregister("svc"),
+            "a registered session can be taken back"
+        );
+        assert!(core.snapshot("svc").is_none());
+        assert!(
+            !core.unregister("svc"),
+            "taking it back twice is not a second removal"
+        );
+        assert_eq!(
+            sink.events().len(),
+            events,
+            "nothing announced a session nobody was told about"
+        );
+    }
+
+    /// A session holding a run is never taken back, whatever the caller wants:
+    /// its handle is the only thing accounting for the process tree (#61).
+    #[test]
+    fn a_session_that_owns_a_run_is_not_taken_back() {
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+        core.start("svc").expect("start succeeds");
+
+        assert!(
+            !core.unregister("svc"),
+            "a live run is not dropped by unregister"
+        );
+
+        assert!(core.snapshot("svc").is_some(), "the session is still there");
+        core.stop("svc").expect("cleanup");
     }
 
     /// Spec §5 rule 4, and T04's acceptance criterion: a run that ends on its

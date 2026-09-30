@@ -1,4 +1,4 @@
-import { Plus, Search, Terminal } from "lucide-react";
+import { FolderPlus, Plus, Search, Terminal } from "lucide-react";
 import {
   formatDuration,
   isReady,
@@ -21,6 +21,8 @@ export interface SidebarProps {
   onSelect: (sessionId: string) => void;
   /** The quick entry (#62): one click, one interactive terminal. */
   onAdd: () => void;
+  /** The secondary entry (#64): a form, then a saved application. */
+  onAddApplication: () => void;
 }
 
 /** The compact grouped session rail (UI_STYLE_GUIDE §4). */
@@ -33,6 +35,7 @@ export default function Sidebar({
   onQueryChange,
   onSelect,
   onAdd,
+  onAddApplication,
 }: SidebarProps) {
   return (
     <div className="sidebar">
@@ -85,13 +88,22 @@ export default function Sidebar({
         {groups.length === 0 && <p className="sidebar__empty">没有匹配的受管会话。</p>}
       </div>
       <div className="sidebar__foot">
-        {/* Spec #59 decision 7 keeps the two entries apart: this one creates a
-            terminal immediately, and the form-based "添加应用" entry is a
-            different control. The reference's mixed wording is what that
-            decision cancels, so the label is the plain one. */}
+        {/* Spec #59 decision 7 keeps the two entries apart, and this is where
+            the difference is visible: the first creates a terminal on the
+            click and asks nothing, the second opens a form. The reference's
+            mixed wording is what that decision cancels, so the labels are the
+            plain ones. */}
         <button type="button" className="sidebar__add" onClick={onAdd}>
           <Terminal size={14} />
           新建 PowerShell
+        </button>
+        <button
+          type="button"
+          className="sidebar__add sidebar__add--secondary"
+          onClick={onAddApplication}
+        >
+          <FolderPlus size={14} />
+          添加应用
         </button>
       </div>
     </div>

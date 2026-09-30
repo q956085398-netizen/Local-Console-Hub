@@ -79,6 +79,66 @@ export interface ConfigReportDto {
   errors: SessionConfigErrorDto[];
 }
 
+/**
+ * The "添加应用" form, as the dialog sends it (src-tauri/src/app/applications.rs).
+ *
+ * `name`, `cwd` and `command` are the required three; the rest is optional and
+ * is validated by the config layer, which is also what decides the defaults
+ * when `logging` is absent. Empty optional inputs are omitted rather than sent
+ * as empty strings — an empty string is a value the config layer rejects as a
+ * typo, and a blank box is not a typo.
+ */
+export interface NewApplicationFormDto {
+  name: string;
+  cwd: string;
+  command: string;
+  purpose?: string;
+  closeImpact?: string;
+  port?: number;
+  url?: string;
+  logging?: {
+    /** `auto` is accepted and resolved by the config layer. */
+    mode?: "off" | "always" | "on_error" | "manual" | "auto";
+    source?: LogSourceValue;
+    /** Application-owned log file; only with `source: "external"`. */
+    path?: string;
+  };
+}
+
+/**
+ * Why an application could not be added.
+ *
+ * `field` names the form input the message belongs to when one of the config
+ * layer's validations refused it, so the dialog can put the sentence beside the
+ * offending box instead of only in a banner.
+ */
+export interface AddApplicationErrorDto {
+  field?: string;
+  message: string;
+}
+
+/**
+ * The answer to one "添加应用" (#64).
+ *
+ * One type for both ends of the call — the registry hook that performs it and
+ * the dialog that renders it — because the success half carries the id the
+ * workspace selects and the failure half carries the field the dialog places
+ * the message on. Two declarations of the same shape would be two places to
+ * forget one of them.
+ */
+export type AddApplicationOutcome =
+  { ok: true; sessionId: string } | { ok: false; message: string; field?: string };
+
+/** Runtime guard for a refusal the add-application dialog can place. */
+export function isAddApplicationErrorDto(value: unknown): value is AddApplicationErrorDto {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.message === "string" &&
+    (candidate.field === undefined || typeof candidate.field === "string")
+  );
+}
+
 const SESSION_TYPES: readonly SessionTypeValue[] = ["service", "terminal"];
 const CONFIG_FILE_STATUSES: readonly ConfigFileStatusValue[] = [
   "missing",

@@ -15,7 +15,7 @@
 
 `instance::protocol::Request` 同时描述命令行与管道帧：命令行是
 `--new-terminal` / `--directory <路径>`，管道帧是
-`json {"request":"newTerminal","directory":"…"}`（见 `docs/DECISIONS.md` D-032 第 1 条）。
+`json {"request":"newTerminal","directory":"…"}`（见 `docs/DECISIONS.md` D-033 第 1 条）。
 不认识的参数**按名字停下**并报错，不是忽略——忽略会让一个要终端的入口只得到一个窗口。
 
 `Hub::handle` 直接调用 `SessionCore::create_temporary_terminal`，也就是窗口内「新建 PowerShell」
@@ -66,7 +66,7 @@ powershell -NoProfile -File scripts\verify-shortcut-entry.ps1
 机器        Windows 11 Pro（10.0.26300）
 时间        2026-10-01
 被测文件    <工作树>\src-tauri\target\release\local-console-hub.exe
-sha256      3DEF4CEA3979437C57EC02CB4F6672AACAEBDA40AD7E1D5223A0E67B362D798D
+sha256      EBDF89D206ABFD2338D28C59B941F5FDC44230C192FFEDDBA3BBC56746F98335
 构建方式    npm run tauri build -- --no-bundle（生产构建，前端资源内嵌）
 前提条件    机器上没有别的 Hub 在运行（脚本自己会拒绝）；脚本只结束它自己启动的进程
 ```
@@ -146,7 +146,7 @@ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333   # 启动 Hu
 
 冷启动那一条是本片最容易被做错的地方：请求在 `setup` 里就被执行，那时页面还没加载，
 发给窗口的事件没有监听者。实测之所以通过，是因为后端**先存后发**（`PendingFocus`），窗口挂载时
-**先订阅、再读一次** `take_launch_focus`（D-032 第 3 条）。两次读数里的会话名都是**刚建出来的
+**先订阅、再读一次** `take_launch_focus`（D-033 第 3 条）。两次读数里的会话名都是**刚建出来的
 那个**（`PowerShell 1` / `PowerShell 2`），不是配置文件里已有的会话（工作区里另有 5 个配置会话）。
 
 这一条用的是**本片新增的 `session-opened` 事件**，不是托盘的 `session-focus-requested`：

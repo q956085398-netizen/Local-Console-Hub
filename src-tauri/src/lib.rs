@@ -13,7 +13,14 @@
 //! As of T09 every module in `docs/MVP_IMPLEMENTATION_SPEC.md` §3 is filled;
 //! none is a placeholder any more.
 
-mod app;
+// Public for the same reason as the layers below it, and for one more: the
+// end-to-end matrix (`tests/mvp_matrix.rs`) drives the real "add an
+// application" operation against a real config file and a real process, and an
+// integration test can only reach what the crate exports. Widening the app
+// layer is the honest way to let that composition be tested; the alternative —
+// a test that rebuilds the operation out of its parts — would pin the test's
+// copy of it rather than the one the app runs (#64).
+pub mod app;
 pub mod config;
 /// The native message box, for the two moments there is no window to draw in
 /// (`docs/MVP_IMPLEMENTATION_SPEC.md` §11; #60).
@@ -98,6 +105,9 @@ pub fn run() {
         .setup(move |app| {
             let (core, config_report) = app::bootstrap(app.handle().clone());
             app.manage(core);
+            // The report is also where the config *path* lives: it is the one
+            // place that records which file this process read at startup, and
+            // the writer has to reach the same one (#64).
             app.manage(config_report);
             // The window reads the launch request's selection from this same
             // value (`ipc::launch`), whichever process made the request: a
@@ -138,6 +148,8 @@ pub fn run() {
             ipc::session::list_session_configs,
             ipc::session::create_temporary_terminal,
             ipc::session::remove_session,
+            ipc::session::add_application,
+            ipc::session::activate_session,
             ipc::session::get_session,
             ipc::session::start_session,
             ipc::session::stop_session,
