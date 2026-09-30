@@ -28,7 +28,7 @@ Windows 上跑出来的一轮测量。
 但真正要回答的是**用户每天点的是哪一个**。这里查到的答案是：
 
 ```text
-2026-09-30 实测（该行前提：安装版是当天 18:28 的构建，sha256 E94EC508…，不含本片代码）
+2026-09-30 改动之前的基线（此时安装版还是当天 18:28 的构建，sha256 E94EC508…，不含本片代码）
 
 开始菜单快捷方式  C:\Users\q9560\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Local Console Hub.lnk
                   → E:\Local Console Hub\local-console-hub.exe
@@ -39,20 +39,36 @@ Windows 上跑出来的一轮测量。
 
 这一行是**安装版**的实测，不是从 PE 头推断的；探针与 §2 脚本里的 `Test-HasConsole`
 是同一段代码，只是这里把它单独指向了安装版。它证明的是**安装版这一份构建不产生启动
-终端**，不是「本片的新代码已在实际入口上验证过」——后者见 §4 第 1 条。
+终端**。
 
 **修正的是什么。** 日常入口本身已经不产生终端，所以本片在这条路径上要修的不是子系统，
 而是入口的**复用行为**：同一个入口连开两次，同一次实测得到两个 Hub（pids 29608、45800，
 两个都活着）。两个 Hub 各自有自己的会话监管器与托盘图标，共用一份 `config.yaml`——
 这才是「直接把 Hub 打开」每天真正会踩到的问题。#60 之后同一个入口第二次只把窗口恢复
-回来，进程数保持 1（见 §2 的 H02）。
+回来，进程数保持 1（见 §2）。
 
 也就是说，本片**没有**改 `windows_subsystem`，也**没有**改 `scripts\verify-*.cmd`：
-诊断的结论是那条路径上没有需要改的日常入口。要改的是复用行为，已经改了；剩下的是
-把新构建放到安装目录（§4 第 1 条）。
+诊断的结论是那条路径上没有需要改的日常入口。要改的是复用行为，已经改了。
 
 **开发入口保持原样是有意的。** `scripts\verify-*.cmd` 里的启动窗口是验收流程需要的
 （脚本自己写着「Keep this window open while testing」），它属于开发而不是日常使用。
+
+### 顺手测到的一条：同一 WebView2 profile 下，不同路径的两个 Hub 不能并存
+
+做这轮验收时机器上另有一个开发实例（另一个 worktree 的 debug 构建）在跑，它和安装版
+**用同一个 identifier**，因此用同一个 WebView2 user-data 目录。实测：
+
+| 情形 | 结果 |
+| --- | --- |
+| 同一路径的 exe 连开两次（改动之前） | 两个 Hub 都活着（各自监管一份会话） |
+| **不同路径**的两个 Hub 同时开 | 第二个创建 webview 失败：`HRESULT 0x8007139F`，退出码 **101**（Rust panic） |
+
+也就是说，改动之前「再点一次入口」的后果取决于第二次点的是哪一份拷贝：同一份拷贝会
+多出一个 Hub，另一份拷贝会当场崩掉。两种都不是用户想要的，而 #60 之后这两种都不会发生
+——第二次调用根本不会走到创建窗口那一步。这条不是规格要求的验收项，是这轮实测的副产品，
+记在这里以免下次有人把它当成新问题。
+
+它同时是 §2 那一轮的运行前提：跑验收时机器上不能有别的构建在运行。
 
 ---
 
@@ -65,8 +81,8 @@ Windows 上跑出来的一轮测量。
 powershell -NoProfile -File scripts\verify-single-instance.ps1
 ```
 
-（要测**实际安装的日常入口**，重装后再用 `-App "E:\Local Console Hub\local-console-hub.exe"`
-指过去；见 §4 的未运行项。）
+（要测**实际安装的日常入口**，先重装、再用 `-App "E:\Local Console Hub\local-console-hub.exe"`
+指过去——下面这一轮就是这么跑的。）
 
 ### 环境与被测构建
 
@@ -74,12 +90,18 @@ powershell -NoProfile -File scripts\verify-single-instance.ps1
 机器        Windows 11 Pro（10.0.26300）
 会话        登录用户会话；脚本在正常用户环境中运行
 时间        2026-09-30
-被测文件    src-tauri\target\release\local-console-hub.exe
-sha256      184A029DBF08C6FF0682A05ED7EF1291F8E9BE9582F9A2559C7330AA43669469
+被测文件    E:\Local Console Hub\local-console-hub.exe      ← 实际日常入口（开始菜单快捷方式指向它）
+sha256      9CE92B2E354D91055152BB8389DFA0F017946CB48D643DDF33508004E9D57F5D
 PE 子系统   WINDOWS_GUI
-开始菜单快捷方式指向  E:\Local Console Hub\local-console-hub.exe（该文件是更早的构建，
-                       见 §4「未运行」第 1 条）
+安装方式    npm run tauri build -- --bundles nsis 产出的
+            Local Console Hub_0.1.0_x64-setup.exe /S /D=E:\Local Console Hub
+            （就地覆盖安装；安装后 HKCU\...\Uninstall\Local Console Hub 的
+             InstallLocation 与开始菜单快捷方式都指向 E:\Local Console Hub）
+运行前提    机器上没有别的构建在运行（见 §1 末节的那条 WebView2 限制）
 ```
+
+本轮同一份脚本也在工作区的 release 产物上跑过一次（sha256 `184A029D…`，
+22/22 PASS），两次结果一致；下表照抄的是**安装版**那一轮。
 
 ### 结果：22 项，22 PASS / 0 FAIL
 
@@ -90,7 +112,7 @@ PE 子系统   WINDOWS_GUI
 | H01 | `exactly one Hub process after opening` | 1 |
 | H01 | `the Hub process is alive and responding` | `HasExited=False, Responding=True` |
 | H01 | `the entry is not a console program` | `WINDOWS_GUI` |
-| H01 | `a window exists` | `hwnd=7799702 class='Tauri Window' 1294x808` |
+| H01 | `a window exists` | `hwnd=9178144 class='Tauri Window' 1294x808` |
 | H01 | `the Hub process owns no console` | `False`（子进程 `AttachConsole` 失败 = 该进程没有控制台对象） |
 | H01 | `no conhost or shell in the Hub process tree` | 0 |
 | H02 | `the second launch ends within the bound` | `exit code 0` |
@@ -104,9 +126,9 @@ PE 子系统   WINDOWS_GUI
 | 恢复 | `closed (hidden to the tray) then open again restores the window` | `visible=True iconic=False`，`exit code 0` |
 | 恢复 | `closed (hidden to the tray) leaves exactly one Hub process` | 1 |
 | H02 | `cleared before the race` | 0 |
-| H02 | `exactly one Hub survives the race`（间隔 40 ms 启动两次） | 1（pid 46200） |
+| H02 | `exactly one Hub survives the race`（间隔 40 ms 启动两次） | 1（pid 45856） |
 | H02 | `one side handed over and ended` | 先启动=仍在运行，后启动=`exit code 0` |
-| H02 | `the winner has a window` | `pid=46200 hwnd=1770636` |
+| H02 | `the winner has a window` | `pid=45856 hwnd=4985610` |
 | H02 | `the winner owns no console` | `False` |
 | 收尾 | `no Hub process left behind` | 0 |
 
@@ -162,14 +184,11 @@ WebView2 的机器慢上几十倍，仍在预算内。
 
 ## 4. 未运行 / 边界
 
-1. **在实际安装入口上复测「本片的行为」：未运行。** §1 测的是安装版的**身份与控制台**
-   （那一行有实测支撑）；§2 测的是**新构建**在 `src-tauri\target\release\` 上的行为。
-   两者之间那一步——把新构建装到 `E:\Local Console Hub\`，再从开始菜单快捷方式复测
-   H01/H02——没有做。开始菜单仍指向 sha256 `E94EC508…`（2026-09-30 18:28 的构建，
-   不含本片代码）。要把它记为通过：`npm run tauri build` 产出安装包、安装，然后
-   `powershell -NoProfile -File scripts\verify-single-instance.ps1 -App "E:\Local Console Hub\local-console-hub.exe"`。
-   §2 那一轮的测量方法对安装版同样适用，但**方法适用不等于结果已取得**；本轮没有替用户
-   重新安装的原因是不在未经确认的情况下替换他机器上正在用的安装版。
+1. **在实际安装入口上复测「本片的行为」：已运行（§2）。** 用户确认后重装到原位
+   （`/S /D=E:\Local Console Hub`，见 §2 的环境块），随后用
+   `powershell -NoProfile -File scripts\verify-single-instance.ps1 -App "E:\Local Console Hub\local-console-hub.exe"`
+   在开始菜单快捷方式指向的那份 exe 上跑完，22/22 PASS。安装前那一份
+   （sha256 `E94EC508…`）只作为 §1 的**改动前基线**保留，不再是被测对象。
 2. **托盘菜单手势、受管会话继续运行、图标外观：未运行**，见 §3。
 3. **另一个 Windows 会话里的第二个 Hub。** 身份对象落在 `Local\` 命名空间，所以承诺
    的范围是**当前登录会话**（D-030 记录了为什么不是 `Global\`）。同一个用户的另一个
@@ -194,6 +213,10 @@ powershell -NoProfile -File scripts\verify-single-instance.ps1
 ```
 
 也可以双击 `scripts\verify-single-instance.cmd`（它只是包一层 `-File` 并 `pause`）。
+
+脚本默认要求「整个用户会话里只有这一份 Hub」；机器上跑着别的构建时它会拒绝执行。
+那种情况可以用 `-AllowOtherBuilds` 把口径收窄到「本次入口自己的进程」，它会把拒绝改成
+一条警告。本轮记录的那次**没有**用它——机器是干净的，这是更严的那一种读法。
 
 脚本会**拒绝**在已有 Hub 运行时执行（它只结束自己启动的进程，不按进程名扫，避免误杀
 用户正在使用的那个 Hub）；收尾用 `Stop-Process` 强制结束它自己启动的进程——本脚本

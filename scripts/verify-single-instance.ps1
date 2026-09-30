@@ -26,7 +26,16 @@ param(
     [int] $WaitSeconds = 40,
 
     # Gap between the two launches of the cold-start race, in milliseconds.
-    [int] $RaceDelayMs = 40
+    [int] $RaceDelayMs = 40,
+
+    # Measure this entry on its own, ignoring other builds of the app that happen
+    # to be running (another working tree's development instance, an older copy).
+    #
+    # Every count below then means "processes of the entry under test", and the
+    # refusal at the top becomes a warning. Off by default: with nothing else
+    # running, the strict reading -- one Hub process for the whole session -- is
+    # the one worth measuring, and it is what the spec asks for.
+    [switch] $AllowOtherBuilds
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,8 +77,23 @@ function Write-Note([string] $Text) {
     Write-Host "  ($Text)" -ForegroundColor DarkGray
 }
 
-function Get-HubProcesses {
+function Get-AllHubProcesses {
     @(Get-Process -Name 'local-console-hub' -ErrorAction SilentlyContinue)
+}
+
+# The Hub processes this run is about.
+#
+# Strictly that is every process of that name: the claim is one Hub for the
+# whole session. With -AllowOtherBuilds it is narrowed to the entry under test,
+# which is the honest scope when another build happens to be running -- a
+# development instance from another working tree, or an older copy that predates
+# this change and could not take part in the claim even if it wanted to.
+function Get-HubProcesses {
+    if ($AllowOtherBuilds) {
+        @(Get-AllHubProcesses | Where-Object { $_.Path -eq $script:entryPath })
+    } else {
+        Get-AllHubProcesses
+    }
 }
 
 # Every top-level window of one process.
@@ -260,12 +284,18 @@ Write-Host "  subsystem : $subsystemName"
 Write-Host "  Start menu shortcut points at: $(if ($shortcutTarget) { $shortcutTarget } else { '(not installed)' })"
 Write-Host ''
 
-$existing = Get-HubProcesses
-if ($existing.Count -gt 0) {
+$script:entryPath = $exe.FullName
+$foreign = @(Get-AllHubProcesses)
+if ($foreign.Count -gt 0 -and -not $AllowOtherBuilds) {
     Write-Host 'A Hub is already running, so this acceptance refuses to run.' -ForegroundColor Yellow
     Write-Host 'Exit that Hub from its tray menu first (it handles its sessions by its own rules), then run this script.' -ForegroundColor Yellow
-    $existing | Select-Object Id, Path | Format-Table -AutoSize | Out-String | Write-Host
+    Write-Host 'If it is another build and you want this entry measured on its own, pass -AllowOtherBuilds.' -ForegroundColor Yellow
+    $foreign | Select-Object Id, Path | Format-Table -AutoSize | Out-String | Write-Host
     exit 2
+}
+if ($foreign.Count -gt 0) {
+    Write-Host '-AllowOtherBuilds: another build is running; every count below is scoped to this entry.' -ForegroundColor Yellow
+    $foreign | Select-Object Id, Path | Format-Table -AutoSize | Out-String | Write-Host
 }
 
 # --- H01: opening the daily entry --------------------------------
