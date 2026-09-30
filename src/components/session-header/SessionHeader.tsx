@@ -204,6 +204,7 @@ export default function SessionHeader({
         <div className={`callout callout--${callout.kind}`} role="note">
           <p className="callout__title">{callout.title}</p>
           <p className="callout__text">{callout.text}</p>
+          {callout.note && <p className="callout__note">{callout.note}</p>}
         </div>
       )}
 

@@ -40,14 +40,20 @@
 //!
 //! ## Ownership
 //!
-//! A [`Pty`] owns its terminal outright: dropping the handle terminates the
-//! shell and closes the pseudoconsole, so a terminal session cannot outlive
-//! the host that accounts for it. The layer deliberately does **not** manage a
-//! process *tree*: descendants the shell starts are reclaimed by closing the
-//! pseudoconsole (the console they live on), and full job-object supervision
-//! of terminal sessions is a seam this layer leaves to the session runtime —
-//! [`Pty::pid`] exists so that wiring can attach ownership later without a
-//! contract change.
+//! A [`Pty`] owns its terminal outright — the shell *and* the process tree the
+//! shell starts. The shell is created suspended and put into a job object
+//! before it runs (`docs/DECISIONS.md` D-028), so everything it starts is
+//! inside that tree from its first instruction; [`Pty::kill`] ends the tree and
+//! reports success only once it is observed gone. Dropping the handle ends the
+//! same tree by closing the job, and the pseudoconsole with it, so a terminal
+//! session cannot outlive the host that accounts for it.
+//!
+//! That closes a seam this layer used to leave open ("descendants are
+//! reclaimed by closing the pseudoconsole", for the session runtime to
+//! strengthen later). Closing the console is not a close: a stopped session
+//! keeps its run handle — Session Core releases it when the *next* run replaces
+//! it — so by the time the console closed, the user had long been told the
+//! terminal had ended. Children the shell had started were still running.
 //!
 //! ## Mechanism (Windows)
 //!
@@ -60,7 +66,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::process::ExitStatus;
 
@@ -96,6 +102,17 @@ const OUTPUT_QUEUE_CHUNKS: usize = 64;
 
 /// How long [`Pty::kill`] waits for the shell to confirm its termination.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a close waits for the terminal's process tree to be observed gone
+/// *after* the job has been terminated. Terminating a job is not instant — its
+/// members have to be torn down — and a close that reported success first would
+/// let a restart overlap the tree it replaced.
+const TREE_GONE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll interval of the bounded teardown check. It runs only while a close is
+/// in flight, and only against that terminal's own job, never as a background
+/// scan (D-009).
+const TREE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// What to host on a terminal.
 ///
@@ -172,6 +189,9 @@ pub enum PtyError {
     },
     /// The shell could not be terminated, or outlived its termination.
     Kill { pid: u32, reason: String },
+    /// The terminal's process tree could not be confirmed gone, so the session
+    /// it belonged to cannot honestly be reported as ended.
+    Tree { pid: u32, reason: String },
     /// This platform has no PTY backend (Windows-first MVP, D-001).
     UnsupportedPlatform { operation: &'static str },
 }
@@ -216,6 +236,11 @@ impl std::fmt::Display for PtyError {
                     "terminating terminal process {pid} failed: {reason}"
                 )
             }
+            PtyError::Tree { pid, reason } => write!(
+                formatter,
+                "the process tree of terminal process {pid} could not be confirmed gone: \
+                 {reason}"
+            ),
             PtyError::UnsupportedPlatform { operation } => write!(
                 formatter,
                 "{operation} is not supported on this platform — Local Console Hub hosts \
@@ -304,8 +329,8 @@ impl Pty {
         Ok(Pty { shared })
     }
 
-    /// The hosted shell's process id — for display and for the session runtime
-    /// that will attach process ownership later (T04).
+    /// The hosted shell's process id — for display, and for a caller that wants
+    /// to name the terminal it is talking about in an error.
     pub fn pid(&self) -> u32 {
         self.shared.backend.pid()
     }
@@ -410,9 +435,10 @@ impl Pty {
         self.exit_status()
     }
 
-    /// Terminate the hosted shell. On return with `Ok`, the shell is confirmed
-    /// gone; a shell that had already exited takes the no-op path, so repeated
-    /// kills are safe.
+    /// Terminate the hosted shell and everything it started. On return with
+    /// `Ok`, the whole tree is confirmed gone; a terminal that had already
+    /// ended takes the same path and reports success, so repeated kills are
+    /// safe.
     ///
     /// There is deliberately no graceful/force ladder here, unlike the process
     /// layer's `stop` (`docs/DECISIONS.md` D-007): a terminal's graceful
@@ -420,23 +446,92 @@ impl Pty {
     /// send — and closing a session is an explicit teardown of the console
     /// itself. The stop ladder of `docs/DEVELOPMENT.md` §6 governs managed
     /// services, not interactive terminals.
+    ///
+    /// Ending the *tree* rather than the shell is the whole of the difference
+    /// from a `TerminateProcess` on the shell's pid, and it is why this is not
+    /// a no-op for a shell that has already exited: the shell that hands a
+    /// child off and exits leaves exactly that child, and the session it
+    /// belonged to has not ended while it runs (`docs/DECISIONS.md` D-028).
     pub fn kill(&self) -> Result<(), PtyError> {
-        if self.exit_status().is_some() {
-            return Ok(());
-        }
         let terminated = self.shared.backend.terminate();
-        match self.wait_for_exit(KILL_TIMEOUT) {
-            Some(_) => Ok(()),
-            None => Err(PtyError::Kill {
+        if self.exit_status().is_none() {
+            match self.wait_for_exit(KILL_TIMEOUT) {
+                Some(_) => {}
+                None => {
+                    return Err(PtyError::Kill {
+                        pid: self.pid(),
+                        reason: match terminated {
+                            Err(reason) => reason,
+                            // Termination reported success but the exit was
+                            // never observed — the report says exactly that
+                            // rather than inventing a Win32 cause.
+                            Ok(()) => format!("it was still running {KILL_TIMEOUT:?} later"),
+                        },
+                    });
+                }
+            }
+        }
+        // Whatever the termination reported, the barrier runs: the tree may
+        // already be empty, and a termination failure is then only worth
+        // reporting if something is in fact still there.
+        self.confirm_tree_gone(terminated.err())
+    }
+
+    /// End whatever is still alive under this terminal and confirm it is gone.
+    ///
+    /// The same teardown as [`Pty::kill`] without waiting for the shell first,
+    /// for the case where the shell is *already* observed gone: the run's own
+    /// process exiting is not the run ending, and a session must not be
+    /// reported as ended while the tree the Hub owns for it is still running
+    /// (spec #59 decision 13).
+    pub fn end_tree(&self) -> Result<(), PtyError> {
+        let terminated = self.shared.backend.terminate();
+        self.confirm_tree_gone(terminated.err())
+    }
+
+    /// Pids of every process still assigned to this terminal, the shell
+    /// included. An empty list is the layer's definition of "the terminal is
+    /// gone"; [`Pty::kill`] does not report success before this is empty.
+    pub fn tree_pids(&self) -> Result<Vec<u32>, PtyError> {
+        self.shared
+            .backend
+            .tree_pids()
+            .map_err(|reason| PtyError::Tree {
                 pid: self.pid(),
-                reason: match terminated {
-                    Err(reason) => reason,
-                    // Termination reported success but the exit was never
-                    // observed — the report says exactly that rather than
-                    // inventing a Win32 cause.
-                    Ok(()) => format!("it was still running {KILL_TIMEOUT:?} later"),
-                },
-            }),
+                reason,
+            })
+    }
+
+    /// Barrier behind [`Pty::kill`] and [`Pty::end_tree`]: nothing this layer
+    /// created may be running when a close reports success.
+    ///
+    /// `termination_failure` is why the job could not be terminated, when it
+    /// could not. The barrier is what decides success, so that cause is not an
+    /// error by itself — a tree that is already gone closes cleanly whatever
+    /// `TerminateJobObject` said — but when something *is* still running it is
+    /// half of the answer, and it travels with the other half rather than being
+    /// dropped.
+    fn confirm_tree_gone(&self, termination_failure: Option<String>) -> Result<(), PtyError> {
+        let deadline = Instant::now() + TREE_GONE_TIMEOUT;
+        loop {
+            let remaining = self.tree_pids()?;
+            if remaining.is_empty() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let mut reason = format!(
+                    "processes still assigned to the terminal: {remaining:?}, \
+                     {TREE_GONE_TIMEOUT:?} after terminating it"
+                );
+                if let Some(failure) = termination_failure {
+                    reason.push_str(&format!("; terminating the tree reported: {failure}"));
+                }
+                return Err(PtyError::Tree {
+                    pid: self.pid(),
+                    reason,
+                });
+            }
+            std::thread::sleep(TREE_POLL_INTERVAL);
         }
     }
 }
@@ -444,11 +539,11 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         // Ownership is RAII, the same stance as the process layer: a handle
-        // going away must not leave a shell nobody accounts for. Terminating
-        // the shell and dropping the pseudoconsole ends the console the
-        // session lives on; a session that already ended takes the no-op path.
-        // The wait is bounded by KILL_TIMEOUT — a live shell pays the
-        // terminate-and-confirm round trip, an ended one returns immediately.
+        // going away must not leave a shell, or anything the shell started,
+        // that nobody accounts for. Dropping the job would end the tree by
+        // itself (kill-on-close); ending it explicitly is what makes the
+        // teardown complete before the handles are gone. A terminal that has
+        // already ended takes the confirm-only path.
         let _ = self.kill();
     }
 }
@@ -872,6 +967,114 @@ mod tests {
             "closing the pty must reclaim the shell's child, still saw {:?}",
             processes_with_marker("LCH-INNER-8G")
         );
+    }
+
+    /// Closing a terminal is [`Pty::kill`], not dropping the handle.
+    ///
+    /// A stopped session keeps its run handle — Session Core releases it when
+    /// the *next* run replaces it (`SessionState::close_run`) — so "the console
+    /// closes when the handle does" is not a close at all: by then the user has
+    /// already been told the terminal ended. Whatever the shell started has to
+    /// end when the terminal does, while the handle is still alive.
+    #[test]
+    fn kill_ends_the_shells_children_without_the_handle_going_away() {
+        let pty = start();
+        expect_output(&pty, "PS", STARTUP.as_secs());
+
+        send(
+            &pty,
+            "powershell -NoLogo -NoProfile -Command \"Write-Host LCH-INNER-9K; Start-Sleep \
+             -Seconds 300\"",
+        );
+        assert!(
+            eventually(20, || !processes_with_marker("LCH-INNER-9K").is_empty()),
+            "the shell's child should be running before the close"
+        );
+
+        pty.kill().expect("the terminal closes");
+
+        let gone = eventually(20, || processes_with_marker("LCH-INNER-9K").is_empty());
+        assert!(
+            gone,
+            "closing the terminal must end the shell's children, still saw {:?}",
+            processes_with_marker("LCH-INNER-9K")
+        );
+    }
+
+    /// The shell's children are the Hub's, from the shell's first instruction:
+    /// a job that only ever held the shell would let a launcher's child begin
+    /// outside the tree (#55).
+    #[test]
+    fn the_terminal_owns_the_processes_its_shell_starts() {
+        let pty = start();
+        let shell = pty.pid();
+        expect_output(&pty, "PS", STARTUP.as_secs());
+
+        send(
+            &pty,
+            "powershell -NoLogo -NoProfile -Command \"Write-Host LCH-OWNED-3T; Start-Sleep \
+             -Seconds 300\"",
+        );
+        let owned = eventually(20, || {
+            pty.tree_pids().map(|pids| pids.len()).unwrap_or(0) >= 2
+        });
+        assert!(
+            owned,
+            "the terminal should own the shell and its child, saw {:?}",
+            pty.tree_pids()
+        );
+        assert!(
+            pty.tree_pids()
+                .expect("the tree is observable")
+                .contains(&shell),
+            "the shell itself is part of the tree"
+        );
+
+        pty.kill().expect("cleanup");
+    }
+
+    /// A start that cannot take ownership of the shell refuses the terminal
+    /// instead of leaving a process nothing accounts for.
+    ///
+    /// This is the half of "create, assign, resume" that is invisible when it
+    /// works: the suspended shell is the state a teardown has to unwind from,
+    /// and the session owes the user a real error rather than a terminal that
+    /// looks started and owns nothing (`docs/DEVELOPMENT.md` §6).
+    #[test]
+    fn a_start_that_cannot_own_the_shell_leaves_no_shell_running() {
+        use crate::process::tree::StartFailurePointForTest;
+
+        // The marker rides on the command line, so it identifies the process
+        // from the moment it is created — whether or not it was ever resumed.
+        const MARKER: &str = "LCH-UNOWNED-4F";
+
+        for point in [
+            StartFailurePointForTest::JobCreation,
+            StartFailurePointForTest::JobAssignment,
+            StartFailurePointForTest::Resume,
+        ] {
+            crate::process::tree::fail_start_step_for_test(point);
+
+            let spec = PtySpec::new(POWERSHELL, std::env::temp_dir()).with_args(vec![
+                "-NoLogo".to_owned(),
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                format!("Write-Host {MARKER}; Start-Sleep -Seconds 300"),
+            ]);
+            let error = Pty::spawn(spec).expect_err("a start that owns nothing is refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("PowerShell.exe") && message.contains("process tree"),
+                "the start error names its program and what failed: {message}"
+            );
+
+            let cleaned = eventually(15, || processes_with_marker(MARKER).is_empty());
+            assert!(
+                cleaned,
+                "a shell survived the injected start failure at {point:?}: {:?}",
+                processes_with_marker(MARKER)
+            );
+        }
     }
 
     #[test]

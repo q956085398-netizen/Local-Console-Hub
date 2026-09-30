@@ -90,6 +90,7 @@ node scripts/capture-ui-states.mjs
 | Ctrl+C 打断长命令 | `terminal_tests::ctrl_c_interrupts_the_command_that_is_running`、`ctrl_c_is_input_and_does_not_close_the_session`、`pty::tests::ctrl_c_interrupts_the_running_command_not_the_shell` |
 | 调整尺寸 | `terminal_tests::a_resize_of_a_live_terminal_reaches_the_shell`、`a_resize_before_the_start_geometries_the_shell`、`pty::tests::resize_reaches_the_shell` |
 | 切换会话不销毁 PTY | `terminal_tests::a_terminal_keeps_running_while_no_view_is_attached`、集成 `a_terminal_keeps_running_with_no_view_attached_and_replays_on_attach` |
+| **关闭终端结束所属进程树**（#61、D-028） | `pty::tests::kill_ends_the_shells_children_without_the_handle_going_away`、`the_terminal_owns_the_processes_its_shell_starts`、`a_start_that_cannot_own_the_shell_leaves_no_shell_running`（三个启动步骤的失败清理）、`terminal_tests::stopping_a_terminal_ends_the_processes_its_shell_started`、`a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`、`closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone`。集成侧不重复：`tests/mvp_matrix.rs` 的文档注释把这一层划归各模块自己的套件 |
 | **托盘隐藏/恢复不销毁 PTY** | **手工**（§4 托盘段）。自动侧只有它的两半：隐藏路径不碰 Session Core（`tray::tests::only_the_main_window_hides_on_close`），以及「没有视图挂着时终端照跑」（上一条） |
 
 ### 服务
@@ -282,11 +283,11 @@ node scripts/capture-ui-states.mjs
 | R-5 | 让 `svc-fails` 跑失败，再看托盘 | 摘要的失败数 +1，会话行进列表；「重启失败的会话」变为可用，点了只重启失败的那个 |
 | R-6 | 三个会话都在跑时点托盘「退出」 | **先弹确认**（「停止受管会话并退出」/ 取消）；选取消 → 什么都没发生；选确认 → 会话被停止后应用退出 |
 | R-7 | 没有会话在跑时点托盘「退出」 | 直接退出，不弹确认 |
-| R-8 | 看任务栏与托盘图标 | 与 Hub 图标一致（D-028） |
+| R-8 | 看任务栏与托盘图标 | 与 Hub 图标一致（D-029） |
 
 ### 标题栏与窗口（#68，对应原生验收 H16）
 
-窗口自 #68 起没有系统装饰，内部深色标题栏就是窗口的标题栏（D-028），所以下面这些是
+窗口自 #68 起没有系统装饰，内部深色标题栏就是窗口的标题栏（D-029），所以下面这些是
 **只能在真实窗口上做的**检查——WebView 截图证明不了系统装饰、贴靠与任务栏图标。
 
 | # | 步骤 | 期望 |
@@ -296,7 +297,7 @@ node scripts/capture-ui-states.mjs
 | W-3 | 拖窗口的四边与四角 | 都能缩放；缩放时光标变成对应的双向箭头；最大化时不能拖边框（Windows 语义） |
 | W-4 | 点 `—` / `□`（最大化后变 `❐`）/ `✕` | 最小化到任务栏；最大化铺满工作区且按钮变成「还原」形态，再点回到原尺寸；`✕` **隐藏而不是退出**（同 R-1/R-2，会话继续跑） |
 | W-5 | 看窗口在最小宽度（960）下，以及浏览器预览里的窄宽度（<768） | 会话列表按钮与窗口按钮都还在、互不遮挡；终端区域不被标题栏挤掉。桌面窗口到不了 768 以下（`minWidth: 960`），窄布局只能在预览里看 |
-| W-6 | 看任务栏、托盘、开始菜单快捷方式与标题栏左上角 | 四处是**同一颗** Hub 图标（深色圆角方块 + 绿点 + 三条列表行，D-028）；tray 与任务栏图标在 16/32px 下仍可辨认 |
+| W-6 | 看任务栏、托盘、开始菜单快捷方式与标题栏左上角 | 四处是**同一颗** Hub 图标（深色圆角方块 + 绿点 + 三条列表行，D-029）；tray 与任务栏图标在 16/32px 下仍可辨认 |
 
 ### 配置校验
 
@@ -355,7 +356,7 @@ node scripts/capture-ui-states.mjs
 
 `docs/DESIGN_SPEC_EXTRACTED.md` §5 记录了 7 条，比对时按「预期」处理，逐条如下：
 不实现 `Ctrl K` / 全局设置 / 日志入口 / `退出`（窗口控制本身自 #68 起已实现，
-见 D-028）；`UI 预览` 徽标只在检测不到
+见 D-029）；`UI 预览` 徽标只在检测不到
 Rust 后端时出现；行内日志标签显示 `External` 而不是参考图的 `Auto`（`auto` 在到达前端前
 已被解析）；详情面板不重复头部元数据；fixture 计时是相对的，字面值不同属正常；
 `on_error` 拼作 `on error`；服务终端的连接条是 `PTY 未连接 · 只读缓冲` 而不是参考图的
@@ -599,11 +600,89 @@ I-7、I-8、I-15 及 I-16/I-17 的相应安装版窗口与交互部分继续待�
 
 ---
 
+### 2026-09-30 — #61 终端关闭结束所属进程树（D-028）
+
+工单 #61（父规格 #59 的决策 13）。基线 `bbd1c35`，worktree
+`select-complete-ticket-a533fa`，`CARGO_TARGET_DIR` 复用主检出的 `target`。工作区为
+Windows 11 Pro（10.0.26300），真实用户会话；所有进程证据都来自真实 ConPTY shell 与真实
+Windows 作业对象，不是 mock。
+
+**先记录缺陷本身。** `pty::tests::kill_ends_the_shells_children_without_the_handle_going_away`
+在修复前是红的，失败信息给出具体 PID：
+
+```text
+closing the terminal must end the shell's children, still saw [35860]
+```
+
+关掉 `watch_run` 里的 `settle_tree` 调用后，
+`terminal_tests::a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`
+同样转红（`the session reported an ending while the tree it owned was still running`），
+随后恢复。两条都是「先看见红、再看见绿」，不是事后补写的断言。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | 209 passed / 14 files |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **341 lib + 10 `tests/mvp_matrix.rs`，0 failed**（基线 335 + 10） |
+
+本片新增的 6 个 Rust 用例与它们各自钉住的东西：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `pty::tests::kill_ends_the_shells_children_without_the_handle_going_away` | 句柄还活着时 `kill` 也要结束子进程（停止的会话仍持有 run 句柄） |
+| `pty::tests::the_terminal_owns_the_processes_its_shell_starts` | shell 起的子进程从第一条指令起就在 job 里 |
+| `pty::tests::a_start_that_cannot_own_the_shell_leaves_no_shell_running` | 建 job／归属／恢复三步分别注入失败后没有遗留进程，错误信息点名程序与失败原因 |
+| `terminal_tests::stopping_a_terminal_ends_the_processes_its_shell_started` | 停止终端后握手子进程消失 |
+| `terminal_tests::a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends` | shell 先退出时，所属树消失**早于**状态结束 |
+| `terminal_tests::closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone` | 相邻会话 PID 不变，无关同名 `cmd.exe` 存活 |
+
+前端侧 `derivations.test.ts` 新增 4 条：两条钉住活动终端的 callout 多出子进程那一行、
+两条钉住服务**没有**这一行且 `closeMechanics` 对终端不再提「优雅结束」。
+
+按 #59 的 Testing Decisions，集成侧不重复：`tests/mvp_matrix.rs` 的文件头把进程安全阶梯
+划归 `process::tests` 与各模块自己的套件，本片沿用该边界（§3 的矩阵表已加行）。
+
+**第 3 层（视觉）。** §5 的 `capture-ui-states.mjs` 本轮跑不起来：它在 agent 沙箱里启动
+Edge 时 `puppeteer.launch` 报 `Failed to launch the browser process: Code: 0`，而单独执行
+`msedge.exe --headless=new --dump-dom about:blank` 也无输出；不通过 `--no-sandbox` 绕过
+（该标志不由本轮引入）。改用 Browser 面板加载 `npm run dev` 的同一份前端，
+`preview_eval`/`preview_screenshot` 逐区域比对
+`assets/ui/ui-v2-terminal.png`：布局、侧栏、头部（名称/类型/状态/动作/用途）、页签、终端
+面板、状态栏一致；唯一差异是本片有意新增的一行（已记入 `DESIGN_SPEC_EXTRACTED.md` §5 第 8 条）：
+活动终端的「关闭影响」callout 在配置原文之下多一行
+`停止该终端会同时结束它启动的子进程。`（12px/muted）。1280×800 与 900×640（抽屉态）都确认
+该行不被裁切、不影响终端区域。服务会话核对过：callout 只有配置原文，没有这一行。
+
+同一轮修掉一处**已有的**错误措辞：「详情 → 能不能关」卡片底下固定写着
+`停止会尝试优雅结束；强制结束是单独动作…`，而终端按 D-018 根本没有优雅停止阶梯。该句改为
+按会话类型取 `closeMechanics`（终端 = 与 callout 同一句，服务 = 原句），两处渲染「关闭影响」
+的界面因此不再互相矛盾。核对了两个会话的详情页：终端是子进程那句，服务是原句。
+
+**AC「PID 重用不能扩大结束范围」的证据边界。** 结束时只 `TerminateJobObject` 一个句柄，
+实现里没有任何按 PID 查找或按镜像名匹配的路径，所以复用同一 PID 的新进程不在 job 里、
+不会被碰到；本轮**没有**构造出「逼 Windows 复用某 PID」的场景（该现象不可按需复现），
+不把结构性论证写成一次实测。可观察的那一半由
+`closing_a_terminal_leaves_other_sessions_and_unrelated_processes_alone`（无关同名 `cmd.exe`
+存活 + 相邻会话 PID/状态不变）与 `process::tests::force_stop_removes_the_managed_tree_but_not_an_unrelated_process`
+覆盖。
+
+**第 2 层（原生窗口）。** 本轮的 agent 没有在原生 Tauri 窗口里点过「停止」——本机
+`preview_*` 只能到浏览器面板，原生窗口截不到也点不到，所以**不声称** H14 已按「真实窗口
+点击 + 任务管理器」的方式通过。已有的替代证据是：进程层的三条握手/存活/失败清理断言在
+真实 Windows 用户环境下运行，界面那一行在真实浏览器里核对了渲染。H14 剩下的
+「在原生窗口点一次停止、看任务管理器」与 H05/H15 的生命周期部分，按 #59 地图的设计归
+#69「完成完整日常流程的 Windows 原生验收」组合执行；本轮不为它补写截图或点击步骤。
+
+---
+
 ### 2026-09-30 — #68 合并标题栏与统一 Hub 图标
 
 环境：Windows 11 Pro（10.0.26300），worktree `elegant-kilby-2aaf97`（基 `bbd1c35`），
 `CARGO_TARGET_DIR` 复用主检出的 `target`。改动：`decorations: false` + 标题栏里的窗口
-控制 + 显式窗口权限 + 图标源换成 `assets/brand/hub-mark.svg`（D-028）。
+控制 + 显式窗口权限 + 图标源换成 `assets/brand/hub-mark.svg`（D-029）。
 
 **自动检查，全绿：**
 
@@ -669,6 +748,9 @@ Hub 图标 + 应用名 + `UI 预览`，右边全局摘要 + 三个窗口按钮�
   未执行第 2 层的记录仍保留在 §6，不被后来的人工结果覆盖。
 - **终端 T-11 已获用户确认。** D-027 / #38 已允许两种会话类型配置 `purpose` / `close_impact`；
   2026-09-30 随 #57 获用户整体验收确认通过。本轮未新增原生截图或 agent 逐区域视觉比对，证据限制见 §6。
+- **#61 的终端进程树行为已按第 1 层与界面渲染证据记录。** 原生窗口里的那一次「点停止 +
+  任务管理器」未由 agent 执行，与 H05/H15 的生命周期部分一并归 #69 的组合原生验收；
+  见 §6 的 2026-09-30 #61 记录。
 - **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
   一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
   DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。

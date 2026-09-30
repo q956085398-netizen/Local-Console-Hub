@@ -14,9 +14,22 @@
 //! [`PtyBackend::write_input`] writes keystrokes into) and the output read end
 //! (what the layer's reader thread renders from).
 //!
+//! ## The shell's tree, not just the shell
+//!
+//! The shell is created suspended and put into a job object before its first
+//! instruction runs, so everything it starts is inside the tree from the start
+//! (`super::super::process::tree`, `docs/DECISIONS.md` D-028). Closing the
+//! terminal terminates that job — which is why the *console* is no longer what
+//! a close relies on. Closing the pseudoconsole ends the console a process is
+//! attached to, but a child that detached from it, or one left behind by a
+//! shell that exited first, would outlive the session the user was told had
+//! ended.
+//!
 //! Every operation here is a thin wrapper around one Win32 call, mirroring the
 //! process layer's `win` backend.
 
+#[cfg(test)]
+use crate::process::tree::{fail_start_step, StartFailurePointForTest};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -36,10 +49,13 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, GetProcessId,
-    InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
+
+use crate::process::tree::Job;
 
 /// The attribute that attaches the spawned process to the pseudoconsole.
 /// Spelled here instead of imported so the code does not depend on which
@@ -52,23 +68,47 @@ pub fn require_backend(_operation: &'static str) -> Result<(), super::PtyError> 
     Ok(())
 }
 
-/// One live ConPTY session: the pseudoconsole, the input write end, and the
-/// shell's process handle.
+/// One live ConPTY session: the pseudoconsole, the input write end, the shell's
+/// process handle, and the job object that owns the shell's tree.
 #[derive(Debug)]
 pub struct PtyBackend {
     pid: u32,
     con: ConHandle,
     input: Mutex<File>,
     child: ChildHandle,
+    /// The ownership token for the shell's tree. Dropping it terminates
+    /// whatever the shell left behind, so it outlives the shell by design: a
+    /// terminal whose shell exited is still a terminal whose children may not
+    /// have (`docs/DECISIONS.md` D-028).
+    job: Job,
 }
 
 impl PtyBackend {
-    /// Start `spec`'s program attached to a new pseudoconsole.
+    /// Start `spec`'s program attached to a new pseudoconsole, suspended, and
+    /// take ownership of its process tree before it executes anything.
     ///
     /// On success the caller also receives the pty's output stream, which
     /// belongs to a reader thread of its own — the UI render thread must never
     /// be the only thread reading terminal output (`docs/DEVELOPMENT.md` §5).
+    ///
+    /// A shell the Hub cannot own is never left running: every failure after
+    /// the process exists ends it here, because a process that was created
+    /// outside a job is nobody else's to reclaim (#55).
     pub fn spawn(spec: &super::PtySpec) -> Result<(PtyBackend, OutputReader), String> {
+        #[cfg(test)]
+        if fail_start_step(StartFailurePointForTest::JobCreation) {
+            // Shaped like the real failure it stands in for, so a test of this
+            // path is a test of the message the user would actually see.
+            return Err(ownership_failure(
+                spec,
+                "test-injected CreateJobObjectW failure",
+            ));
+        }
+
+        // Before the process, not after: the job has to exist to be joined, and
+        // the shell must not execute an instruction until it is in it.
+        let job = Job::create().map_err(|reason| ownership_failure(spec, &reason))?;
+
         let (input_read, input_write) = pipe()?;
         let (output_read, output_write) = pipe()?;
 
@@ -135,7 +175,10 @@ impl PtyBackend {
                 std::ptr::null(),
                 std::ptr::null(),
                 0,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                // Suspended: job membership is established before the shell's
+                // first instruction, so nothing it starts can begin outside the
+                // tree (#55).
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                 environment.as_ptr().cast(),
                 cwd.as_ptr(),
                 std::ptr::addr_of_mut!(startup.StartupInfo).cast(),
@@ -150,22 +193,42 @@ impl PtyBackend {
                 spec.cwd.display()
             ));
         }
-        // The main thread handle is never used; the process handle is what the
-        // session is anchored on.
-        unsafe { CloseHandle(process.hThread) };
+
+        // The process handle is this session's anchor; taking the `ChildHandle`
+        // now means every failure below closes it by dropping, instead of each
+        // path remembering to.
+        let child = ChildHandle(Arc::new(RawChild(process.hProcess as usize)));
+        let thread = process.hThread as usize;
+
+        let owned = join_tree(&job, process.hProcess as usize, thread);
+        // The primary thread handle is used exactly once, by the resume above.
+        unsafe { CloseHandle(thread as _) };
+        if let Err(reason) = owned {
+            // The shell is in no job (assignment failed) or in a job that is
+            // about to be dropped (resume failed); either way nothing else can
+            // reclaim it, so this start ends it and returns the cause.
+            unsafe { TerminateProcess(process.hProcess, 1) };
+            return Err(ownership_failure(spec, &reason));
+        }
+
         let pid = unsafe { GetProcessId(process.hProcess) };
         if pid == 0 {
-            let failure = last_error("GetProcessId");
-            unsafe { CloseHandle(process.hProcess) };
-            return Err(failure);
+            // The job is already the shell's owner; dropping it below ends the
+            // shell, and the message says which identity could not be read.
+            return Err(format!(
+                "{} for the shell of `{}` in `{}`",
+                last_error("GetProcessId"),
+                spec.program.display(),
+                spec.cwd.display()
+            ));
         }
-        let child = ChildHandle(Arc::new(RawChild(process.hProcess as usize)));
 
         let backend = PtyBackend {
             pid,
             con,
             input: Mutex::new(input_write.into_file()),
             child,
+            job,
         };
         let reader = OutputReader {
             file: output_read.into_file(),
@@ -209,16 +272,76 @@ impl PtyBackend {
         Ok(())
     }
 
-    /// Terminate the shell's own process. Descendants the shell started are
-    /// reclaimed by closing the pseudoconsole (`ConHandle`'s drop) — which is
-    /// also the only cleanup a dropped session performs.
+    /// Terminate the terminal's process tree: the shell and everything it
+    /// started.
+    ///
+    /// Terminating the job rather than the shell's own process is what makes a
+    /// close a close of the *session*. A shell that handed a child off and
+    /// exited leaves that child assigned to this job, and terminating a process
+    /// that is already gone would end nothing; `TerminateJobObject` covers both
+    /// because the shell is in the job too, so there is one path rather than
+    /// one per shape of ending (spec #59 decision 13).
     pub fn terminate(&self) -> Result<(), String> {
-        let terminated = unsafe { TerminateProcess(self.child.0 .0 as _, 1) };
-        if terminated == 0 {
-            return Err(last_error("TerminateProcess"));
-        }
-        Ok(())
+        self.job.terminate()
     }
+
+    /// Pids still assigned to the terminal's job, the shell included. An empty
+    /// list means nothing of the terminal is left.
+    pub fn tree_pids(&self) -> Result<Vec<u32>, String> {
+        self.job.pids()
+    }
+}
+
+/// The sentence every ownership failure in [`PtyBackend::spawn`] returns: which
+/// program, in which directory, and what the Hub could not establish for it.
+///
+/// The PTY layer's own [`super::PtyError::Spawn`] already names the terminal
+/// and its geometry, so the part left to say here is the process tree the start
+/// owed and did not get (`docs/DEVELOPMENT.md` §9).
+fn ownership_failure(spec: &super::PtySpec, reason: &str) -> String {
+    format!(
+        "could not take ownership of the process tree of `{}` in `{}`: {reason}",
+        spec.program.display(),
+        spec.cwd.display()
+    )
+}
+
+/// Put the suspended shell into its job, then let it run.
+///
+/// Two steps and one teardown: a shell the Hub created that is in no job, or
+/// that cannot be resumed, is a shell nothing can account for, so the caller
+/// ends it rather than returning it.
+fn join_tree(job: &Job, process: usize, thread: usize) -> Result<(), String> {
+    #[cfg(test)]
+    if fail_start_step(StartFailurePointForTest::JobAssignment) {
+        return Err("test-injected AssignProcessToJobObject failure".to_owned());
+    }
+    job.assign(process)?;
+    resume_primary_thread(thread)
+}
+
+/// Let a suspended process run, now that it is in its job.
+///
+/// `CREATE_SUSPENDED` adds exactly one suspend count. A different count means
+/// another actor changed the thread, and the start fails closed — the job's
+/// kill-on-close limit then tears the process down rather than the Hub resuming
+/// a thread on a guess (the same rule the service backend applies).
+fn resume_primary_thread(thread: usize) -> Result<(), String> {
+    #[cfg(test)]
+    if fail_start_step(StartFailurePointForTest::Resume) {
+        return Err("test-injected ResumeThread failure".to_owned());
+    }
+
+    let previous = unsafe { ResumeThread(thread as _) };
+    if previous == u32::MAX {
+        return Err(last_error("ResumeThread"));
+    }
+    if previous != 1 {
+        return Err(format!(
+            "unexpected initial-thread suspend count: {previous}"
+        ));
+    }
+    Ok(())
 }
 
 /// The pty's output stream, handed to the PTY layer's reader thread.

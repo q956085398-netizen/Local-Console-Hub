@@ -313,6 +313,41 @@ export interface HeaderCallout {
   kind: "impact" | "error";
   title: string;
   text: string;
+  /**
+   * A consequence the Hub knows from its own lifecycle, shown under the
+   * configured text rather than in place of it. `close_impact` is the user's
+   * own wording (D-027); this is the part no config author can be expected to
+   * write.
+   */
+  note?: string;
+}
+
+/**
+ * What the Hub itself does when an interactive terminal is stopped: the shell
+ * *and* the processes it started end (D-028).
+ *
+ * A terminal's `close_impact` is free text about the session's place in the
+ * user's world ("不会停止其它受管服务") and says nothing about this. A service
+ * deliberately gets no note: its close impact arrives with its own stop rules,
+ * and writing a sentence for it here would claim more than the Hub does there.
+ */
+const TERMINAL_TREE_NOTE = "停止该终端会同时结束它启动的子进程。";
+
+/**
+ * What the Details card says about the *mechanics* of stopping this session.
+ *
+ * A service has the graceful-then-force ladder (D-007), so its sentence names
+ * both steps and where the force path stops. A terminal has no ladder at all:
+ * its graceful gesture is Ctrl+C, which is *input*, not a stop (D-018), and
+ * stopping it ends its process tree in one action (D-028). The card therefore
+ * says the same sentence the header warns with for a terminal — it is the same
+ * fact, and the sentence that used to sit here told a terminal's user about a
+ * gentle path the Hub does not offer it.
+ */
+export function closeMechanics(config: SessionConfigDto): string {
+  return config.sessionType === "terminal"
+    ? TERMINAL_TREE_NOTE
+    : "停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。";
 }
 
 /** Pick and word the header callout for the current state. */
@@ -321,7 +356,12 @@ export function headerCallout(
   runtime: SessionRuntimeDto,
 ): HeaderCallout | null {
   if (isLive(runtime.status)) {
-    return { kind: "impact", title: "关闭影响", text: config.closeImpact ?? "—" };
+    return {
+      kind: "impact",
+      title: "关闭影响",
+      text: config.closeImpact ?? "—",
+      ...(config.sessionType === "terminal" ? { note: TERMINAL_TREE_NOTE } : {}),
+    };
   }
   if (isPresent(runtime.lastError)) {
     return { kind: "error", title: "上次错误", text: runtime.lastError.message };

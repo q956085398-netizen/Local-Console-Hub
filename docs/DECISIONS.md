@@ -217,9 +217,9 @@ T00 落地时仓库中不存在已批准的应用图标（`assets/` 仅含 V2 UI
 
 后续如需更换：替换 `assets/brand/app-icon.svg` 源文件并重新执行 `node scripts/generate-icon.mjs && npx tauri icon assets/brand/app-icon.png` 即可，不影响其它层。
 
-> 2026-09-30（#68）：这条自绘的蓝色提示符图标已被 **D-028** 作废。用户选定的身份是 V2
+> 2026-09-30（#68）：这条自绘的蓝色提示符图标已被 **D-029** 作废。用户选定的身份是 V2
 > 标题栏里那颗内部 Hub mark，而不是另一套自绘图标——「不新增另一套身份」。
-> `assets/brand/app-icon.svg` / `.png` 已删除，替换流程见 D-028。
+> `assets/brand/app-icon.svg` / `.png` 已删除，替换流程见 D-029。
 
 ---
 
@@ -546,7 +546,7 @@ spec §12 要求健康检查「低频、随会话生命周期可取消、非阻�
    它缓存上一次渲染的模型，因此一次状态变化带来的两个事件只重建一次菜单。
 8. **图标沿用应用身份，不新造资产；缺图标则不启动。** 托盘图标取
    `default_window_icon()`——与窗口、任务栏同一个图标集（D-013；该图标集自 #68 起由
-   `assets/brand/hub-mark.svg` 一处生成，见 D-028），不是一个可能与它漂移的
+   `assets/brand/hub-mark.svg` 一处生成，见 D-029），不是一个可能与它漂移的
    第二份资源。它是构建期从 `bundle.icon` 嵌进来的，取不到就意味着构建有问题；此时
    `tray::install` 返回错误、`setup` 随之失败，应用不启动。理由不是洁癖：关闭窗口会隐藏
    窗口，而托盘是回到隐藏窗口的唯一入口，一个没有图标的托盘在 Windows 上就是用户找不到的
@@ -690,7 +690,53 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
 
 ---
 
-## D-028：窗口只有一层标题栏，Hub 图标只有一个来源
+## D-028：交互终端拥有一棵进程树，关闭它结束的是整棵树
+
+**状态：Accepted（2026-09-30，#61 落地时签认）**
+
+规格 #59 的决策 13 要求「终端关闭结束所属进程树」，但实现里终端从来没有树：`pty/win.rs`
+用 `CreatePseudoConsole` 起 shell 之后只持有 shell 自己的进程句柄，`Pty::kill` 也只
+`TerminateProcess` 那一个 pid，后代交给「句柄释放时关闭伪控制台」回收。这条路径有两个洞，
+都是真实窗口里能观察到的：
+
+1. **停止后的终端仍留着子进程。** Session Core 的 `close_run` 明确保留 run 句柄（下一个 run
+   替换它时才释放），所以 `stop` 之后伪控制台还开着，挂在它上面的子进程继续运行——用户对着
+   一行「已停止」的终端，看着自己刚启动的程序还在跑。
+2. **shell 自己退出时更糟。** shell 把子进程交出去再退出，run 结束、界面报 `Exited`，而那个
+   子进程既不在任何受管树里，也没有人再看它一眼。
+
+因此：
+
+1. **终端 shell 与受管服务一样，先归属、后执行。** shell 以 `CREATE_SUSPENDED` 创建，先
+   `AssignProcessToJobObject` 进一个有 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 job，再恢复
+   它的主线程（作业对象本体抽到 `process/tree.rs`，两种 run 共用一份实现，也就没有第二份
+   会漂移的拷贝——这正是规格 §3 划给 `process/` 的「stop / kill tree」能力）。
+2. **关闭 = 结束整棵树，并以它作屏障。** `Pty::kill` 终止 job、等 shell 退出、再轮询确认 job
+   为空；空之前不返回成功。「shell 已经退出了」不构成 no-op，因为树可能还在。
+3. **自然退出同样要结清。** 观察者看到 run 自己的进程结束后，先用 `Run::settle_tree` 结束
+   剩下的树，**再**把状态落成 ended。树还在时报 `Exited` 正是这一条要防的那句话；结清失败
+   时状态是 `Error`，原因进 `last_error`（`RunEnding::Failed` 的既有语义）。
+4. **受管服务不受影响。** 服务的退出规则仍是 D-007 的：服务自己退出时不额外结清它的树。
+   本决策只回答终端的关闭语义（规格 #59 决策 13），不替服务改口。
+5. **界面把这条事实说出来，且两处说法一致。** 活动中的终端，「关闭影响」callout 在配置
+   原文之下多一行 `停止该终端会同时结束它启动的子进程。`；「详情 → 能不能关」卡片底下
+   那句固定的「停止会尝试优雅结束；…」按会话类型取（`closeMechanics`）——它对终端本来就
+   是错的（终端没有优雅停止阶梯，D-018），现在终端用与 callout 同一句，服务保持原句。
+   配置里的 `close_impact` 是用户自己的话（D-027），这一句是 Hub 自己的事实，两者并存
+   而不是互相替换；服务不加这一行——它没有这句话要交代的语义。
+
+用户可见行为：在终端里起一个子进程后停止该终端，子进程随之结束，而其它会话与无关的同名
+进程不受影响；shell 自己退出却留下后代时，会话不会再「先报结束、后留进程」。
+
+运维：`pty::tests::kill_ends_the_shells_children_without_the_handle_going_away` 与
+`the_terminal_owns_the_processes_its_shell_starts` 钉住归属与关闭，
+`a_start_that_cannot_own_the_shell_leaves_no_shell_running` 钉住三个启动步骤失败时的清理，
+`session::core::tests::terminal_tests` 里的三条（停止、shell 先退出、无关哨兵与相邻会话）
+钉住会话边界。界面那一行由 `src/state/derivations.test.ts` 的 `headerCallout` 用例钉住。
+
+---
+
+## D-029：窗口只有一层标题栏，Hub 图标只有一个来源
 
 **状态：Accepted（2026-09-30，#68 落地时签认）**
 
@@ -720,7 +766,7 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
    同一颗 mark，而不是两份要人肉对齐的资产。D-013 的蓝色提示符图标作废（文件已删）。
 4. **最大化按钮是读数，不是本地开关。** 它在 `tauri://resize` 上重读 `is_maximized`，
    读失败时保留上一次读数；本地布尔值会被拖动到屏幕边缘、双击、Win+↑ 这些不经过按钮的
-   最大化路径甩在后面。判断与订阅在 `src/app/window-controls.ts`（node 环境下有测试），
+   最大化路径甩在后面。判断与订阅在 `src/state/window-controls.ts`（node 环境下有测试），
    适配层是 `tauriWindowHost.ts` / `useWindowControls.ts`，按钮在
    `src/components/title-bar/WindowControls.tsx`。
 5. **仍然不做**：参考图右上的 `Ctrl K`、全局设置 / 日志入口，以及 `退出` 按钮。退出语义
