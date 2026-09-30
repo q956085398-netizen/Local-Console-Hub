@@ -39,6 +39,10 @@ mod release;
 pub mod session;
 pub mod shell;
 mod tray;
+// Pub for the same reason as `process` and `pty`: the standalone-window
+// application tests (#66) exercise real windows of a real run, and the window
+// selection rule is a product rule worth asserting directly.
+pub mod window;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -121,6 +125,7 @@ pub fn run() {
             ipc::session::create_temporary_terminal,
             ipc::session::remove_session,
             ipc::session::add_application,
+            ipc::session::recommend_display,
             ipc::session::activate_session,
             ipc::session::get_session,
             ipc::session::start_session,

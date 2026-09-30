@@ -12,8 +12,10 @@
 //! that needs all three, so it happens here — and only here, so the layer
 //! below stays runnable with no window.
 
+pub mod activation;
 pub mod applications;
 pub mod launch;
+pub mod recommend;
 
 use std::path::Path;
 use std::sync::Arc;

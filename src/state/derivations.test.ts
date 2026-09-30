@@ -47,6 +47,8 @@ function config(overrides: Partial<SessionConfigDto> = {}): SessionConfigDto {
     port: 8000,
     purpose: "聊天前端",
     closeImpact: "可停止；打开的聊天页会失联。",
+    display: "internal",
+    lifecycle: "managed",
     logging: { mode: "always", source: "captured" },
     ...overrides,
   };
@@ -271,6 +273,29 @@ describe("availableActions", () => {
     expect(availableActions(config({ temporary: true }), failed).remove).toBe(false);
     // …while Start, a legal move from that state, stays offered.
     expect(availableActions(config({ temporary: true }), failed).start).toBe(true);
+  });
+
+  // A run the Hub does not own cannot be stopped or restarted by it (#66), and
+  // the backend refuses both — so the controls are absent rather than offered
+  // and rejected (spec #59 decision 12).
+  it("withholds Stop and Restart from a run the Hub does not manage", () => {
+    const independent = config({ display: "window", lifecycle: "independent" });
+    const running = availableActions(independent, runtime());
+
+    expect(running.start).toBe(false); // it is already running
+    expect(running.stop).toBe(false);
+    expect(running.forceStop).toBe(false);
+    expect(availableActions(independent, runtime({ status: "stopped" })).restart).toBe(false);
+    // Opening it stays: launching an application is what the entry is for.
+    expect(availableActions(independent, runtime({ status: "stopped" })).start).toBe(true);
+  });
+
+  it("keeps the ordinary controls for a standalone run the user asked the Hub to manage", () => {
+    const managed = config({ display: "window", lifecycle: "managed" });
+    const running = availableActions(managed, runtime());
+
+    expect(running.stop).toBe(true);
+    expect(running.forceStop).toBe(true);
   });
 
   it("offers Start only when idle, Stop only when live", () => {

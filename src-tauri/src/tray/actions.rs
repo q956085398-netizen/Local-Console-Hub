@@ -15,14 +15,39 @@
 //! `watch_run`). The tray uses that split rather than inventing a second one
 //! from exit codes, or "failed" would mean two things in one app.
 
+use std::collections::BTreeSet;
+
 use crate::config::SessionConfig;
-use crate::session::core::SessionError;
+use crate::session::core::{SessionEntry, SessionError};
 use crate::session::runtime::SessionRuntime;
 use crate::session::state::SessionStatus;
 
+/// The sessions whose lifecycle the Hub owns (#66).
+///
+/// A bulk action is the Hub acting on its own behalf, so what it may act on is
+/// exactly the set of entries configured to be the Hub's: a standalone-window
+/// application nobody asked the Hub to manage is left out of Stop All and Exit
+/// (`docs/DECISIONS.md` D-033, spec #59 decision 12).
+///
+/// This is a property of the *entry*, not of the session's state: an
+/// independent application that happens to be stopped is still not the Hub's to
+/// start or restart as a side effect of a tray command.
+///
+/// A session with no entry behind it counts as managed. Every member of the
+/// registry has one, so this is a "cannot happen" case; treating it as managed
+/// means an entry this tray cannot describe is not silently left running by a
+/// Stop All the user asked for.
+fn independent_ids(entries: &[SessionEntry]) -> BTreeSet<&str> {
+    entries
+        .iter()
+        .filter(|entry| !entry.config.is_managed())
+        .map(|entry| entry.config.id.as_str())
+        .collect()
+}
+
 /// Sessions "Restart Failed" asks Session Core to restart.
-pub fn restart_targets(snapshots: &[SessionRuntime]) -> Vec<String> {
-    targets(snapshots, |status| status == SessionStatus::Error)
+pub fn restart_targets(snapshots: &[SessionRuntime], entries: &[SessionEntry]) -> Vec<String> {
+    targets(snapshots, entries, |status| status == SessionStatus::Error)
 }
 
 /// Sessions "Stop All" asks Session Core to stop.
@@ -34,14 +59,22 @@ pub fn restart_targets(snapshots: &[SessionRuntime]) -> Vec<String> {
 ///
 /// This is also what `stop` accepts, so the list is exactly the set of calls
 /// that can land.
-pub fn stop_targets(snapshots: &[SessionRuntime]) -> Vec<String> {
-    targets(snapshots, |status| status == SessionStatus::Running)
+pub fn stop_targets(snapshots: &[SessionRuntime], entries: &[SessionEntry]) -> Vec<String> {
+    targets(snapshots, entries, |status| {
+        status == SessionStatus::Running
+    })
 }
 
-fn targets(snapshots: &[SessionRuntime], wanted: impl Fn(SessionStatus) -> bool) -> Vec<String> {
+fn targets(
+    snapshots: &[SessionRuntime],
+    entries: &[SessionEntry],
+    wanted: impl Fn(SessionStatus) -> bool,
+) -> Vec<String> {
+    let independent = independent_ids(entries);
     snapshots
         .iter()
         .filter(|runtime| wanted(runtime.status))
+        .filter(|runtime| !independent.contains(runtime.session_id.as_str()))
         .map(|runtime| runtime.session_id.clone())
         .collect()
 }
@@ -105,10 +138,16 @@ impl ExitPlan {
 }
 
 /// Plan what Exit has to do, from the current snapshots.
-pub fn exit_plan(snapshots: &[SessionRuntime]) -> ExitPlan {
+///
+/// An independent standalone application appears in neither list (#66): Exit
+/// does not stop it, so it is not a stop target — and it is not a blocker
+/// either, because a blocker is a session the Hub *cannot leave* yet, and
+/// leaving is exactly what this one is owed. Its start, if one is in flight,
+/// finishes on its own.
+pub fn exit_plan(snapshots: &[SessionRuntime], entries: &[SessionEntry]) -> ExitPlan {
     ExitPlan {
-        stop: stop_targets(snapshots),
-        blockers: targets(snapshots, |status| {
+        stop: stop_targets(snapshots, entries),
+        blockers: targets(snapshots, entries, |status| {
             matches!(status, SessionStatus::Starting | SessionStatus::Stopping)
         }),
     }
@@ -151,7 +190,9 @@ fn names(configs: &[SessionConfig], session_ids: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EffectiveLogMode, EffectiveLogging, LogSource};
+    use crate::config::{
+        DisplayMode, EffectiveLogMode, EffectiveLogging, LifecycleOwner, LogSource,
+    };
 
     fn snapshot(session_id: &str, status: SessionStatus) -> SessionRuntime {
         let mut runtime = SessionRuntime::stopped(
@@ -181,6 +222,8 @@ mod tests {
             close_impact: None,
             shell: None,
             initial_command: None,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging: EffectiveLogging {
                 mode: EffectiveLogMode::Off,
                 source: LogSource::Captured,
@@ -191,6 +234,26 @@ mod tests {
 
     fn failure(session_id: &str, message: &str) -> SessionError {
         SessionError::failed(session_id, "stop", message, None)
+    }
+
+    /// The entry half of a session, as `SessionCore::entries` reports it: the
+    /// one place the Hub reads whether a run is its to end (#66).
+    fn entry(id: &str, display: DisplayMode, lifecycle: LifecycleOwner) -> SessionEntry {
+        let mut config = config(id, id);
+        config.display = display;
+        config.lifecycle = lifecycle;
+        SessionEntry {
+            config,
+            temporary: false,
+        }
+    }
+
+    fn independent(id: &str) -> SessionEntry {
+        entry(id, DisplayMode::Window, LifecycleOwner::Independent)
+    }
+
+    fn managed_window(id: &str) -> SessionEntry {
+        entry(id, DisplayMode::Window, LifecycleOwner::Managed)
     }
 
     /// One session in every lifecycle state, each named after its state, so a
@@ -210,22 +273,25 @@ mod tests {
     /// finished, and restarting it would be the tray inventing a problem.
     #[test]
     fn restart_failed_targets_error_sessions_only() {
-        assert_eq!(restart_targets(&every_status()), vec!["error"]);
+        assert_eq!(restart_targets(&every_status(), &[]), vec!["error"]);
     }
 
     /// `stop` is refused from every state but `Running` (spec §5), so the tray
     /// must not ask from any other one.
     #[test]
     fn stop_all_targets_running_sessions_only() {
-        assert_eq!(stop_targets(&every_status()), vec!["running"]);
+        assert_eq!(stop_targets(&every_status(), &[]), vec!["running"]);
     }
 
     #[test]
     fn an_idle_hub_exits_without_a_question() {
-        let plan = exit_plan(&[
-            snapshot("a", SessionStatus::Stopped),
-            snapshot("b", SessionStatus::Exited),
-        ]);
+        let plan = exit_plan(
+            &[
+                snapshot("a", SessionStatus::Stopped),
+                snapshot("b", SessionStatus::Exited),
+            ],
+            &[],
+        );
 
         assert!(!plan.needs_confirmation());
         assert_eq!(plan.confirm_prompt(&[]), None);
@@ -237,7 +303,7 @@ mod tests {
     /// them." A running session is what "active" means here.
     #[test]
     fn a_running_session_makes_exit_ask_first() {
-        let plan = exit_plan(&[snapshot("comfyui", SessionStatus::Running)]);
+        let plan = exit_plan(&[snapshot("comfyui", SessionStatus::Running)], &[]);
         let configs = [config("comfyui", "ComfyUI")];
 
         assert!(plan.needs_confirmation());
@@ -251,7 +317,7 @@ mod tests {
     /// sessions the way the tray's rows did — by the configured name.
     #[test]
     fn the_question_names_sessions_the_way_the_menu_does() {
-        let plan = exit_plan(&[snapshot("svc-1", SessionStatus::Running)]);
+        let plan = exit_plan(&[snapshot("svc-1", SessionStatus::Running)], &[]);
 
         let prompt = plan
             .confirm_prompt(&[config("svc-1", "SillyTavern")])
@@ -267,7 +333,7 @@ mod tests {
     /// left to name it with.
     #[test]
     fn a_session_without_a_config_is_named_by_its_id() {
-        let plan = exit_plan(&[snapshot("orphan", SessionStatus::Running)]);
+        let plan = exit_plan(&[snapshot("orphan", SessionStatus::Running)], &[]);
 
         let prompt = plan.confirm_prompt(&[]).expect("a question is owed");
         assert!(prompt.contains("orphan"), "{prompt}");
@@ -278,7 +344,7 @@ mod tests {
     #[test]
     fn a_session_mid_flight_blocks_exit_before_any_question() {
         for status in [SessionStatus::Starting, SessionStatus::Stopping] {
-            let plan = exit_plan(&[snapshot("slow", status)]);
+            let plan = exit_plan(&[snapshot("slow", status)], &[]);
 
             assert!(
                 !plan.needs_confirmation(),
@@ -296,10 +362,13 @@ mod tests {
     /// moment two services are starting at once.
     #[test]
     fn the_blocked_message_reads_for_any_number_of_sessions() {
-        let plan = exit_plan(&[
-            snapshot("one", SessionStatus::Starting),
-            snapshot("two", SessionStatus::Stopping),
-        ]);
+        let plan = exit_plan(
+            &[
+                snapshot("one", SessionStatus::Starting),
+                snapshot("two", SessionStatus::Stopping),
+            ],
+            &[],
+        );
 
         let message = plan.blocked_message(&[]).expect("the block must be said");
         assert!(message.contains("one、two"), "{message}");
@@ -310,13 +379,85 @@ mod tests {
     /// promise the Hub cannot keep.
     #[test]
     fn a_blocked_exit_is_reported_even_when_another_session_could_be_stopped() {
-        let plan = exit_plan(&[
-            snapshot("running", SessionStatus::Running),
-            snapshot("starting", SessionStatus::Starting),
-        ]);
+        let plan = exit_plan(
+            &[
+                snapshot("running", SessionStatus::Running),
+                snapshot("starting", SessionStatus::Starting),
+            ],
+            &[],
+        );
 
         assert!(plan.needs_confirmation());
         assert!(plan.blocked_message(&[]).is_some());
+    }
+
+    /// Stop All does not end an application the Hub was never asked to manage,
+    /// whatever it is doing at the time (#66, spec #59 decision 12).
+    #[test]
+    fn stop_all_leaves_an_independent_application_alone() {
+        let snapshots = vec![
+            snapshot("svc", SessionStatus::Running),
+            snapshot("launcher", SessionStatus::Running),
+        ];
+        let entries = vec![
+            entry("svc", DisplayMode::Internal, LifecycleOwner::Managed),
+            independent("launcher"),
+        ];
+
+        assert_eq!(stop_targets(&snapshots, &entries), vec!["svc"]);
+    }
+
+    /// And Exit neither stops it nor waits on it: an application that is
+    /// starting when the Hub leaves finishes starting on its own, which is what
+    /// "独立" means for the one session that does not block the question.
+    #[test]
+    fn exit_neither_stops_nor_waits_for_an_independent_application() {
+        let snapshots = vec![snapshot("launcher", SessionStatus::Starting)];
+        let entries = vec![independent("launcher")];
+
+        let plan = exit_plan(&snapshots, &entries);
+
+        assert!(!plan.needs_confirmation(), "there is nothing to ask about");
+        assert!(
+            plan.blocked_message(&[]).is_none(),
+            "it does not block the exit"
+        );
+    }
+
+    /// Turning management on is the whole difference: the same standalone
+    /// window is then a session Stop All stops and Exit asks about.
+    #[test]
+    fn a_managed_standalone_entry_is_stopped_like_any_other_session() {
+        let snapshots = vec![snapshot("launcher", SessionStatus::Running)];
+        let entries = vec![managed_window("launcher")];
+
+        assert_eq!(stop_targets(&snapshots, &entries), vec!["launcher"]);
+        assert!(exit_plan(&snapshots, &entries).needs_confirmation());
+    }
+
+    /// "Restart Failed" is a Hub lifecycle action too, so it does not restart an
+    /// entry that has no Hub lifecycle to restart.
+    #[test]
+    fn restart_failed_leaves_an_independent_application_alone() {
+        let snapshots = vec![
+            snapshot("svc", SessionStatus::Error),
+            snapshot("launcher", SessionStatus::Error),
+        ];
+        let entries = vec![
+            entry("svc", DisplayMode::Internal, LifecycleOwner::Managed),
+            independent("launcher"),
+        ];
+
+        assert_eq!(restart_targets(&snapshots, &entries), vec!["svc"]);
+    }
+
+    /// A session the entries cannot describe is treated as the Hub's own: the
+    /// exclusion is a fact about a configured entry, never a default.
+    #[test]
+    fn a_session_with_no_entry_is_still_the_hubs_to_stop() {
+        let snapshots = vec![snapshot("orphan", SessionStatus::Running)];
+
+        assert_eq!(stop_targets(&snapshots, &[]), vec!["orphan"]);
     }
 
     /// A confirmed exit that could not stop everything says so, and names the

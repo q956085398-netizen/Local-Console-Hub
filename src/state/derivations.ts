@@ -173,6 +173,16 @@ export interface ActionAvailability {
   /** Start is offered while idle; Stop while live. Never both at once. */
   start: boolean;
   stop: boolean;
+  /**
+   * Whether the Hub owns this session's lifecycle (#66).
+   *
+   * `false` means the run belongs to the application itself: `stop`,
+   * `forceStop` and `restart` are all withheld, because Session Core refuses
+   * them rather than ignoring them. What the header shows instead is the one
+   * action that does work — opening the application, which brings its window
+   * forward.
+   */
+  managed: boolean;
   /** Stop stays visible but inert while the session is already unwinding. */
   stopDisabled: boolean;
   /** Restart cannot launch a replacement until the previous run is gone
@@ -226,18 +236,46 @@ export function availableActions(
   // is asked once: 目录/打开目录 and 复制路径 cannot end up disagreeing about
   // whether there is one.
   const hasDirectory = config.cwd !== undefined;
+  // A run the Hub does not own cannot be stopped or restarted by it (#66), and
+  // Session Core refuses both rather than quietly ignoring them — so the
+  // controls are absent for the same reason `remove` is absent for a configured
+  // session. Opening it stays: starting an application it manages to *launch*
+  // is what the entry is for (spec #59 decision 12).
+  const owned = config.lifecycle === "managed";
   return {
     start: idle,
-    stop: isLive(runtime.status),
+    stop: owned && isLive(runtime.status),
+    managed: owned,
     stopDisabled: runtime.status === "stopping",
-    restart: settled,
+    restart: owned && settled,
     openUrl: config.sessionType === "service" ? config.url : undefined,
     directory: hasDirectory,
     copyPath: hasDirectory,
-    forceStop: isLive(runtime.status),
+    forceStop: owned && isLive(runtime.status),
     remove:
       config.temporary === true && (runtime.status === "stopped" || runtime.status === "exited"),
   };
+}
+
+/**
+ * Whether this session is displayed in its own window rather than the Hub's
+ * (#66).
+ *
+ * The one predicate the surfaces that would otherwise draw a terminal or a log
+ * panel ask first: an application that keeps its own console has nothing for
+ * the Hub to render, and showing an empty terminal for it would be exactly the
+ * "假内嵌" spec #59 decision 16 forbids.
+ */
+export function isStandalone(config: SessionConfigDto): boolean {
+  return config.display === "window";
+}
+
+/** What the standalone application's panel says about where its console is. */
+export function standaloneNote(runtime: SessionRuntimeDto): string {
+  if (isLive(runtime.status)) {
+    return "此应用使用独立窗口显示：它的窗口和控制台由应用自己提供，Hub 不重复内嵌。";
+  }
+  return "此应用使用独立窗口显示：启动后它会在自己的窗口里运行，Hub 不显示它的控制台。";
 }
 
 /**

@@ -31,18 +31,20 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::config::{
-    self, EffectiveLogMode, EffectiveLogging, LogSource, SessionConfig, SessionConfigDto,
-    SessionType,
+    self, DisplayMode, EffectiveLogMode, EffectiveLogging, LifecycleOwner, LogSource,
+    SessionConfig, SessionConfigDto, SessionType,
 };
 use crate::health;
 use crate::logging::{
     self, policy_state, BufferLimits, LogError, LogPlan, LogRoots, LogStatus, OutputSink, RunLog,
     RunLogHandle, RunOutcome, Stream, TerminalBuffer, DEFAULT_LOG_LIMITS,
 };
+use crate::process::independent::IndependentProcess;
 use crate::process::{
     ExitStatus, ManagedProcess, OutputMode, ProcessSpec, StopOutcome, StopReport,
 };
 use crate::pty::{Pty, PtySpec, DEFAULT_COLS, DEFAULT_ROWS, MAX_DIMENSION};
+use crate::window::TopLevelWindow;
 
 use super::event::{
     AppSummary, AppSummaryChanged, RunRecordUpdated, SessionCreated, SessionEvent, SessionRemoved,
@@ -283,16 +285,22 @@ struct SessionState {
 enum Run {
     Process(Arc<ManagedProcess>),
     Terminal(Arc<Pty>),
+    /// A standalone-window application the Hub starts but does not own (#66).
+    /// Its lifetime is not the Hub's: dropping this handle leaves the
+    /// application running (`crate::process::independent`).
+    Standalone(Arc<crate::process::independent::IndependentProcess>),
 }
 
 impl Run {
     /// The terminal this run hosts, for the operations only a terminal has
     /// (typing into it, resizing it). `None` for a supervised process, which
-    /// has no attached stdin in the MVP.
+    /// has no attached stdin in the MVP, and for a standalone application,
+    /// whose console belongs to the application (`docs/DECISIONS.md` D-033).
     fn as_terminal(&self) -> Option<&Arc<Pty>> {
         match self {
             Run::Process(_) => None,
             Run::Terminal(pty) => Some(pty),
+            Run::Standalone(_) => None,
         }
     }
 
@@ -301,6 +309,7 @@ impl Run {
         match self {
             Run::Process(run) => run.wait_for_exit(timeout),
             Run::Terminal(pty) => pty.wait_for_exit(timeout),
+            Run::Standalone(run) => run.wait_for_exit(timeout),
         }
     }
 
@@ -308,6 +317,7 @@ impl Run {
         match self {
             Run::Process(run) => run.exit_status(),
             Run::Terminal(pty) => pty.exit_status(),
+            Run::Standalone(run) => run.exit_status(),
         }
     }
 
@@ -325,6 +335,11 @@ impl Run {
         match self {
             Run::Process(run) => run.stop(timeout).map_err(|error| error.to_string()),
             Run::Terminal(pty) => stop_terminal(pty),
+            // A standalone application's graceful step is its own gesture —
+            // closing its window, or a console interrupt when it has none —
+            // and its force path is the same exact tree termination every other
+            // run gets (`crate::process::independent`).
+            Run::Standalone(run) => run.stop(timeout).map_err(|error| error.to_string()),
         }
     }
 
@@ -333,6 +348,7 @@ impl Run {
         match self {
             Run::Process(run) => run.force_stop().map_err(|error| error.to_string()),
             Run::Terminal(pty) => stop_terminal(pty),
+            Run::Standalone(run) => run.force_stop().map_err(|error| error.to_string()),
         }
     }
 
@@ -353,6 +369,22 @@ impl Run {
         match self {
             Run::Process(_) => Ok(()),
             Run::Terminal(pty) => pty.end_tree().map_err(|error| error.to_string()),
+            // Nothing to settle: a standalone run reports its own end only once
+            // its tree is empty (`crate::process::independent`), so the barrier
+            // has already been reached by the time an ending is published.
+            Run::Standalone(_) => Ok(()),
+        }
+    }
+
+    /// The window this run's application presents, if it has one (#66).
+    ///
+    /// `None` for every run that is not a standalone application: a supervised
+    /// service and an interactive terminal are displayed in the Hub window, and
+    /// there is no second window of theirs to bring forward.
+    fn application_window(&self, timeout: std::time::Duration) -> Option<TopLevelWindow> {
+        match self {
+            Run::Process(_) | Run::Terminal(_) => None,
+            Run::Standalone(run) => run.wait_for_window(timeout),
         }
     }
 }
@@ -388,12 +420,16 @@ fn stop_terminal(pty: &Pty) -> Result<StopReport, String> {
 enum StartSpec {
     Process(ProcessSpec),
     Terminal(PtySpec),
+    /// A standalone-window application: the same command, hosted by a run the
+    /// Hub does not own (#66).
+    Standalone(ProcessSpec),
 }
 
 /// A run that has been spawned but not yet wired into its session.
 enum Spawned {
     Process(ManagedProcess),
     Terminal(Arc<Pty>),
+    Standalone(crate::process::independent::IndependentProcess),
 }
 
 impl Spawned {
@@ -401,6 +437,7 @@ impl Spawned {
         match self {
             Spawned::Process(run) => run.pid(),
             Spawned::Terminal(pty) => pty.pid(),
+            Spawned::Standalone(run) => run.pid(),
         }
     }
 }
@@ -420,14 +457,18 @@ enum Started {
         /// The configured `initial_command`, typed once the terminal is up.
         initial: Option<String>,
     },
+    /// A standalone application: nothing is wired, because nothing about it
+    /// passes through the Hub — no pipes to pump, no terminal to type into
+    /// (spec #59 decision 16).
+    Standalone { generation: u64 },
 }
 
 impl Started {
     fn generation(&self) -> u64 {
         match self {
-            Started::Process { generation, .. } | Started::Terminal { generation, .. } => {
-                *generation
-            }
+            Started::Process { generation, .. }
+            | Started::Terminal { generation, .. }
+            | Started::Standalone { generation } => *generation,
         }
     }
 }
@@ -438,6 +479,11 @@ impl Started {
 /// process (T03), an interactive terminal is a PTY (T02, T07). One dispatch
 /// rather than a type check inside each builder, so neither builder can be
 /// asked to host something it does not own.
+///
+/// A service that is configured to keep its own window (#66) is the same
+/// command hosted differently: the process layer still owns its tree, but under
+/// a job that does not end it with the Hub, and with a console of its own
+/// instead of the Hub's pipes.
 fn start_spec(
     config: &SessionConfig,
     terminal_size: Option<(u16, u16)>,
@@ -445,7 +491,13 @@ fn start_spec(
     planned: &PlannedRun,
 ) -> Result<StartSpec, SessionError> {
     match config.session_type {
-        SessionType::Service => process_spec(config, id, planned).map(StartSpec::Process),
+        SessionType::Service => {
+            let spec = process_spec(config, id, planned)?;
+            match config.display {
+                DisplayMode::Internal => Ok(StartSpec::Process(spec)),
+                DisplayMode::Window => Ok(StartSpec::Standalone(spec)),
+            }
+        }
         SessionType::Terminal => terminal_spec(config, terminal_size, id).map(StartSpec::Terminal),
     }
 }
@@ -646,6 +698,39 @@ fn removable(temporary: bool, status: SessionStatus, owns_run: bool) -> bool {
             SessionStatus::Error => !owns_run,
             SessionStatus::Starting | SessionStatus::Running | SessionStatus::Stopping => false,
         }
+}
+
+/// Refuse a lifecycle action on a run the Hub does not own (#66).
+///
+/// The lifecycle owner is a property of the entry (`docs/DECISIONS.md` D-033),
+/// and an `independent` one means exactly this: the Hub started the
+/// application, and the application ends itself. Saying so is the answer rather
+/// than a hidden button, because the two ways out — closing the application's
+/// own window, or turning management on in the configuration — are both things
+/// the user can do and neither is guessable from a refusal alone.
+///
+/// Enforced here rather than in the window because Session Core is the single
+/// source of lifecycle truth (`docs/MVP_IMPLEMENTATION_SPEC.md` §3): a rule the
+/// UI applied would be one the tray, the launch path and any future caller
+/// could each decide differently.
+fn require_managed(
+    handle: &Arc<Mutex<SessionState>>,
+    session_id: &str,
+    operation: &str,
+) -> Result<(), SessionError> {
+    let state = lock(handle);
+    if state.config.is_managed() {
+        return Ok(());
+    }
+    Err(SessionError::unsupported(
+        session_id,
+        operation,
+        format!(
+            "session `{session_id}` is a standalone-window application the Hub does not manage; \
+             it ends itself. Close its own window, or add `lifecycle: managed` to its entry so \
+             the Hub may stop and restart it"
+        ),
+    ))
 }
 
 /// Lock a mutex, surviving a previous holder's panic.
@@ -992,6 +1077,9 @@ impl SessionCore {
             StartSpec::Terminal(spec) => Pty::spawn(spec)
                 .map(|pty| Spawned::Terminal(Arc::new(pty)))
                 .map_err(|error| error.to_string()),
+            StartSpec::Standalone(spec) => IndependentProcess::spawn(spec)
+                .map(Spawned::Standalone)
+                .map_err(|error| error.to_string()),
         };
 
         let outcome = {
@@ -1068,6 +1156,19 @@ impl SessionCore {
                                 generation: state.generation,
                             }
                         }
+                        Spawned::Standalone(run) => {
+                            // Nothing is wired: no pipes to take (the
+                            // application kept its console) and no terminal
+                            // view to attach. What the session holds is the
+                            // run, which is what lets it report the state, find
+                            // the application's window and — when the user
+                            // asked for management — stop it (#66).
+                            state.run = Some(Run::Standalone(Arc::new(run)));
+                            state.runtime.pty_attached = false;
+                            Started::Standalone {
+                                generation: state.generation,
+                            }
+                        }
                         Spawned::Terminal(pty) => {
                             // The reader is started and registered under this
                             // same lock: a stop arriving between the state
@@ -1137,6 +1238,7 @@ impl SessionCore {
                     Started::Terminal { pty, initial, .. } => {
                         self.type_initial_command(session_id, &pty, initial.as_deref());
                     }
+                    Started::Standalone { .. } => {}
                 }
                 self.publish_ending(session_id);
 
@@ -1363,6 +1465,12 @@ impl SessionCore {
         let current = self
             .snapshot(session_id)
             .ok_or_else(|| SessionError::unknown_session(session_id, "restart"))?;
+        // A restart is a stop and a start, so it is owed the same refusal a
+        // stop is: the Hub cannot end a run it does not own (#66).
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, "restart"))?;
+        require_managed(&handle, session_id, "restart")?;
 
         if current.status == SessionStatus::Running {
             // The barrier. When this returns, nothing of the old run is left.
@@ -1370,6 +1478,48 @@ impl SessionCore {
         }
 
         self.start(session_id)
+    }
+
+    /// Whether this session keeps the application's own window (#66).
+    ///
+    /// The display half of an entry's configuration, asked by id so a caller
+    /// that has just activated a session can decide whether there is a window
+    /// to bring forward without reading a listing.
+    pub fn keeps_own_window(&self, session_id: &str) -> bool {
+        self.handle(session_id)
+            .map(|handle| lock(&handle).config.is_window())
+            .unwrap_or(false)
+    }
+
+    /// The window this session's application presents, if it keeps its own
+    /// (#66).
+    ///
+    /// The Hub's half of "重复打开唤起原窗口": opening an entry is
+    /// [`SessionCore::activate`]'s business, and bringing the application's own
+    /// window forward is a reading of the run that answer describes. A session
+    /// the Hub hosts has no second window, so this answers `None` for it — and
+    /// `None` is also the honest answer for a standalone application with no
+    /// window on screen right now (spec #59 decision 11: report it, do not
+    /// start another instance to make up for it).
+    ///
+    /// `timeout` is how long a just-started application is given to put its
+    /// window up. A caller asking *for* the application — a click that means
+    /// "show me that window" — passes the wait; a caller that is only reading
+    /// passes zero and gets the current answer.
+    pub fn application_window(
+        &self,
+        session_id: &str,
+        timeout: std::time::Duration,
+    ) -> Option<TopLevelWindow> {
+        let run = self.handle(session_id).and_then(|handle| {
+            let state = lock(&handle);
+            if state.config.is_window() {
+                state.run.clone()
+            } else {
+                None
+            }
+        })?;
+        run.application_window(timeout)
     }
 
     /// Open a session: start it if nothing is running, otherwise answer with
@@ -1490,6 +1640,8 @@ impl SessionCore {
         let handle = self
             .handle(session_id)
             .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
+        // A run the Hub does not own is not one it may end (#66).
+        require_managed(&handle, session_id, operation)?;
 
         // Claim `Stopping` under the lock, then release it: the wait itself is
         // the slow part, and `session` is the only session it may hold up.
@@ -1657,6 +1809,10 @@ impl SessionCore {
             // is the normal case for PowerShell 7 rather than an exotic one.
             shell: Some(temporary::shell_command(&shell.program)),
             initial_command: None,
+            // A temporary terminal is the Hub's own console by definition
+            // (#62): it exists to be typed into in this window.
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             // `off`/`none` rather than `auto`: `auto` exists to *choose* a
             // policy, and for a temporary shell every choice it could make
             // would be a file the user did not ask for (decision 16).
@@ -3045,7 +3201,12 @@ fn process_spec(
         )
     })?;
 
-    let output = if planned.captures_output() {
+    // A standalone application keeps the console it provides, so nothing of
+    // its output is piped back — and its configuration cannot ask for capture
+    // in the first place (validation refuses `source: captured` with
+    // `display: window`, spec #59 decision 16). Stated here as well because
+    // this is the function that decides it for a run.
+    let output = if planned.captures_output() && !config.is_window() {
         OutputMode::Capture
     } else {
         OutputMode::Inherit
@@ -3185,6 +3346,8 @@ mod tests {
             close_impact: None,
             shell: None,
             initial_command: None,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging: EffectiveLogging {
                 mode: EffectiveLogMode::Always,
                 source: LogSource::Captured,
@@ -4303,13 +4466,13 @@ mod tests {
                     "a view that has not measured itself gets the PTY default"
                 );
             }
-            StartSpec::Process(_) => panic!("a terminal must not run as a supervised process"),
+            other => panic!("a terminal must not be hosted by another layer: {other:?}"),
         }
 
         let service = service("svc");
         match start_spec(&service, None, "svc", &planned_for(&service)).expect("a service spec") {
             StartSpec::Process(spec) => assert_eq!(spec.program, PathBuf::from("cmd.exe")),
-            StartSpec::Terminal(_) => panic!("a service must not be hosted on a terminal"),
+            other => panic!("a Hub-internal service must not be hosted elsewhere: {other:?}"),
         }
     }
 
@@ -4328,7 +4491,7 @@ mod tests {
             .expect("a terminal spec")
         {
             StartSpec::Terminal(spec) => assert_eq!((spec.cols, spec.rows), (120, 30)),
-            StartSpec::Process(_) => panic!("a terminal must not run as a supervised process"),
+            other => panic!("a terminal must not be hosted by another layer: {other:?}"),
         }
     }
 
@@ -5693,6 +5856,8 @@ mod tests {
                 close_impact: None,
                 shell: Some(format!("{POWERSHELL} -NoLogo -NoProfile")),
                 initial_command: None,
+                display: DisplayMode::Internal,
+                lifecycle: LifecycleOwner::Managed,
                 // A terminal's default policy: nothing is persisted
                 // (`docs/LOGGING.md` §1.2), while its scrollback is still kept.
                 logging: EffectiveLogging {

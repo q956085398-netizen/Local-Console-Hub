@@ -1,0 +1,75 @@
+/*
+ * The standalone-window pane (#66).
+ *
+ * Deliberately the terminal pane's geometry with a card instead of a stream:
+ * the region it fills is the same dominant content region (UI_STYLE_GUIDE §7),
+ * so a session that keeps its own console must not make the workspace change
+ * shape. The colours are the V2 tokens the terminal pane uses, so switching
+ * between a Hub-hosted session and a standalone one reads as the same window
+ * showing a different fact.
+ */
+.standalone-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--terminal);
+  box-shadow: var(--shadow-border);
+}
+
+.standalone-panel__chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: none;
+}
+
+.standalone-panel__mode,
+.standalone-panel__state {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-fg);
+}
+
+.standalone-panel__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.standalone-panel__card {
+  max-width: 26rem;
+  margin: 0 16px;
+  padding: 20px 16px;
+  border-radius: 16px;
+  background: var(--popover);
+  color: var(--muted-fg);
+  text-align: center;
+  box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.6);
+}
+
+.standalone-panel__title {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.standalone-panel__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.standalone-panel__button {
+  margin-top: 14px;
+}

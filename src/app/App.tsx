@@ -6,6 +6,7 @@ import Sidebar from "../components/sidebar/Sidebar";
 import SessionHeader from "../components/session-header/SessionHeader";
 import WorkspaceTabs from "../components/workspace/WorkspaceTabs";
 import TerminalHost from "../components/terminal/TerminalHost";
+import StandalonePanel from "../components/workspace/StandalonePanel";
 import LogsPanel from "../components/logs/LogsPanel";
 import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
@@ -17,6 +18,7 @@ import {
   groupSessions,
   initialSelectedSessionId,
   isReady,
+  isStandalone,
   liveCounts,
   sidebarSummaryText,
   titlebarSummaryText,
@@ -28,6 +30,7 @@ import type { WorkspaceTab } from "../state/view";
 import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
 import { copyPathToClipboard } from "./clipboard";
 import { useBackendPing } from "./useBackendPing";
+import { useDisplayAdvice } from "./useDisplayAdvice";
 import { useSessionRegistry } from "./useSessionRegistry";
 import { useMediaQuery } from "./useMediaQuery";
 import "./App.css";
@@ -57,6 +60,9 @@ const CLOCK_TICK_MS = 5000;
 export default function App() {
   const connection = useBackendPing();
   const registry = useSessionRegistry(connection);
+  // The form's own read-only question (#66), kept apart from the session
+  // registry because a launch method that has not been saved is not a session.
+  const recommendDisplay = useDisplayAdvice();
   const sessions = registry.sessions;
 
   // `#session=<id>` deep link (tray/restore surfaces can target a session).
@@ -211,6 +217,22 @@ export default function App() {
    * that matters is `availableActions`': a session with no `cwd` is never
    * offered the control.
    */
+  /**
+   * Open a session, and say what happened to an application's own window.
+   *
+   * `activate` answers with the window step as well as the lifecycle one
+   * (#66), and the step is the only thing here the events do not repeat: an
+   * application that is running with no window to bring forward, or a Windows
+   * refusal, is reported once and nowhere else. Everything else about the open
+   * still arrives as a session event.
+   */
+  const activate = (sessionId: string) => {
+    void registry.activate(sessionId).then((outcome) => {
+      const notice = outcome?.window?.notice;
+      if (notice) setNotice(notice);
+    });
+  };
+
   const onSessionAction = (action: SessionAction) => {
     const label = SESSION_ACTION_LABELS[action];
     if (action === "copy-path") {
@@ -229,7 +251,7 @@ export default function App() {
       // Opening, not starting (#64): the activation semantics are what keep a
       // second click from creating a second run of the same application.
       case "start":
-        registry.activate(selected.config.id);
+        activate(selected.config.id);
         break;
       case "stop":
         registry.stop(selected.config.id);
@@ -258,6 +280,7 @@ export default function App() {
   const addApplicationDialog = addApplicationOpen ? (
     <AddApplicationDialog
       onSubmit={onAddApplication}
+      onRecommendDisplay={recommendDisplay}
       onClose={() => setAddApplicationOpen(false)}
     />
   ) : null;
@@ -401,18 +424,31 @@ export default function App() {
           />
           <WorkspaceTabs active={tab} onChange={setTab} />
           <div className="workspace__content">
-            {tab === "terminal" && (
-              <TerminalHost
-                session={selected}
-                live={registry.live}
-                focusRequest={focusRequest}
-                onStart={() =>
-                  registry.live
-                    ? registry.activate(selected.config.id)
-                    : onPreviewAction(`启动 ${selected.config.name}`)
-                }
-              />
-            )}
+            {tab === "terminal" &&
+              // A standalone-window application has no Hub-side stream to
+              // render (#66): the pane says where its console is instead of
+              // drawing an empty terminal for a console the Hub does not own.
+              (isStandalone(selected.config) ? (
+                <StandalonePanel
+                  session={selected}
+                  onActivate={() =>
+                    registry.live
+                      ? activate(selected.config.id)
+                      : onPreviewAction(`打开 ${selected.config.name}`)
+                  }
+                />
+              ) : (
+                <TerminalHost
+                  session={selected}
+                  live={registry.live}
+                  focusRequest={focusRequest}
+                  onStart={() =>
+                    registry.live
+                      ? activate(selected.config.id)
+                      : onPreviewAction(`启动 ${selected.config.name}`)
+                  }
+                />
+              ))}
             {/* Keyed by session so the Logs tab's own state — the pending
                 retention question above all — belongs to one session. */}
             {tab === "logs" && (

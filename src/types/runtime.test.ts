@@ -236,6 +236,8 @@ function terminalConfig(id = "terminal-1a2b") {
     sessionType: "terminal" as const,
     cwd: "C:\\Users\\example",
     shell: "pwsh",
+    display: "internal" as const,
+    lifecycle: "managed" as const,
     logging: { mode: "off" as const, source: "none" as const },
     temporary: true,
   };

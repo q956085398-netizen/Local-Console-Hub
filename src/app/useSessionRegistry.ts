@@ -11,8 +11,10 @@ import {
   SESSION_CREATED,
   SESSION_REMOVED,
   SESSION_STATE_CHANGED,
+  isActivationOutcomeDto,
   isCreatedSessionDto,
   sessionErrorMessage,
+  type ActivationOutcomeDto,
 } from "../types/runtime";
 import { FIXTURE_SESSIONS } from "../state/fixtures";
 import type { SessionView } from "../state/session-view";
@@ -53,8 +55,13 @@ export interface SessionRegistry {
    * create a second one and a click while it is stopping is refused rather
    * than queued behind the barrier. Restarting is deliberately a different
    * control.
+   *
+   * Answers with the operation's own result — including what happened to an
+   * application's *own* window (#66) — or `null` when the call failed, whose
+   * message lands in `error`. The caller decides what to say about a window
+   * that did not come forward; the registry is transport.
    */
-  activate(sessionId: string): void;
+  activate(sessionId: string): Promise<ActivationOutcomeDto | null>;
   stop(sessionId: string): void;
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
@@ -260,6 +267,28 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       .catch((cause) => setError(sessionErrorMessage(cause)));
   }, []);
 
+  /**
+   * Opening an application (#64), and what happened to its own window (#66).
+   *
+   * A third command whose answer the window reads, and for the same kind of
+   * reason as the other two: "the application is running but its window would
+   * not come forward" is a fact only this answer carries, and the user has to
+   * be told it rather than left clicking a button that appears to do nothing
+   * (story 48). Everything else about the open still arrives as an event.
+   */
+  const activate = useCallback(async (sessionId: string): Promise<ActivationOutcomeDto | null> => {
+    try {
+      const raw = await invoke<unknown>("activate_session", { sessionId });
+      if (!isActivationOutcomeDto(raw)) {
+        throw new Error("activate_session 返回了无法识别的载荷");
+      }
+      return raw;
+    } catch (cause) {
+      setError(sessionErrorMessage(cause));
+      return null;
+    }
+  }, []);
+
   return useMemo<SessionRegistry>(
     () => ({
       sessions,
@@ -273,7 +302,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       // Opening goes through the activation semantics (#64), not a bare
       // start: the same call a launch request handed to the Hub performs, so
       // the two entries cannot disagree about what "open" means.
-      activate: (sessionId) => run("activate_session", sessionId),
+      activate,
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
       forceStop: (sessionId) => run("force_stop_session", sessionId),
@@ -293,6 +322,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       configReport,
       configReportError,
       run,
+      activate,
       createTerminal,
       addApplication,
       removeSession,

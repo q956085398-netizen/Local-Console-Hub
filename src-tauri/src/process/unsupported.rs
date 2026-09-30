@@ -25,8 +25,27 @@ pub struct TreeHandle;
 pub fn prepare(_command: &mut Command) {}
 
 /// Never reached: [`require_backend`] fails before a run can be started.
+pub fn prepare_windowed(_command: &mut Command) {}
+
+/// Never reached: [`require_backend`] fails before a run can be started.
 pub fn attach(_child: &Child) -> Result<TreeHandle, String> {
     Err(unsupported("attaching a run to its job object"))
+}
+
+/// Never reached: [`require_backend`] fails before a run can be started.
+pub fn attach_independent(_child: &Child) -> Result<TreeHandle, String> {
+    Err(unsupported("attaching a run to its job object"))
+}
+
+/// There is no process to identify: [`require_backend`] fails before a run can
+/// be started, so no identity is ever taken.
+pub fn creation_time(_child: &Child) -> Option<u64> {
+    None
+}
+
+/// No process answers for a pid on a platform with no process layer (D-001).
+pub fn creation_time_of(_pid: u32) -> Option<u64> {
+    None
 }
 
 /// Never reached: [`require_backend`] fails before a run can be started.

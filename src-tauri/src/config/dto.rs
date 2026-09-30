@@ -70,6 +70,15 @@ pub struct SessionConfigDto {
     pub shell: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_command: Option<String>,
+    /// `"internal" | "window"` — where this entry is displayed (#66).
+    ///
+    /// Always present, unlike the optional fields above: `"internal"` is not
+    /// an absence but a fact about the entry (the command runs on a console
+    /// the Hub owns), and a UI that has to infer it from a missing key would
+    /// be one more place the two display modes could be confused.
+    pub display: String,
+    /// `"managed" | "independent"` — who ends this entry's run (#66).
+    pub lifecycle: String,
     pub logging: EffectiveLoggingDto,
     /// Whether this session lives only in memory (#62): created from the
     /// window rather than loaded from the config file, removable once it has
@@ -150,6 +159,8 @@ impl From<&SessionConfig> for SessionConfigDto {
             close_impact: config.close_impact.clone(),
             shell: config.shell.clone(),
             initial_command: config.initial_command.clone(),
+            display: config.display.as_str().to_owned(),
+            lifecycle: config.lifecycle.as_str().to_owned(),
             logging: EffectiveLoggingDto::from(&config.logging),
             // Provenance is the registry's to state, not the configuration's:
             // a config loaded from the file is never a temporary session, and
@@ -172,7 +183,9 @@ impl From<SessionConfigError> for SessionConfigErrorDto {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::{EffectiveLogMode, LogSource, SessionType};
+    use super::super::model::{
+        DisplayMode, EffectiveLogMode, LifecycleOwner, LogSource, SessionType,
+    };
     use super::*;
 
     fn sample_session() -> SessionConfig {
@@ -188,6 +201,8 @@ mod tests {
             close_impact: Some("可停止；网页会失联".to_owned()),
             shell: None,
             initial_command: None,
+            display: DisplayMode::Internal,
+            lifecycle: LifecycleOwner::Managed,
             logging: EffectiveLogging {
                 mode: EffectiveLogMode::OnError,
                 source: LogSource::Captured,
@@ -210,6 +225,8 @@ mod tests {
             "port",
             "purpose",
             "closeImpact",
+            "display",
+            "lifecycle",
             "logging",
         ] {
             assert!(value.get(key).is_some(), "missing {key} in {value}");
@@ -219,8 +236,26 @@ mod tests {
             "snake_case leaked into {value}"
         );
         assert_eq!(value["sessionType"], "service");
+        assert_eq!(value["display"], "internal");
+        assert_eq!(value["lifecycle"], "managed");
         assert_eq!(value["logging"]["mode"], "on_error");
         assert_eq!(value["logging"]["source"], "captured");
+    }
+
+    /// The two #66 dimensions reach the window as their own values, and
+    /// "internal" is stated rather than omitted: a UI that had to read a
+    /// missing key as the Hub-internal mode would be guessing at the one thing
+    /// the field exists to say.
+    #[test]
+    fn the_display_and_lifecycle_dimensions_are_always_stated() {
+        let mut session = sample_session();
+        session.display = DisplayMode::Window;
+        session.lifecycle = LifecycleOwner::Independent;
+
+        let value = serde_json::to_value(SessionConfigDto::from(&session)).expect("dto serializes");
+
+        assert_eq!(value["display"], "window");
+        assert_eq!(value["lifecycle"], "independent");
     }
 
     #[test]

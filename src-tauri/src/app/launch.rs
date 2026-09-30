@@ -177,19 +177,25 @@ impl RequestHandler for Hub {
     }
 }
 
-/// Open one configured application and bring the window to it (#64).
+/// Open one configured application and bring the window to it (#64, #66).
 ///
-/// The activation itself is Session Core's ([`SessionCore::activate`]) — the
-/// same call the window's own control makes, so the two entries cannot drift
-/// apart (spec #59 §2). What is decided here is only what a *launch request*
-/// adds: the Hub's window comes forward on the application it opened, and a
-/// refusal is reported as the reason it was refused rather than as a
-/// delivered request that did nothing.
+/// The opening itself is the app layer's ([`crate::app::activation::open`],
+/// which is Session Core's [`SessionCore::activate`] plus the window step the
+/// entries that keep their own window need) — the same call the window's own
+/// control makes, so the two entries cannot drift apart (spec #59 §2). What is
+/// decided here is only what a *launch request* adds: the Hub's window comes
+/// forward on the application it opened, and a refusal is reported as the
+/// reason it was refused rather than as a delivered request that did nothing.
+///
+/// A standalone application whose own window could not be brought forward is
+/// still a delivered request — the Hub did what was asked, and the answer says
+/// what it observed. Failing the request would tell the shortcut's launcher the
+/// Hub could not open the application at all, which is not what happened.
 fn open_application(app: &AppHandle<Wry>, id: &str) -> Response {
     let Some(core) = app.try_state::<SessionCore>() else {
         return Response::failed(NO_SESSION_CORE);
     };
-    match core.activate(id) {
+    match crate::app::activation::open(&core, id) {
         Ok(_) => {
             // Shown, then pointed at the session, in that order — the same
             // pair the tray uses when a row is clicked (`tray::focus_session`).

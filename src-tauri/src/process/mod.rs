@@ -65,6 +65,9 @@ mod unsupported;
 #[cfg(windows)]
 mod win;
 
+/// A run that keeps its own window and console, and outlives the Hub (#66).
+pub mod independent;
+
 // The job object that owns a managed process tree, shared with the PTY
 // backend: a terminal shell's tree is the same Win32 object supervised under
 // the same rules, and `tree` is where the spec puts "kill tree". Test builds
@@ -179,6 +182,66 @@ impl std::fmt::Debug for ProcessOutput {
     }
 }
 
+/// What identifies one process beyond the number Windows reuses (#66).
+///
+/// A pid is an index, not an identity: Windows hands the same number to a later
+/// process once the process object behind it is gone. Everything this layer does
+/// to a *supervised* run is addressed through a handle it holds, so the number
+/// never has to be trusted — but a standalone application is remembered across
+/// calls that happen later (its window is searched for, its stop may be
+/// requested), and a remembered number is exactly where "the same pid" could
+/// mean somebody else's process. Spec #59 decision 11 asks for that to be
+/// impossible rather than unlikely, so the run carries the creation timestamp
+/// Windows reports and checks it before acting on the number.
+///
+/// What [`ProcessIdentity::matches`] is not: a liveness test. While any handle
+/// to the process object is open — and a run this layer is holding has one —
+/// Windows cannot reuse that pid, so the identity of a process that has *ended*
+/// still matches its own object. That is the right answer for the thing it
+/// guards: a request is delivered to the process this run started, or to nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pid: u32,
+    created_at: u64,
+}
+
+impl ProcessIdentity {
+    /// Take the identity of a process the supervisor has just started.
+    pub(crate) fn of_child(child: &Child) -> Self {
+        ProcessIdentity {
+            pid: child.id(),
+            // A process whose creation time cannot be read is one this layer
+            // cannot tell apart later, so its identity is `None`-like: it
+            // matches nothing (`matches` compares against a value no process
+            // reports).
+            created_at: backend::creation_time(child).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// The process id, as Windows reported it when this identity was taken.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// When the process was created, in the 100-ns units Windows reports.
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// Whether the process Windows reports under this id *now* is the one this
+    /// identity was taken from.
+    pub fn matches(&self) -> bool {
+        backend::creation_time_of(self.pid) == Some(self.created_at)
+    }
+
+    /// The same identity, taken as if by hand, so the mismatch this guards
+    /// against can be exercised without waiting for Windows to reuse a pid.
+    #[cfg(test)]
+    pub(crate) fn for_test(pid: u32, created_at: u64) -> Self {
+        ProcessIdentity { pid, created_at }
+    }
+}
+
 /// How a stop ended the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopOutcome {
@@ -285,25 +348,6 @@ struct Shared {
     /// The run's piped streams, until [`ManagedProcess::take_output`] claims
     /// them. `None` for a run that was not started with capture.
     output: Mutex<Option<ProcessOutput>>,
-}
-
-impl Shared {
-    /// Poll the run's process object until it reports something or `deadline`
-    /// passes. `try_wait` is the only call that reaps, so it is the only way to
-    /// turn a signalled process object into an exit code — and it is done here,
-    /// in one bounded loop, because a thread waiting for an exit must never spin
-    /// without end (D-009).
-    fn poll_child(&self, deadline: Instant) -> Option<std::process::ExitStatus> {
-        loop {
-            if let Ok(Some(status)) = lock(&self.child).try_wait() {
-                return Some(status);
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(POLL_INTERVAL);
-        }
-    }
 }
 
 /// One supervised run.
@@ -614,39 +658,58 @@ fn watch_exit(shared: &Arc<Shared>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name(format!("lch-process-{}", shared.pid))
         .spawn(move || {
-            block_until_exit(&shared);
-            if let Some(exit) = reap(&shared) {
-                *lock(&shared.exit) = Some(exit);
+            watch_exit_handle(&shared.child, &shared.exit);
+            // Woken only for an exit this watcher recorded: a caller that was
+            // answered by a timeout re-reads the process object itself
+            // (`ManagedProcess::exit_status`).
+            if lock(&shared.exit).is_some() {
                 shared.exited.notify_all();
             }
         })
         .map(|_watcher| ())
 }
 
-/// Block until the run's process object is signalled.
-fn block_until_exit(shared: &Shared) {
+/// Block until one run's process object is signalled, then record its exit.
+///
+/// Shared with the standalone-window run (#66), which watches its process the
+/// same way and then keeps watching the *tree*: the wait for a signalled
+/// process object costs no CPU while the application runs, whatever ends up
+/// happening afterwards (D-009).
+pub(crate) fn watch_exit_handle(child: &Mutex<Child>, exit: &Mutex<Option<ExitStatus>>) {
     let handle = {
-        let child = lock(&shared.child);
+        let child = lock(child);
         backend::process_handle(&child)
     };
     // The wait must not hold the child lock: `is_running`, `tree_pids` and the
     // stop path stay answerable while a run is alive.
-    if backend::wait_for_handle(handle).is_ok() {
-        return;
+    if backend::wait_for_handle(handle).is_err() {
+        // Waiting on our own child's process object cannot fail in practice. If
+        // it somehow does, fall back to a bounded poll rather than one that
+        // never ends: an unrecorded exit is recoverable (`exit_status` reads
+        // the process object itself), a spinning thread is not.
+        let _ = lock(child).try_wait();
     }
-    // Waiting on our own child's process object cannot fail in practice. If it
-    // somehow does, fall back to a bounded poll rather than one that never ends:
-    // an unrecorded exit is recoverable (`exit_status` reads the process object
-    // itself), a spinning thread is not.
-    let _ = shared.poll_child(Instant::now() + REAP_TIMEOUT);
+
+    // Read the status now that the object has signalled. `None` means it could
+    // not be read, which keeps the watcher from recording an exit that never
+    // happened.
+    let status = poll_child(child, Instant::now() + REAP_TIMEOUT);
+    if let Some(status) = status {
+        *lock(exit) = Some(observe_exit(status));
+    }
 }
 
-/// Read the exit status once the run's process object has signalled. `None` means
-/// the status could not be read, which keeps the watcher from recording an exit
-/// that never happened.
-fn reap(shared: &Shared) -> Option<ExitStatus> {
-    let status = shared.poll_child(Instant::now() + REAP_TIMEOUT);
-    status.map(observe_exit)
+/// Poll a run's process object until it reports something or `deadline` passes.
+fn poll_child(child: &Mutex<Child>, deadline: Instant) -> Option<std::process::ExitStatus> {
+    loop {
+        if let Ok(Some(status)) = lock(child).try_wait() {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 #[cfg(all(test, windows))]

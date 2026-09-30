@@ -22,18 +22,23 @@
 //! config file and a session's log directory are keyed by, so it is derived
 //! from the name and made unique against everything already taken.
 //!
-//! ## What this does not do yet
+//! ## Both display modes, and the two dimensions they are not
 //!
-//! Only the Hub-internal display mode. A configuration that runs an
-//! application in its own window is #66's to add, and until it lands the form
-//! offers nothing this build cannot honour (spec #59 decision 8).
+//! The form offers 展示方式 (Hub-internal or the application's own window) and,
+//! for a window entry, whether the Hub manages its lifecycle (#66). They are
+//! written to the file only when the user chose something other than the
+//! default — the same rule the optional fields already follow, so an entry
+//! nobody customised stays as short as the one a user would type.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{save_session, session_ids, validate_entry, LoggingConfig, RawSessionConfig};
+use crate::config::{
+    save_session, session_ids, validate_entry, DisplayMode, LifecycleOwner, LoggingConfig,
+    RawSessionConfig,
+};
 use crate::session::core::{CreatedSession, SessionCore};
 
 /// The form's fields, as the window sends them.
@@ -55,6 +60,14 @@ pub struct NewApplication {
     pub close_impact: Option<String>,
     pub port: Option<u16>,
     pub url: Option<String>,
+    /// Where the application is displayed (#66). Absent means Hub-internal —
+    /// the mode every entry written before this field existed had — so a form
+    /// that leaves the choice alone does not freeze a default into the file.
+    pub display: Option<DisplayMode>,
+    /// Who ends the application's run (#66). Absent means the display mode's
+    /// own default: the Hub for a Hub-hosted entry, the application itself for
+    /// one that keeps its window.
+    pub lifecycle: Option<LifecycleOwner>,
     /// The `logging:` block verbatim, so the form cannot invent a policy the
     /// config layer would not accept.
     pub logging: Option<LoggingConfig>,
@@ -210,6 +223,8 @@ fn raw_entry(
         close_impact: form.close_impact.clone(),
         shell: None,
         initial_command: None,
+        display: form.display,
+        lifecycle: form.lifecycle,
         logging: form.logging.clone(),
     })
 }
@@ -325,6 +340,8 @@ mod tests {
             close_impact: None,
             port: None,
             url: None,
+            display: None,
+            lifecycle: None,
             logging: None,
         }
     }

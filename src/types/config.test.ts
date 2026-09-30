@@ -30,6 +30,8 @@ const backendReport: ConfigReportDto = {
       port: 8000,
       purpose: "聊天前端",
       closeImpact: "可停止；网页会失联",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "on_error", source: "captured" },
     },
     {
@@ -37,6 +39,8 @@ const backendReport: ConfigReportDto = {
       name: "App with own log",
       sessionType: "service",
       command: "run",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "always", source: "external", externalPath: "D:/app/data/app.log" },
     },
     {
@@ -45,6 +49,8 @@ const backendReport: ConfigReportDto = {
       sessionType: "terminal",
       shell: "powershell",
       initialCommand: "Get-ChildItem",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "off", source: "none" },
     },
   ],
@@ -102,9 +108,31 @@ describe("config DTO guards", () => {
         id: "x",
         name: "X",
         sessionType: "terminal",
+        display: "internal",
+        lifecycle: "managed",
         logging: { mode: "always", source: "none" },
       }),
     ).toBe(true);
+  });
+
+  /// The two #66 dimensions are part of the contract, not optional extras: a
+  /// payload without them would leave the UI guessing whether to draw a
+  /// terminal — and guessing wrong is the "假内嵌" the mode exists to prevent.
+  it("requires a display mode and a lifecycle owner on every session", () => {
+    const complete = {
+      id: "x",
+      name: "X",
+      sessionType: "service",
+      display: "window",
+      lifecycle: "independent",
+      logging: { mode: "off", source: "none" },
+    };
+
+    expect(isSessionConfigDto(complete)).toBe(true);
+    expect(isSessionConfigDto({ ...complete, display: undefined })).toBe(false);
+    expect(isSessionConfigDto({ ...complete, lifecycle: undefined })).toBe(false);
+    expect(isSessionConfigDto({ ...complete, display: "external" })).toBe(false);
+    expect(isSessionConfigDto({ ...complete, lifecycle: "self" })).toBe(false);
   });
 
   it("reads the temporary flag as a boolean, and its absence as configured", () => {
@@ -112,6 +140,8 @@ describe("config DTO guards", () => {
       id: "terminal-1a2b",
       name: "PowerShell 1",
       sessionType: "terminal",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "off", source: "none" },
     };
     // Absent: a configured session, which is what every payload written before

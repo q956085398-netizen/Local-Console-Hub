@@ -62,6 +62,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       purpose: "聊天前端，连接本地模型后端。",
       closeImpact: "可停止；打开的聊天页会失联，进行中的对话不会写入。",
       // auto resolved: the app owns its log, so the Hub captures nothing.
+      display: "internal",
+      lifecycle: "managed",
       logging: {
         mode: "off",
         source: "external",
@@ -118,6 +120,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       port: 8188,
       purpose: "图像生成后端，队列里经常会有长时间任务。",
       closeImpact: "会中断当前生成；队列中的 prompt 将丢失。",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "always", source: "captured" },
     },
     runtime: {
@@ -189,6 +193,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       port: 5001,
       purpose: "本地 LLM 推理服务，给 SillyTavern 提供 API。",
       closeImpact: "SillyTavern 将无法生成回复，直到本服务再次就绪。",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "on_error", source: "captured" },
     },
     runtime: {
@@ -246,6 +252,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       port: 7788,
       purpose: "本地调试用的临时 HTTP 接口。",
       closeImpact: "只影响当前调试客户端，无持久数据。",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "on_error", source: "captured" },
     },
     runtime: {
@@ -294,6 +302,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       shell: "pwsh",
       purpose: "日常交互终端，跑一次性命令与 REPL。",
       closeImpact: "仅结束本终端；不会停止其它受管服务。",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "off", source: "none" },
     },
     runtime: {
@@ -342,6 +352,8 @@ export const FIXTURE_SESSIONS: SessionView[] = [
       shell: "pwsh",
       purpose: "用完即弃的草稿终端。",
       closeImpact: "丢弃内存缓冲。默认不写日志文件。",
+      display: "internal",
+      lifecycle: "managed",
       logging: { mode: "off", source: "none" },
       // The row the reference's TEMPORARY group is about, and the one surface
       // that shows what a temporary session's controls are (#62): the remove
