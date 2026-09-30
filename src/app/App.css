@@ -111,6 +111,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The two entries, side by side and in the order the sidebar keeps them:
+ * create a terminal now, or save an application for later (#64). */
+.workspace__quick-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
 /* Narrow widths: the rail becomes an overlay drawer so the terminal keeps
  * priority (UI_STYLE_GUIDE §11). */
 .app-main--narrow {

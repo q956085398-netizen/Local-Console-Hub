@@ -932,3 +932,112 @@ fn the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace() {
     );
     assert!(restored.entries().iter().all(|entry| !entry.temporary));
 }
+
+// ---------------------------------------------------------------------------
+// Adding an application (#64)
+// ---------------------------------------------------------------------------
+
+/// "添加应用" against a real config file, on a workspace that is already using
+/// it (#64, spec #59 decisions 10 and 15).
+///
+/// The composition this file exists for, on the other half of the config file:
+/// the entry writes a *new* session into the file the bootstrap reads, a fresh
+/// load finds it, opening it twice makes one real process, and the sessions
+/// that were already there keep the runs they had — saving must not restart
+/// anything (stories 30–34).
+#[test]
+fn an_added_application_joins_a_real_config_and_opens_once() {
+    let fixture = Fixture::new(&config_yaml(LONG_RUNNING));
+    let config_before =
+        std::fs::read(&fixture.paths.config_file).expect("the config file is readable");
+
+    // A session that is already running, so "saving does not restart anything"
+    // has something real to be about.
+    fixture
+        .core
+        .start("svc")
+        .expect("the configured service starts");
+    let run_id_before = fixture.run_id("svc");
+    let pid_before = fixture.pid("svc");
+
+    let added = local_console_hub_lib::app::applications::add_application(
+        &fixture.core,
+        Some(&fixture.paths.config_file),
+        local_console_hub_lib::app::applications::NewApplication {
+            name: "ComfyUI".to_owned(),
+            cwd: fixture.root.to_string_lossy().into_owned(),
+            command: LONG_RUNNING.to_owned(),
+            purpose: Some("图像生成后端".to_owned()),
+            close_impact: None,
+            port: Some(8188),
+            url: Some("http://127.0.0.1:8188/".to_owned()),
+            logging: None,
+        },
+    )
+    .expect("the application is added");
+
+    let id = added.config.id.clone();
+    assert_eq!(id, "comfyui", "the id comes from the name");
+    assert_eq!(
+        added.runtime.status,
+        SessionStatus::Stopped,
+        "adding saves a configuration; it does not start anything"
+    );
+
+    // Nothing that was already running moved.
+    assert_eq!(fixture.status("svc"), SessionStatus::Running);
+    assert_eq!(fixture.run_id("svc"), run_id_before);
+    assert_eq!(fixture.pid("svc"), pid_before);
+
+    // The file really grew, and the text that was there is still there.
+    let after = std::fs::read(&fixture.paths.config_file).expect("the config file is readable");
+    let after_text = String::from_utf8(after).expect("the config file is UTF-8");
+    let before_text = String::from_utf8(config_before).expect("the config file is UTF-8");
+    assert!(
+        after_text.starts_with(&before_text[..before_text.len() - 1]),
+        "an append must not rewrite what the user had:\n{after_text}"
+    );
+
+    // The real loading chain — the one the app's bootstrap runs — finds it.
+    let reloaded = load_from_file(&fixture.paths.config_file).expect("the config file is readable");
+    assert!(reloaded.errors.is_empty(), "{:?}", reloaded.errors);
+    let ids: Vec<&str> = reloaded.sessions.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["term-a", "term-b", "svc", "comfyui"]);
+    let restored = SessionCore::without_listener();
+    for session in reloaded.sessions {
+        restored.register(session).expect("the config registers");
+    }
+    assert_eq!(
+        restored.entries().len(),
+        4,
+        "the next start has four sessions"
+    );
+
+    // Opening it is one real process, however many times it is asked for.
+    let opened = fixture
+        .core
+        .activate(&id)
+        .expect("opening a stopped application starts it");
+    assert!(opened.started);
+    assert_eq!(opened.runtime.status, SessionStatus::Running);
+    let pid = opened.runtime.pid.expect("a started run has a process");
+    let run_id = opened
+        .runtime
+        .run_id
+        .clone()
+        .expect("a started run has an id");
+
+    let again = fixture
+        .core
+        .activate(&id)
+        .expect("opening a running application answers with it");
+    assert!(
+        !again.started,
+        "the second open found the run already there"
+    );
+    assert_eq!(again.runtime.pid, Some(pid), "no second process");
+    assert_eq!(again.runtime.run_id, Some(run_id));
+
+    fixture.core.stop(&id).expect("cleanup");
+    fixture.core.stop("svc").expect("cleanup");
+}

@@ -226,6 +226,8 @@
 }
 
 .sidebar__foot {
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid var(--border);
   padding: 8px;
 }
@@ -249,4 +251,10 @@
 .sidebar__add:hover {
   background: var(--secondary);
   color: var(--fg);
+}
+
+/* The secondary entry: quieter than the quick one above it, because it is the
+ * one that asks for something before it does anything. */
+.sidebar__add--secondary {
+  height: 32px;
 }

@@ -307,7 +307,12 @@ pub(crate) fn show_window<R: Runtime>(app: &AppHandle<R>) -> bool {
 /// The window is shown first and the request second, so a listener that has not
 /// attached yet still gets the part that matters: the user has something to
 /// look at, and the session they wanted is one click away in the rail.
-fn focus_session<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
+///
+/// Crate-visible because a launch request that opened an application ends the
+/// same way (#64): the Hub is brought back *on that application*, through this
+/// one definition of "show me that session" rather than a second one that
+/// could drift from it (spec #59 §2).
+pub(crate) fn focus_session<R: Runtime>(app: &AppHandle<R>, session_id: &str) {
     show_window(app);
     let _ = app.emit(
         SESSION_FOCUS_REQUESTED,

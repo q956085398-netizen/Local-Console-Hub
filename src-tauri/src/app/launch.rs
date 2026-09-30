@@ -24,9 +24,10 @@
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 use crate::instance::{Request, RequestHandler, Response};
+use crate::session::core::SessionCore;
 
 /// How long a launch request waits for the Hub to finish starting.
 ///
@@ -47,6 +48,15 @@ const NOT_READY: &str = "已经有一个 Hub 在运行，但它还没有完成�
 /// running but not in a shape a launch can do anything with.
 const NO_WINDOW: &str = "已经有一个 Hub 在运行，但它现在没有可以恢复的主窗口。\n\n\
                          请从托盘打开它，或退出后重新启动；本次启动不会另开一个 Hub。";
+
+/// What an application request is told when the Hub has no registry to open it
+/// on.
+///
+/// A Hub publishes its handle only after `manage` has run, so this is the
+/// answer to a Hub that is running in a shape a launch cannot act on — the
+/// same condition [`NO_WINDOW`] covers for a plain open.
+const NO_SESSION_CORE: &str = "已经有一个 Hub 在运行，但它现在无法启动或唤起配置的应用。\n\n\
+                               请从托盘打开它；本次启动不会另开一个 Hub。";
 
 /// One value, published once, waited for by anyone who arrives first.
 ///
@@ -145,24 +155,50 @@ impl Hub {
 
 impl RequestHandler for Hub {
     fn handle(&self, request: Request) -> Response {
+        let Some(app) = self.ready.wait(READY_TIMEOUT) else {
+            return Response::failed(NOT_READY);
+        };
         match request {
-            Request::Open => match self.ready.wait(READY_TIMEOUT) {
-                Some(app) => {
-                    // The answer says what the Hub did, not what the screen
-                    // shows: the restore is issued here and drawn afterwards
-                    // (see `tray::show_window`). "There was no window to
-                    // restore" is the failure that can be told apart without
-                    // racing the window thread, so it is the one reported
-                    // instead of a `delivered` that observed nothing.
-                    if crate::tray::show_window(&app) {
-                        Response::delivered()
-                    } else {
-                        Response::failed(NO_WINDOW)
-                    }
+            Request::Open => {
+                // The answer says what the Hub did, not what the screen
+                // shows: the restore is issued here and drawn afterwards
+                // (see `tray::show_window`). "There was no window to
+                // restore" is the failure that can be told apart without
+                // racing the window thread, so it is the one reported
+                // instead of a `delivered` that observed nothing.
+                if crate::tray::show_window(&app) {
+                    Response::delivered()
+                } else {
+                    Response::failed(NO_WINDOW)
                 }
-                None => Response::failed(NOT_READY),
-            },
+            }
+            Request::OpenApplication { id } => open_application(&app, &id),
         }
+    }
+}
+
+/// Open one configured application and bring the window to it (#64).
+///
+/// The activation itself is Session Core's ([`SessionCore::activate`]) — the
+/// same call the window's own control makes, so the two entries cannot drift
+/// apart (spec #59 §2). What is decided here is only what a *launch request*
+/// adds: the Hub's window comes forward on the application it opened, and a
+/// refusal is reported as the reason it was refused rather than as a
+/// delivered request that did nothing.
+fn open_application(app: &AppHandle<Wry>, id: &str) -> Response {
+    let Some(core) = app.try_state::<SessionCore>() else {
+        return Response::failed(NO_SESSION_CORE);
+    };
+    match core.activate(id) {
+        Ok(_) => {
+            // Shown, then pointed at the session, in that order — the same
+            // pair the tray uses when a row is clicked (`tray::focus_session`).
+            // Whether this call started the run or found it already going is
+            // not the answer the caller needs: both are "it is open".
+            crate::tray::focus_session(app, id);
+            Response::delivered()
+        }
+        Err(error) => Response::failed(error.message),
     }
 }
 
