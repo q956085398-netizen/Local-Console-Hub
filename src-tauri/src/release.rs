@@ -336,7 +336,7 @@ fn the_uninstaller_checkbox_label_describes_what_it_deletes() {
 }
 
 // ---------------------------------------------------------------------------
-// The window's title bar and its icon (issue #68, docs/DECISIONS.md D-028)
+// The window's title bar and its icon (issue #68, docs/DECISIONS.md D-029)
 // ---------------------------------------------------------------------------
 //
 // Three surfaces have to agree for the merged title bar to be the window's
@@ -375,7 +375,7 @@ fn the_main_window_carries_its_own_title_bar() {
     assert_eq!(
         window["decorations"], false,
         "the main window is undecorated so the dark title bar is the only one — a system title \
-         above it is the duplicate title #68 removed (docs/DECISIONS.md D-028)"
+         above it is the duplicate title #68 removed (docs/DECISIONS.md D-029)"
     );
     assert_ne!(
         window["resizable"], false,
@@ -435,7 +435,7 @@ fn the_title_bar_controls_are_granted_what_they_ask_for() {
 ///
 /// What no test here can do is compare the raster with the vector: editing the
 /// SVG without re-running the script leaves the shipped set stale with this
-/// suite green. `docs/DECISIONS.md` D-028 says so and names the two commands.
+/// suite green. `docs/DECISIONS.md` D-029 says so and names the two commands.
 #[test]
 fn the_icon_set_comes_from_the_one_hub_mark() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -459,7 +459,7 @@ fn the_icon_set_comes_from_the_one_hub_mark() {
     assert!(
         source.is_file(),
         "the icon source `{}` is gone — it is the file both the native icon set and the title \
-         bar's mark come from (D-028)",
+         bar's mark come from (D-029)",
         source.display()
     );
 }

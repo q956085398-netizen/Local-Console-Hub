@@ -38,7 +38,7 @@ and lifecycle changes originate in Session Core.
   is maximized. The window is injected, so the rules run in the node test
   environment; a browser preview has no window at all. This is not session
   truth either — `tauri.conf.json` and the tray's close handler decide what the
-  window *is* (D-028).
+  window *is* (D-029).
 - `session-registry.ts` — coordinates the initial configured-session snapshot
   with full `session-state-changed` events through an injected backend. It
   buffers a bounded set of latest events until configs arrive, resynchronizes

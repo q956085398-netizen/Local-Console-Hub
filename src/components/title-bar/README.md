@@ -1,6 +1,6 @@
 # components/title-bar/
 
-The window's only title bar (T06 #7, #68; `docs/UI_STYLE_GUIDE.md` §3, D-028).
+The window's only title bar (T06 #7, #68; `docs/UI_STYLE_GUIDE.md` §3, D-029).
 
 Left: the Hub icon (`assets/brand/hub-mark.svg`, rendered from the same file the
 Windows icon set is rasterized from — one drawing, two sizes) and the

@@ -354,14 +354,15 @@ node scripts/capture-ui-states.mjs
 
 ### 与参考图的有意偏差（**不是缺陷**）
 
-`docs/DESIGN_SPEC_EXTRACTED.md` §5 记录了 7 条，比对时按「预期」处理，逐条如下：
+`docs/DESIGN_SPEC_EXTRACTED.md` §5 记录了 8 条，比对时按「预期」处理，逐条如下：
 不实现 `Ctrl K` / 全局设置 / 日志入口 / `退出`（窗口控制本身自 #68 起已实现，
 见 D-029）；`UI 预览` 徽标只在检测不到
 Rust 后端时出现；行内日志标签显示 `External` 而不是参考图的 `Auto`（`auto` 在到达前端前
 已被解析）；详情面板不重复头部元数据；fixture 计时是相对的，字面值不同属正常；
 `on_error` 拼作 `on error`；服务终端的连接条是 `PTY 未连接 · 只读缓冲` 而不是参考图的
 `PTY attached · stdin 可用`（受管服务没有可输入的 stdin，UI_STYLE_GUIDE §7 禁止声称
-快照没有报告的连接）。
+快照没有报告的连接）；活动终端的「关闭影响」callout 在配置原文之下多一行
+`停止该终端会同时结束它启动的子进程。`（#61，D-028）。
 
 ### 首轮环境无法完成的部分（历史边界）
 
@@ -680,18 +681,20 @@ Edge 时 `puppeteer.launch` 报 `Failed to launch the browser process: Code: 0`�
 
 ### 2026-09-30 — #68 合并标题栏与统一 Hub 图标
 
-环境：Windows 11 Pro（10.0.26300），worktree `elegant-kilby-2aaf97`（基 `bbd1c35`），
-`CARGO_TARGET_DIR` 复用主检出的 `target`。改动：`decorations: false` + 标题栏里的窗口
-控制 + 显式窗口权限 + 图标源换成 `assets/brand/hub-mark.svg`（D-029）。
+环境：Windows 11 Pro（10.0.26300），worktree `elegant-kilby-2aaf97`（基 `bbd1c35`，其后
+合并 main 的 #70 提交），`CARGO_TARGET_DIR` 复用主检出的 `target`。改动：
+`decorations: false` + 标题栏里的窗口控制 + 显式窗口权限 + 图标源换成
+`assets/brand/hub-mark.svg`（D-029）。
 
-**自动检查，全绿：**
+**自动检查，全绿**（下表是合并 main 之后的复跑；合并前本分支上的同批命令结果相同，只是
+没有 #61 带来的那些用例）：
 
 | 套件 | 结果 |
 | --- | --- |
-| `npm run check`、`npm run lint`、`npm run format:check` | 通过 |
-| `npm test` | 210 passed / 15 files（含新增 `src/app/window-controls.test.ts` 5 项） |
-| `cargo test` | 338 lib + 10 `tests/mvp_matrix.rs` passed / 0 failed；其中新增 3 条 release 守卫 |
-| `npm run build` | 通过 |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | 215 passed / 15 files（含新增 `src/state/window-controls.test.ts` 6 项） |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | 344 lib + 10 `tests/mvp_matrix.rs` passed / 0 failed；其中新增 3 条 release 守卫 |
 
 **带宿主的前端行为（第 2 层，`t68-harness.html` + 桩宿主，跑完删除）。** 在一个浏览器页里
 安装 `__TAURI_INTERNALS__`（其中 `invoke` / `transformCallback` / `plugin:event|listen`

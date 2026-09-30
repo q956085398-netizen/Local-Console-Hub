@@ -71,7 +71,7 @@ export default function TitleBar({
 
 /**
  * Application mark: the Hub icon, rendered from the file the native icon set
- * is generated from (`assets/brand/hub-mark.svg`, D-028).
+ * is generated from (`assets/brand/hub-mark.svg`, D-029).
  *
  * It is that file rather than a copy of it because a second drawing of the same
  * mark is exactly the drift this ticket removed: one drawing, rasterized for

@@ -2,7 +2,7 @@
 // (1024×1024), the input expected by `npx tauri icon`.
 //
 // The SVG is the app's single icon source: the title bar renders the same file
-// (D-028), so the icon a user clicks in the taskbar and the mark inside the
+// (D-029), so the icon a user clicks in the taskbar and the mark inside the
 // window cannot drift apart.
 //
 // Usage:
