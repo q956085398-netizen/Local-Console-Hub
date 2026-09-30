@@ -46,6 +46,21 @@ pub enum LogMode {
     Auto,
 }
 
+impl LogMode {
+    /// Literal used in YAML and DTOs; matches the serde rename above and
+    /// [`EffectiveLogMode::as_str`], so the mode vocabulary has one spelling
+    /// wherever it is written.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LogMode::Off => "off",
+            LogMode::Always => "always",
+            LogMode::OnError => "on_error",
+            LogMode::Manual => "manual",
+            LogMode::Auto => "auto",
+        }
+    }
+}
+
 /// Where persisted log content comes from (`docs/LOGGING.md` §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -16,6 +16,12 @@
 use serde::Serialize;
 use tauri::State;
 
+// Aliased so the command below can keep the plain name the window calls:
+// `add_application` is a Tauri command *and* an app-layer operation, and the
+// two are the same thing one call apart.
+use crate::app::applications::{
+    add_application as register_application, AddApplicationError, NewApplication,
+};
 use crate::config::{ConfigReportDto, SessionConfigDto};
 use crate::session::core::{CreatedSession, SessionCore, SessionEntry, SessionError};
 use crate::session::runtime::SessionRuntime;
@@ -36,10 +42,27 @@ pub struct CreatedSessionDto {
     pub runtime: SessionRuntime,
 }
 
-impl From<CreatedSession> for CreatedSessionDto {
-    fn from(created: CreatedSession) -> Self {
+impl CreatedSessionDto {
+    /// A session that was created from the window (#62): removable once it has
+    /// ended, and never restored after an exit.
+    pub fn temporary(created: CreatedSession) -> Self {
         CreatedSessionDto {
             config: SessionConfigDto::from(&created.config).temporary(),
+            runtime: created.runtime,
+        }
+    }
+
+    /// A session that was saved into the config file (#64): listed now,
+    /// reloaded by the next start, and not removable from the window.
+    ///
+    /// The pair is the same shape as a temporary one's — it is the same fact,
+    /// "this session was just created, here are both halves" — and the flag is
+    /// what differs. Naming the two constructors rather than writing the flag
+    /// at each call site is what keeps that difference from being a detail a
+    /// reader has to check.
+    pub fn configured(created: CreatedSession) -> Self {
+        CreatedSessionDto {
+            config: SessionConfigDto::from(&created.config),
             runtime: created.runtime,
         }
     }
@@ -94,7 +117,47 @@ pub fn create_temporary_terminal(
     cwd: Option<String>,
 ) -> Result<CreatedSessionDto, SessionError> {
     core.create_temporary_terminal(cwd.as_deref())
-        .map(CreatedSessionDto::from)
+        .map(CreatedSessionDto::temporary)
+}
+
+/// Save a new application and add it to the session list (#64).
+///
+/// The secondary entry behind "添加应用": a form's fields in, one configured
+/// session out — saved to the user's config file (so the next start loads it)
+/// and registered now (so this window lists it immediately). The two halves
+/// are one operation because a row without a config entry, or a config entry
+/// without a row, is the phantom the spec forbids.
+///
+/// The failure carries the form field it belongs to when there is one, so the
+/// dialog can put the message beside the input rather than only in a banner.
+///
+/// The file to write is taken from the startup report, which is where the app
+/// records the path it actually read — not from `AppPaths::from_env()` again,
+/// which could resolve differently from the file the registry was built from.
+#[tauri::command]
+pub fn add_application(
+    core: State<'_, SessionCore>,
+    report: State<'_, ConfigReportDto>,
+    form: NewApplication,
+) -> Result<CreatedSessionDto, AddApplicationError> {
+    let config_file = report.config_path.as_deref().map(std::path::Path::new);
+    register_application(&core, config_file, form).map(CreatedSessionDto::configured)
+}
+
+/// Open a session: start it, or select the run it already has (#64).
+///
+/// Every "open this application" entry goes through this one operation
+/// (spec #59 decision 10), so a second click on a running application cannot
+/// start a second one, a click while it is starting cannot start another, and
+/// a click while it is stopping is refused rather than queued behind the stop
+/// barrier.
+#[tauri::command]
+pub fn activate_session(
+    core: State<'_, SessionCore>,
+    session_id: String,
+) -> Result<SessionRuntime, SessionError> {
+    core.activate(&session_id)
+        .map(|activation| activation.runtime)
 }
 
 /// Remove a temporary session from the registry (#62).

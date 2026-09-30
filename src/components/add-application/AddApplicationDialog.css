@@ -1,0 +1,169 @@
+/*
+ * The "添加应用" form (#64).
+ *
+ * A modal surface over the workspace: the reference's visual language has no
+ * permanent side panel (UI_STYLE_GUIDE §3), and the form is a momentary task
+ * rather than another region to keep open. Colors come from the shared tokens
+ * in `index.css`; interaction stays neutral and lifecycle color is not used
+ * here, because nothing in this dialog is a session state.
+ */
+
+.add-app__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  background: rgba(5, 6, 8, 0.6);
+  overflow-y: auto;
+}
+
+.add-app {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.add-app__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+}
+
+.add-app__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.add-app__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-fg);
+  cursor: pointer;
+}
+
+.add-app__close:hover {
+  background: var(--secondary);
+  color: var(--fg);
+}
+
+.add-app__lead {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+
+.add-app__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 4px;
+}
+
+.add-app__row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+}
+
+.add-app__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.add-app__error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(210, 120, 120, 0.12);
+  border: 1px solid rgba(210, 120, 120, 0.28);
+  color: var(--destructive-bright);
+  font-size: 12px;
+}
+
+/* One labelled input, stacked the way the header's metadata is: a quiet label
+ * above the control, the message directly beneath the box it is about. */
+.add-app__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.add-app__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.add-app__required {
+  color: var(--idle-fg);
+  font-size: 11px;
+}
+
+.add-app__input {
+  height: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+/* Paths, commands, ports and addresses are the values the reference sets in
+ * the mono face (UI_STYLE_GUIDE §10: "monospace text for terminal and compact
+ * technical metadata"). Names and prose stay in the sans face. */
+.add-app__input--mono {
+  font-family: var(--font-mono);
+}
+
+.add-app__input::placeholder {
+  color: var(--idle-fg);
+}
+
+.add-app__input:focus-visible {
+  outline: 1px solid var(--fg-dim);
+  outline-offset: 1px;
+}
+
+.add-app__hint {
+  color: var(--idle-fg);
+  font-size: 11px;
+}
+
+.add-app__field-error {
+  color: var(--destructive-bright);
+  font-size: 11px;
+}
+
+.add-app__mode {
+  margin: 0;
+  color: var(--idle-fg);
+  font-size: 11px;
+}

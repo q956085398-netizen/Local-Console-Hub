@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ConfigReportDto } from "../types/config";
+import {
+  isAddApplicationErrorDto,
+  type AddApplicationOutcome,
+  type ConfigReportDto,
+  type NewApplicationFormDto,
+} from "../types/config";
 import {
   SESSION_CREATED,
   SESSION_REMOVED,
@@ -40,7 +45,16 @@ export interface SessionRegistry {
   configReport: ConfigReportDto | null;
   /** Failure to retrieve the report IPC payload itself. */
   configReportError: string | null;
-  start(sessionId: string): void;
+  /**
+   * Open a session (#64, spec #59 decision 10): start it if nothing is
+   * running, and answer with the run it already has if something is.
+   *
+   * The one open operation, so a second click on a running application cannot
+   * create a second one and a click while it is stopping is refused rather
+   * than queued behind the barrier. Restarting is deliberately a different
+   * control.
+   */
+  activate(sessionId: string): void;
   stop(sessionId: string): void;
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
@@ -60,9 +74,23 @@ export interface SessionRegistry {
    * on the machine is the user's to fix (H06).
    */
   createTerminal(cwd?: string): Promise<string | null>;
+  /**
+   * Save a new application and add it to the list (#64) — "添加应用".
+   *
+   * Answers with the new session's id once the backend has validated,
+   * registered *and* written it, or with the reason it was refused. The two
+   * halves matter: a refusal that came from the config layer names the form
+   * field it belongs to, and the dialog keeps the user's input so they can fix
+   * that one box rather than retype the form.
+   */
+  addApplication(form: NewApplicationFormDto): Promise<AddApplicationResult>;
   /** Remove a temporary session that has ended (#62). */
   removeSession(sessionId: string): void;
 }
+
+/** The answer to one "添加应用" (#64). */
+export type AddApplicationResult =
+  { ok: true; sessionId: string } | { ok: false; message: string; field?: string };
 
 /** Where the rendered sessions came from. */
 export type SessionSource = "preview" | "loading" | "backend";
@@ -200,6 +228,32 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     }
   }, []);
 
+  /**
+   * "添加应用" (#64).
+   *
+   * Like `createTerminal`, this is one of the two commands whose answer the
+   * window reads: only the answer says *which* session was added, and only it
+   * carries a refusal the form can place beside the field that caused it.
+   */
+  const addApplication = useCallback(
+    async (form: NewApplicationFormDto): Promise<AddApplicationOutcome> => {
+      try {
+        const raw = await invoke<unknown>("add_application", { form });
+        if (!isCreatedSessionDto(raw)) {
+          throw new Error("add_application 返回了无法识别的载荷");
+        }
+        controller.current?.adopt(raw);
+        return { ok: true, sessionId: raw.config.id };
+      } catch (cause) {
+        if (isAddApplicationErrorDto(cause)) {
+          return { ok: false, message: cause.message, field: cause.field };
+        }
+        return { ok: false, message: sessionErrorMessage(cause) };
+      }
+    },
+    [],
+  );
+
   const removeSession = useCallback((sessionId: string) => {
     invoke("remove_session", { sessionId })
       .then(() => controller.current?.forget(sessionId))
@@ -216,13 +270,17 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       initializationError,
       configReport,
       configReportError,
-      start: (sessionId) => run("start_session", sessionId),
+      // Opening goes through the activation semantics (#64), not a bare
+      // start: the same call a launch request handed to the Hub performs, so
+      // the two entries cannot disagree about what "open" means.
+      activate: (sessionId) => run("activate_session", sessionId),
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
       forceStop: (sessionId) => run("force_stop_session", sessionId),
       openUrl: (sessionId) => run("open_session_url", sessionId),
       openDirectory: (sessionId) => run("open_session_cwd", sessionId),
       createTerminal,
+      addApplication,
       removeSession,
     }),
     [
@@ -236,6 +294,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       configReportError,
       run,
       createTerminal,
+      addApplication,
       removeSession,
     ],
   );

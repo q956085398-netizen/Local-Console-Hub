@@ -36,10 +36,10 @@ const TERMINATOR: u8 = b'\n';
 /// What a later invocation is asking the running Hub to do.
 ///
 /// The enum is the extension point the spec asks for (§3, "显式区分三类启动
-/// 请求"): #62 adds the temporary terminal, #63 the directory it starts in, and
-/// #64–#67 the configured application. Until then there is exactly one
-/// operation, and the Hub rejects anything else by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 请求"): the normal open is here, #64 adds the configured application, and
+/// #63's directory-carrying terminal request will join them. An operation this
+/// build does not know is rejected by name rather than read as one it does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "camelCase")]
 pub enum Request {
     /// Bring the Hub's window back, in the state it was hidden in.
@@ -48,6 +48,15 @@ pub enum Request {
     /// asked for. It restores — it does not start a session, and it does not
     /// restart or duplicate anything the Hub is already running.
     Open,
+    /// Open a configured application, by session id (#64).
+    ///
+    /// The same activation the window's own control performs (spec §2: 窗口、
+    /// 快捷方式与托盘使用同一应用操作边界) — start it if nothing is running,
+    /// bring the run it already has forward if something is.
+    OpenApplication {
+        /// The configured session's id, as the config file names it.
+        id: String,
+    },
 }
 
 /// The Hub's answer to one [`Request`].
@@ -265,6 +274,44 @@ mod tests {
         );
         let response = decode_response(&frame[..frame.len() - 1]).expect("it decodes back");
         assert_eq!(response.message.as_deref(), Some("第一行\n第二行"));
+    }
+
+    /// The configured-application request carries the session it names, so the
+    /// Hub knows *which* application to open — and its operation name is what
+    /// an older build refuses by.
+    #[test]
+    fn an_open_application_request_carries_the_session_it_names() {
+        let frame = encode(&Request::OpenApplication {
+            id: "comfyui".to_owned(),
+        })
+        .expect("a request encodes");
+
+        assert_eq!(
+            std::str::from_utf8(&frame[..frame.len() - 1]).expect("frames are UTF-8"),
+            r#"{"request":"openApplication","id":"comfyui"}"#
+        );
+        assert_eq!(
+            decode_request(&frame[..frame.len() - 1]).expect("it decodes back"),
+            Request::OpenApplication {
+                id: "comfyui".to_owned()
+            }
+        );
+    }
+
+    /// The two operations are told apart by name, not by shape: a request that
+    /// names an application must never be read as a plain open.
+    #[test]
+    fn an_open_application_is_never_read_as_a_normal_open() {
+        assert_ne!(
+            Request::OpenApplication {
+                id: "comfyui".to_owned()
+            },
+            Request::Open
+        );
+        assert!(matches!(
+            decode_request(br#"{"request":"open"}"#),
+            Ok(Request::Open)
+        ));
     }
 
     /// A delivered answer says so in the frame, so a reader that ignores the

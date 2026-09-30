@@ -883,6 +883,81 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
 **清理。** 临时终端随应用结束，用户配置先备份后原样还原（sha256 一致，备份已删），
 `npm run dev` 的 dev server 已停。
 
+### 2026-10-01 — #64 添加并复用 Hub 内显示的应用（D-032）
+
+工单 #64（父规格 #59 的决策 7、8、10、15；前置 #60、#62 已合并）。基线为基线提交
+`0f6bc62`（含 #60/#61/#62/#68），worktree `trusting-blackburn-627b38`。环境为 Windows 11 Pro
+（10.0.26300）、真实用户会话 `q9560`。下面的自动结果里，涉及真实进程与 ConPTY 的部分跑在
+这个 Windows 用户环境里，不是 mock。
+
+**第 1 层（自动）。** 全绿：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | **244 passed / 17 files** |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **430 lib + 12 `tests/mvp_matrix.rs`，0 failed** |
+
+本片新增 54 条用例（lib 41、集成 1、前端 12），它们各自钉住的行为：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `config::save::tests`（17 条） | 缺文件时新建文档且只写用户填过的字段；追加保留原文字节、注释与顺序；条目缩进跟随文件自己的写法；空列表、仅注释文件、以及空工作区的 `sessions: []` 都能追加（后者只去掉那两个方括号，行内注释照留）；格式损坏、未知根键、**带内容的**行内列表、重复 id 各自被拒且原文一字不动；写前重核原文（并发修改被拒且不覆盖）；只读文件无法替换时报告 I/O 失败、原文与临时目录都不留痕；非文件路径同理；替换后不留临时文件 |
+| `app::applications::tests`（14 条） | 新增应用同时进入注册表与文件、且**不启动**；可选字段按填写内容落盘；已有条目原样保留；id 撞名让号（注册表与文件两边都算）；文件里有而注册表没有的 id 也算占用；纯中文名落到 `app` 且 `name` 保持原样；必填三项缺失时按字段拒绝且**不写文件、不建行**；目录不存在按 `cwd` 报错且无副作用；配置损坏时拒绝并撤回注册（无幽灵行）；没有配置文件位置时拒绝；端口 0 沿用配置层的消息与字段；slug 与长度截断；同一 id 第二次写盘被拒 |
+| `session::core::tests` 的 `activating_starts_…` / `activating_a_starting_…` / `activating_a_stopping_…` / `activating_an_ended_…` / `activating_an_unknown_…` | 未运行就启动一次；已运行或启动中返回**同一个** pid 与 run id；停止中拒绝（`invalid_transition`）且不创建任何运行；结束态可再次打开；未知 id 报 `unknown_session` |
+| `two_opens_that_arrive_together_create_one_run` | 8 个线程同时打开同一个未运行会话：无一失败，恰好一个创建了运行，注册表里仍只有那一个会话（连跑 15 次稳定） |
+| `a_registration_can_be_taken_back_before_it_is_announced` / `a_session_that_owns_a_run_is_not_taken_back` | 撤回注册不发布任何事件（没人被告知过它），持有一个 run 的会话不会被撤回 |
+| `instance::protocol::tests` 的 2 条新增 | `openApplication` 请求携带会话 id、其帧形状固定，且不会被读成普通 `open` |
+| 集成 `an_added_application_joins_a_real_config_and_opens_once` | 真实配置文件的追加式保存 + 真实加载链路重新读出 4 个会话；追加后原文前缀不变；保存时**已在运行**的会话 run id 与 pid 不变（保存不重启任何会话）；激活两次是**一个**真实进程 |
+| 前端 `AddApplicationDialog.test.ts`（11 条） | 三个必填项与五个可选项；不出现「独立窗口」字样，只陈述「Hub 内显示」；`loggingFor` 的每种策略都是配置层接受的组合、未指定时不写 `logging:` 块；`errorPlacement` 把后端给字段名落在对应输入框上、没有字段或表单没有这个输入框时退回 banner（含 `logging.path` 只在外部日志策略下才落位） |
+| 前端 `Sidebar.test.ts`（1 条） | 两个入口并存，且不再出现被决策 7 取消的混合文案 |
+
+**一次偶发失败（不是本片引入，记录在案）。** 一次全量 `cargo test` 里
+`process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree` 失败过一次；该用例与
+本片改动无关（`process` 模块未被本片触碰），随后单独复跑 3 次与全量复跑 8 次全部通过，因此
+记为该用例本身的偶发，而不是本片的结果。本片的断言不依赖进程数量或 PID 复用。
+
+**第 3 层（视觉）。** 本片新增的是对话框表面，参考图里没有这一态，所以比对的是视觉语言
+（`docs/UI_STYLE_GUIDE.md` §10）而不是逐区域复刻。做法与 #68 的第 2 层同源：在工程根放一个
+**临时**的 `t64-harness.html`（跑完已删除），在 `/src/main.tsx` 之前装好
+`window.__TAURI_INTERNALS__` 的桩，用 `preview_*` 工具在同一浏览器页里驱动并截图，1280×800。
+桩实现的是真实契约形状的 `ping` / `list_session_configs` / `list_sessions` /
+`get_config_report` / `activate_session` / `add_application`，`add_application` 会真的往页内
+列表里加一条并派发 `session-created`。观察到的：
+
+- 侧栏底部两个入口（`新建 PowerShell` / `添加应用`）与参考图底部的入口位一致，颜色为中性灰，
+  没有用到生命周期色；
+- 点开后对话框居中（1280 视口下 x=354、宽 562），遮罩压暗工作区，卡片用 `--card`、1px
+  `--border`、12px 圆角，与侧栏卡片同一套 token；
+- 路径、命令、端口、地址用 `--font-mono`，名称与用途/关闭影响用正文字体——对应规范里
+  「monospace text for … compact technical metadata」；
+- 提交后对话框关闭、新行 `SillyTavern` 出现在列表并**被选中**，头部显示
+  `Service / Stopped / :8000 / cwd D:\Tools\SillyTavern / log on error`，桩收到的载荷是
+  `{name, cwd, command, url, port}`——未填的可选项（用途、关闭影响、日志策略）确实没有被发送；
+- 端口填 `abc` 时对话框不关闭，消息落在端口输入框下方；桩返回一个不带字段的错误时，红色
+  banner 出现在表单底部，用户已填内容原样保留；
+- 空工作区（`?empty=1`）分支同样能打开该对话框，位置与尺寸不变。
+
+**这一层证明的边界。** 它证明的是**我们的标记、样式与前端接线**（哪个入口发哪条命令、字段怎么
+映射成配置层词汇、失败怎么回到表单），以及一次真实的「保存 → 立刻出现在列表 → 选中」的界面
+行为；**它证明不了 Rust 侧的保存语义、进程行为或原生窗口**——那些由第 1 层与本文件别处的原生
+轮次负责。浏览器预览在无宿主时会走 fixture 工作区，那里的「添加应用」按设计只提示需要后端，
+不发命令（与 `新建 PowerShell` 同一条预览规则）。
+
+**第 2 层（原生窗口）：本片未运行。** H09 与 H10 需要真实窗口里真的保存一次、真的启动一份
+进程、并在停止过程中再点一次，本轮没有驱动原生窗口，因此**不把 H09/H10 记为通过**，留给
+#69 的组合原生轮次（与 #61/#62 留下的 H14/H15/H16 同一批次）。相应地也**没有**动过用户真实的
+`%APPDATA%\LocalConsoleHub\config.yaml`：本片所有写盘都发生在临时目录里。
+
+**未执行 / 留待。** H09（真实窗口里添加应用、重开 Hub 复用、制造保存失败或冲突）、H10 的
+Hub 内显示部分（已在运行/启动中/停止中点击配置应用）、以及 `openApplication` 启动请求在真实
+快捷方式下的端到端链路，都未在原生环境执行。外部入口（`#63`）与独立窗口（`#66`）本就不是
+本片范围。
+
+**清理。** 临时 harness 页已删除（`git status` 里不存在），`npm run dev` 的预览服务已停止，
+测试用的临时目录由各用例自行删除。
+
 ---
 
 ## 7. 当前已知缺口与验收边界
@@ -899,6 +974,11 @@ DevTools 通道，因此**不声称**「用 OS 级输入在原生窗口里点过
   通过 WebView2 的 DevTools 通道驱动了真实窗口（真实 IPC 与真实 ConPTY），因此 H03 与
   H05/H07/H08 的主体有了窗口内证据；但输入不是 OS 级 `SendInput`，托盘与任务栏未参与，
   H14/H15/H16 仍归 #69 的组合原生验收，且该轮出现过两个无法归因的额外临时终端（见 §6）。
+- **#64 的保存与激活已有第 1 层与前端桩宿主证据，原生窗口部分未运行。** 2026-10-01 那一轮
+  把安全追加、两半事务、id 派生、四种状态下的打开语义钉在自动用例里，并在带桩宿主的浏览器页
+  里走通了「保存 → 列表出现 → 被选中」与两种失败呈现；但 H09/H10 需要在真实窗口里真的保存与
+  真的启停，本轮未做，连同 `openApplication` 请求的真实快捷方式链路一并归 #69（见 §6）。
+  用户真实的 `config.yaml` 本片从未写过。
 - **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
   一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
   DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。
