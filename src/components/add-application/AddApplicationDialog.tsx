@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import type {
-  AddApplicationErrorDto,
-  AddApplicationOutcome,
-  NewApplicationFormDto,
-} from "../../types/config";
-import "./AddApplicationDialog.css";
+import type { FormErrorDto, FormSaveOutcome, NewApplicationFormDto } from "../../types/config";
+import "../dialog/dialog.css";
 
 export interface AddApplicationDialogProps {
   /**
@@ -13,7 +9,7 @@ export interface AddApplicationDialogProps {
    * what came back — including a refusal, which is why it never assumes the
    * save succeeded (spec #59 decision 15: 只在持久保存确认后反馈成功).
    */
-  onSubmit: (form: NewApplicationFormDto) => Promise<AddApplicationOutcome>;
+  onSubmit: (form: NewApplicationFormDto) => Promise<FormSaveOutcome>;
   onClose: () => void;
 }
 
@@ -44,10 +40,7 @@ const RENDERED_FIELDS: ReadonlySet<string> = new Set([
  * to go. Both fall through to the banner rather than disappearing, which is
  * the failure mode worth designing out (story 31: 保存失败有明确反馈).
  */
-export function errorPlacement(
-  error: AddApplicationErrorDto | null,
-  policy: string,
-): string | null {
+export function errorPlacement(error: FormErrorDto | null, policy: string): string | null {
   const field = error?.field;
   if (field === undefined || !RENDERED_FIELDS.has(field)) return null;
   if (field === "logging.path" && policy !== "external") return null;
@@ -120,7 +113,7 @@ export default function AddApplicationDialog({ onSubmit, onClose }: AddApplicati
   const [policy, setPolicy] = useState(LOG_POLICIES[0].value);
   const [logPath, setLogPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<AddApplicationErrorDto | null>(null);
+  const [error, setError] = useState<FormErrorDto | null>(null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -178,124 +171,124 @@ export default function AddApplicationDialog({ onSubmit, onClose }: AddApplicati
   const errorFor = (field: string) => (placedField === field ? error?.message : null);
 
   return (
-    <div className="add-app__backdrop" role="presentation">
+    <div className="dialog__backdrop" role="presentation">
       <form
-        className="add-app"
+        className="dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-application-title"
         onSubmit={submit}
       >
-        <header className="add-app__head">
-          <h2 className="add-app__title" id="add-application-title">
+        <header className="dialog__head">
+          <h2 className="dialog__title" id="add-application-title">
             添加应用
           </h2>
-          <button type="button" className="add-app__close" aria-label="关闭" onClick={onClose}>
+          <button type="button" className="dialog__close" aria-label="关闭" onClick={onClose}>
             <X size={14} />
           </button>
         </header>
 
-        <p className="add-app__lead">
+        <p className="dialog__lead">
           保存一个启动配置；保存后会立即出现在会话列表里，下次打开 Hub 仍然可用。
         </p>
 
-        <div className="add-app__body">
-          <label className="add-app__field">
-            <span className="add-app__label">
-              名称 <span className="add-app__required">必填</span>
+        <div className="dialog__body">
+          <label className="dialog__field">
+            <span className="dialog__label">
+              名称 <span className="dialog__required">必填</span>
             </span>
             <input
-              className="add-app__input"
+              className="dialog__input"
               value={name}
               autoFocus
               onChange={(event) => setName(event.target.value)}
               placeholder="ComfyUI"
             />
-            {errorFor("name") && <span className="add-app__field-error">{errorFor("name")}</span>}
+            {errorFor("name") && <span className="dialog__field-error">{errorFor("name")}</span>}
           </label>
 
-          <label className="add-app__field">
-            <span className="add-app__label">
-              工作目录 <span className="add-app__required">必填</span>
+          <label className="dialog__field">
+            <span className="dialog__label">
+              工作目录 <span className="dialog__required">必填</span>
             </span>
             <input
-              className="add-app__input add-app__input--mono"
+              className="dialog__input dialog__input--mono"
               value={cwd}
               onChange={(event) => setCwd(event.target.value)}
               placeholder="D:\Tools\ComfyUI_windows_portable"
             />
-            {errorFor("cwd") && <span className="add-app__field-error">{errorFor("cwd")}</span>}
+            {errorFor("cwd") && <span className="dialog__field-error">{errorFor("cwd")}</span>}
           </label>
 
-          <label className="add-app__field">
-            <span className="add-app__label">
-              启动命令 <span className="add-app__required">必填</span>
+          <label className="dialog__field">
+            <span className="dialog__label">
+              启动命令 <span className="dialog__required">必填</span>
             </span>
             <input
-              className="add-app__input add-app__input--mono"
+              className="dialog__input dialog__input--mono"
               value={command}
               onChange={(event) => setCommand(event.target.value)}
               placeholder="python main.py"
             />
             {errorFor("command") && (
-              <span className="add-app__field-error">{errorFor("command")}</span>
+              <span className="dialog__field-error">{errorFor("command")}</span>
             )}
           </label>
 
-          <div className="add-app__row">
-            <label className="add-app__field">
-              <span className="add-app__label">端口</span>
+          <div className="dialog__row">
+            <label className="dialog__field">
+              <span className="dialog__label">端口</span>
               <input
-                className="add-app__input add-app__input--mono"
+                className="dialog__input dialog__input--mono"
                 value={port}
                 inputMode="numeric"
                 onChange={(event) => setPort(event.target.value)}
                 placeholder="8188"
               />
-              {errorFor("port") && <span className="add-app__field-error">{errorFor("port")}</span>}
+              {errorFor("port") && <span className="dialog__field-error">{errorFor("port")}</span>}
             </label>
-            <label className="add-app__field">
-              <span className="add-app__label">网页地址</span>
+            <label className="dialog__field">
+              <span className="dialog__label">网页地址</span>
               <input
-                className="add-app__input add-app__input--mono"
+                className="dialog__input dialog__input--mono"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 placeholder="http://127.0.0.1:8188"
               />
-              {errorFor("url") && <span className="add-app__field-error">{errorFor("url")}</span>}
+              {errorFor("url") && <span className="dialog__field-error">{errorFor("url")}</span>}
             </label>
           </div>
 
-          <label className="add-app__field">
-            <span className="add-app__label">用途</span>
+          <label className="dialog__field">
+            <span className="dialog__label">用途</span>
             <input
-              className="add-app__input"
+              className="dialog__input"
               value={purpose}
               onChange={(event) => setPurpose(event.target.value)}
               placeholder="图像生成后端，队列里经常会有长时间任务。"
             />
             {errorFor("purpose") && (
-              <span className="add-app__field-error">{errorFor("purpose")}</span>
+              <span className="dialog__field-error">{errorFor("purpose")}</span>
             )}
           </label>
 
-          <label className="add-app__field">
-            <span className="add-app__label">关闭影响</span>
+          <label className="dialog__field">
+            <span className="dialog__label">关闭影响</span>
             <input
-              className="add-app__input"
+              className="dialog__input"
               value={closeImpact}
               onChange={(event) => setCloseImpact(event.target.value)}
               placeholder="停止会中断当前生成；队列中的任务会丢失。"
             />
             {errorFor("close_impact") && (
-              <span className="add-app__field-error">{errorFor("close_impact")}</span>
+              <span className="dialog__field-error">{errorFor("close_impact")}</span>
             )}
           </label>
 
-          <label className="add-app__field">
-            <span className="add-app__label">日志策略</span>
+          <label className="dialog__field">
+            <span className="dialog__label">日志策略</span>
             <select
-              className="add-app__input"
+              className="dialog__input"
               value={policy}
               onChange={(event) => setPolicy(event.target.value)}
             >
@@ -305,22 +298,22 @@ export default function AddApplicationDialog({ onSubmit, onClose }: AddApplicati
                 </option>
               ))}
             </select>
-            <span className="add-app__hint">
+            <span className="dialog__hint">
               {LOG_POLICIES.find((option) => option.value === policy)?.hint}
             </span>
           </label>
 
           {policy === "external" && (
-            <label className="add-app__field">
-              <span className="add-app__label">应用日志文件</span>
+            <label className="dialog__field">
+              <span className="dialog__label">应用日志文件</span>
               <input
-                className="add-app__input add-app__input--mono"
+                className="dialog__input dialog__input--mono"
                 value={logPath}
                 onChange={(event) => setLogPath(event.target.value)}
                 placeholder="D:\Tools\ComfyUI\logs\app.log"
               />
               {errorFor("logging.path") && (
-                <span className="add-app__field-error">{errorFor("logging.path")}</span>
+                <span className="dialog__field-error">{errorFor("logging.path")}</span>
               )}
             </label>
           )}
@@ -328,16 +321,16 @@ export default function AddApplicationDialog({ onSubmit, onClose }: AddApplicati
           {/* Stated, not offered: the other display mode is #66's to add, and
               a choice that did not work would be worse than no choice — so
               this says what will happen rather than asking. */}
-          <p className="add-app__mode">显示方式：Hub 内显示</p>
+          <p className="dialog__mode">显示方式：Hub 内显示</p>
 
           {error && placedField === null && (
-            <p className="add-app__error" role="alert">
+            <p className="dialog__error" role="alert">
               {error.message}
             </p>
           )}
         </div>
 
-        <footer className="add-app__foot">
+        <footer className="dialog__foot">
           <button type="button" className="btn btn--secondary btn--sm" onClick={onClose}>
             取消
           </button>

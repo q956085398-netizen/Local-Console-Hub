@@ -403,6 +403,19 @@ describe("the live session registry's membership", () => {
     };
   }
 
+  /**
+   * The configuration `id` has once it is saved (#65): the same session, the
+   * name the user chose, and no longer temporary.
+   */
+  function savedSession(id = "terminal-1a2b") {
+    return {
+      ...createdSession(id).config,
+      name: "项目终端",
+      purpose: "跑构建的终端",
+      temporary: false,
+    };
+  }
+
   /** A registry whose initial read has finished. */
   async function ready() {
     const configured = FIXTURE_SESSIONS[0];
@@ -490,6 +503,104 @@ describe("the live session registry's membership", () => {
       configured.config.id,
       created.id,
     ]);
+    watching.stop();
+  });
+
+  it("replaces a saved row's configuration and keeps the run it was watching", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+    receive({ sessionId: created.id, config: created.config });
+    receive({
+      sessionId: created.id,
+      runtime: {
+        ...FIXTURE_SESSIONS[5].runtime,
+        sessionId: created.id,
+        status: "running",
+        pid: 4242,
+      },
+    });
+    const saved = savedSession(created.id);
+
+    receive({ sessionId: created.id, config: saved });
+
+    const sessions = reports.at(-1)?.sessions ?? [];
+    // One row, not two: the same run cannot be listed twice (#65).
+    expect(sessions.map((session) => session.config.id)).toEqual([
+      FIXTURE_SESSIONS[0].config.id,
+      created.id,
+    ]);
+    const row = sessions.at(-1);
+    expect(row?.config.name).toBe("项目终端");
+    expect(row?.config.temporary).toBe(false);
+    expect(row?.config.purpose).toBe("跑构建的终端");
+    // The run is untouched: saving states where a launch configuration
+    // lives, not what the session is doing.
+    expect(row?.runtime).toMatchObject({ status: "running", pid: 4242 });
+    // And the group follows the configuration: a saved terminal is no longer
+    // one of the 用完即走的终端.
+    expect(row?.group).toBe("configured");
+    watching.stop();
+  });
+
+  it("takes the command's own answer for a save the event stream has not delivered", async () => {
+    const { watching, reports, receive } = await ready();
+    const created = createdSession();
+    receive({ sessionId: created.id, config: created.config });
+    const afterCreation = reports.length;
+    const saved = savedSession(created.id);
+
+    watching.adopt({ config: saved, runtime: FIXTURE_SESSIONS[5].runtime });
+
+    expect(reports.length).toBeGreaterThan(afterCreation);
+    expect(reports.at(-1)?.sessions).toHaveLength(2);
+    expect(reports.at(-1)?.sessions.at(-1)?.config).toMatchObject({
+      id: created.id,
+      name: "项目终端",
+      temporary: false,
+    });
+    // Repeating it — the event arriving after the answer — changes nothing.
+    const afterAnswer = reports.length;
+    receive({ sessionId: created.id, config: saved });
+    expect(reports).toHaveLength(afterAnswer);
+    watching.stop();
+  });
+
+  it("applies a save that arrived before the snapshot it is newer than", async () => {
+    const configs = deferred<unknown>();
+    const runtimes = deferred<unknown>();
+    let receive: (payload: unknown) => void = () => {};
+    const configured = FIXTURE_SESSIONS[0];
+    const created = createdSession();
+    const backend: SessionRegistryBackend = {
+      subscribe: (handler) => {
+        receive = handler;
+        return Promise.resolve(() => {});
+      },
+      listConfigs: () => configs.promise,
+      listSessions: () => runtimes.promise,
+      getConfigReport: () => Promise.resolve(CONFIG_REPORT),
+    };
+    const reports: SessionRegistrySnapshot[] = [];
+    const watching = watchSessionRegistry(backend, (snapshot) => reports.push(snapshot));
+    await flushPromises();
+
+    receive({ sessionId: created.id, config: created.config });
+    receive({ sessionId: created.id, config: savedSession(created.id) });
+    // The read was issued before the save, so it still describes the temporary
+    // terminal: it must not undo the save.
+    configs.resolve([configured.config, created.config]);
+    runtimes.resolve([
+      configured.runtime,
+      { ...FIXTURE_SESSIONS[5].runtime, sessionId: created.id, status: "running" },
+    ]);
+    await flushPromises();
+
+    expect(reports.at(-1)?.phase).toBe("ready");
+    expect(reports.at(-1)?.sessions.at(-1)).toMatchObject({
+      group: "configured",
+      config: { id: created.id, name: "项目终端", temporary: false },
+      runtime: { status: "running" },
+    });
     watching.stop();
   });
 

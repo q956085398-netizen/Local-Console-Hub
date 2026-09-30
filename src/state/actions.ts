@@ -18,6 +18,7 @@ export type SessionAction =
   | "open-directory"
   | "copy-path"
   | "new-session"
+  | "save-config"
   | "remove-session";
 
 /** The wording each action renders as, for the notices that name it. */
@@ -33,5 +34,8 @@ export const SESSION_ACTION_LABELS: Record<SessionAction, string> = {
   // interactive terminal, and the form-based "添加应用" entry is a different
   // control that does not exist yet.
   "new-session": "新建 PowerShell",
+  // Saving a temporary terminal's launch method (#65): the other half of the
+  // quick entry — this one keeps the shell and directory for next time.
+  "save-config": "保存启动配置",
   "remove-session": "移除临时终端",
 };

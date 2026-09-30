@@ -42,6 +42,8 @@ import {
 export const SESSION_STATE_CHANGED = "session-state-changed";
 /** A session entered the registry (#62) — a temporary terminal, in practice. */
 export const SESSION_CREATED = "session-created";
+/** A session's configuration became a saved one (#65) — "保存启动配置". */
+export const SESSION_SAVED = "session-saved";
 /** A session left the registry (#62). */
 export const SESSION_REMOVED = "session-removed";
 export const RUN_RECORD_UPDATED = "run-record-updated";
@@ -134,16 +136,27 @@ export interface SessionStateChangedDto {
 }
 
 /**
- * Payload of the `session-created` event (#62).
+ * The payload `session-created` (#62) and `session-saved` (#65) both carry:
+ * a session id, and the configuration that session now has.
  *
- * The configuration travels with it, because that is the half of a session a
+ * The configuration travels because it is the half of a session a
  * `session-state-changed` payload cannot carry: a listener told about a state
  * for an id it has no name for could not render the row it is about. The
  * runtime is deliberately absent — states arrive as their own events, in the
- * order the backend published them — so this event answers "does this session
- * exist, and what is it?" and nothing else.
+ * order the backend published them.
+ *
+ * ## Why one shape and not two
+ *
+ * The two events mean different things to the *backend* — one announces a
+ * session that was not there, the other a configuration that changed, and the
+ * protocol names them accordingly. What they ask of a listener is the same
+ * fact, though: this is the session with this id, and this is what it is. A
+ * reader that applies the configuration it is given (drawing the row when it
+ * has none) is right for both, so a second payload type would be a second
+ * declaration of one wire shape — and a reader that had to *distinguish* them
+ * from the payload alone could not: they are identical by construction.
  */
-export interface SessionCreatedDto {
+export interface SessionConfigEventDto {
   sessionId: string;
   config: SessionConfigDto;
 }
@@ -332,8 +345,13 @@ export function isSessionStateChangedDto(value: unknown): value is SessionStateC
   return typeof candidate.sessionId === "string" && isSessionRuntimeDto(candidate.runtime);
 }
 
-/** Runtime guard for a `session-created` payload (#62). */
-export function isSessionCreatedDto(value: unknown): value is SessionCreatedDto {
+/**
+ * Runtime guard for a configuration-carrying event payload (#62, #65).
+ *
+ * The id has to be the configuration's own: an event whose `sessionId` and
+ * `config.id` disagree describes no session a listener could render.
+ */
+export function isSessionConfigEventDto(value: unknown): value is SessionConfigEventDto {
   if (!isObject(value)) {
     return false;
   }

@@ -13,7 +13,9 @@
 //! below stays runnable with no window.
 
 pub mod applications;
+pub mod form;
 pub mod launch;
+pub mod terminals;
 
 use std::path::Path;
 use std::sync::Arc;

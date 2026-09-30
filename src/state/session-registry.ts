@@ -5,7 +5,7 @@ import {
   type SessionConfigDto,
 } from "../types/config";
 import {
-  isSessionCreatedDto,
+  isSessionConfigEventDto,
   isSessionRemovedDto,
   isSessionRuntimeDto,
   isSessionStateChangedDto,
@@ -49,8 +49,11 @@ export interface SessionRegistrySnapshot {
 export interface SessionRegistryController {
   /** Stop watching. Every late result is invalidated. */
   stop(): void;
-  /** The backend answered that this session exists. */
-  adopt(created: CreatedSessionDto): void;
+  /**
+   * The backend answered with this session's configuration — the pair a
+   * creation (#62) and a save (#65) both answer with.
+   */
+  adopt(session: CreatedSessionDto): void;
   /** The backend answered that this session is gone. */
   forget(sessionId: string): void;
 }
@@ -86,6 +89,18 @@ export const MAX_BUFFERED_SESSION_EVENTS = 256;
  * that arrived from an event is left alone by them: the caller's answer is a
  * moment older than the newest event, so it may fill a gap but never overwrite
  * one.
+ *
+ * ## A row whose configuration changes (#65)
+ *
+ * Saving a terminal does not add or remove a row: the session keeps its id, so
+ * it keeps its position, its runtime and its scrollback, and what changes is
+ * what it *is* — its name, and the fact that the config file describes it now.
+ * `session-saved` announces that, and it is applied by the same rule a creation
+ * is: the row says this, and a row that is not there yet is drawn. One rule
+ * rather than two, because the two events carry the same shape and ask the same
+ * thing of a listener (see `SessionConfigEventDto`), and because a save that
+ * drew a second row would list one run twice — exactly the contradiction the
+ * entry exists to avoid.
  */
 export function watchSessionRegistry(
   backend: SessionRegistryBackend,
@@ -106,8 +121,12 @@ export function watchSessionRegistry(
   let configuredIds: Set<string> | null = null;
   let unlisten: (() => void) | undefined;
   const bufferedEvents = new Map<string, SessionRuntimeDto>();
-  /** Configurations announced before the snapshot was ready, by id. */
-  const bufferedCreations = new Map<string, SessionConfigDto>();
+  /**
+   * Configurations announced before the snapshot was ready, by id — a creation
+   * and a save are the same fact here, and the newest one is the one a row
+   * should be drawn from.
+   */
+  const bufferedConfigs = new Map<string, SessionConfigDto>();
   /** Sessions announced as gone before the snapshot was ready. */
   const bufferedRemovals = new Set<string>();
   let bufferOverflowed = false;
@@ -128,19 +147,19 @@ export function watchSessionRegistry(
     }
   };
 
-  const rememberCreation = (config: SessionConfigDto) => {
+  const rememberConfig = (config: SessionConfigDto) => {
     bufferedRemovals.delete(config.id);
-    bufferedCreations.delete(config.id);
-    bufferedCreations.set(config.id, config);
-    if (bufferedCreations.size > MAX_BUFFERED_SESSION_EVENTS) {
-      const oldest = bufferedCreations.keys().next().value;
-      if (oldest !== undefined) bufferedCreations.delete(oldest);
+    bufferedConfigs.delete(config.id);
+    bufferedConfigs.set(config.id, config);
+    if (bufferedConfigs.size > MAX_BUFFERED_SESSION_EVENTS) {
+      const oldest = bufferedConfigs.keys().next().value;
+      if (oldest !== undefined) bufferedConfigs.delete(oldest);
       bufferOverflowed = true;
     }
   };
 
   const rememberRemoval = (sessionId: string) => {
-    bufferedCreations.delete(sessionId);
+    bufferedConfigs.delete(sessionId);
     bufferedEvents.delete(sessionId);
     bufferedRemovals.add(sessionId);
     if (bufferedRemovals.size > MAX_BUFFERED_SESSION_EVENTS) {
@@ -157,27 +176,38 @@ export function watchSessionRegistry(
     group: groupForConfig(config),
   });
 
-  /** Apply a creation to the rendered list, in arrival order. */
-  const addSession = (config: SessionConfigDto) => {
+  /**
+   * Apply a session's configuration to the rendered list, in arrival order.
+   *
+   * The one rule for both configuration events — #62's creation and #65's save
+   * — because they ask the same thing of a listener: the row for this id says
+   * this, and a row that is not there yet is drawn. A save therefore corrects
+   * the row it is about instead of adding a second one, which is what keeps a
+   * running terminal that was saved from being listed twice; and a repeat of a
+   * configuration the listener already has publishes nothing, so a command
+   * answer and the event carrying the same fact cost one render between them.
+   */
+  const applyConfig = (config: SessionConfigDto) => {
     if (configuredIds === null) return;
-    // A session already in the list is not news: its event and the command
-    // answer that carried it are the same fact, and a configuration does not
-    // change under a running app (the file is read at startup, and a new entry
-    // is a new id). So a repeat publishes nothing rather than re-rendering a
-    // row whose runtime the state events have already moved on from.
-    if (sessions.some((session) => session.config.id === config.id)) return;
-    configuredIds.add(config.id);
-    sessions = [...sessions, viewOf(config)];
+    const index = sessions.findIndex((session) => session.config.id === config.id);
+    if (index < 0) {
+      configuredIds.add(config.id);
+      sessions = [...sessions, viewOf(config)];
+    } else if (!sameConfiguration(sessions[index].config, config)) {
+      sessions = replaceConfigAt(sessions, index, config);
+    } else {
+      return;
+    }
     sessionRevision += 1;
     publish();
   };
 
   /** The two facts a caller can learn before the event stream delivers them. */
-  const applyCreation = (config: SessionConfigDto) => {
+  const applyAnnounced = (config: SessionConfigDto) => {
     if (ready()) {
-      addSession(config);
+      applyConfig(config);
     } else {
-      rememberCreation(config);
+      rememberConfig(config);
     }
   };
 
@@ -239,8 +269,9 @@ export function watchSessionRegistry(
         publish();
         return;
       }
-      if (isSessionCreatedDto(payload)) {
-        applyCreation(payload.config);
+      // A creation and a save are one shape, and one rule: the row says this.
+      if (isSessionConfigEventDto(payload)) {
+        applyAnnounced(payload.config);
         return;
       }
       if (isSessionRemovedDto(payload)) {
@@ -277,11 +308,16 @@ export function watchSessionRegistry(
         // A session created while the lists were in flight is newer than they
         // are: it is merged in whether or not the snapshot happened to include
         // it, and a removal is applied last so it wins over its own creation.
-        for (const [sessionId, config] of bufferedCreations) {
+        for (const [sessionId, config] of bufferedConfigs) {
           if (!configuredIds.has(sessionId)) {
             next.push(viewOf(config));
+            configuredIds.add(sessionId);
+          } else {
+            // The read was issued before this configuration was announced, so
+            // the announcement is the newer fact — including when the id was
+            // already in the file, which is what a save looks like here (#65).
+            next = replaceConfig(next, config);
           }
-          configuredIds.add(sessionId);
         }
         for (const [sessionId, runtime] of bufferedEvents) {
           if (configuredIds.has(sessionId)) {
@@ -293,7 +329,7 @@ export function watchSessionRegistry(
           next = next.filter((session) => session.config.id !== sessionId);
         }
         bufferedEvents.clear();
-        bufferedCreations.clear();
+        bufferedConfigs.clear();
         bufferedRemovals.clear();
         bufferOverflowed = false;
         sessions = next;
@@ -308,7 +344,7 @@ export function watchSessionRegistry(
         stopListening(attemptUnlisten);
         configuredIds = null;
         bufferedEvents.clear();
-        bufferedCreations.clear();
+        bufferedConfigs.clear();
         bufferedRemovals.clear();
         bufferOverflowed = false;
         phase = "loading";
@@ -355,15 +391,59 @@ export function watchSessionRegistry(
       stopListening(unlisten);
       unlisten = undefined;
     },
-    adopt(created) {
+    adopt(session) {
       if (stopped) return;
-      applyCreation(created.config);
+      applyAnnounced(session.config);
     },
     forget(sessionId) {
       if (stopped) return;
       applyRemoval(sessionId);
     },
   };
+}
+
+/**
+ * Whether two configurations would describe the same row.
+ *
+ * Compared as serialized text rather than field by field: both sides are the
+ * same DTO of the same backend (`SessionConfigDto`), so the text is an exact
+ * description of the row — and a field added to that DTO later cannot be
+ * forgotten here, which a hand-written comparison would invite.
+ *
+ * The one thing this decides is whether to render, so being wrong is cheap in
+ * one direction only: two configurations that are really equal but do not
+ * serialize identically cost one redundant render, and a row is never left
+ * saying something its configuration does not.
+ */
+function sameConfiguration(a: SessionConfigDto, b: SessionConfigDto): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * `sessions` with `config`'s row carrying it, or the same array when no row
+ * has that id.
+ */
+function replaceConfig(sessions: SessionView[], config: SessionConfigDto): SessionView[] {
+  const index = sessions.findIndex((session) => session.config.id === config.id);
+  return index < 0 ? sessions : replaceConfigAt(sessions, index, config);
+}
+
+/**
+ * `sessions` with its row at `index` carrying `config`.
+ *
+ * The row's runtime and runs are kept and its group is recomputed, because the
+ * group is derived from the configuration: a row that was filed under
+ * `Temporary` and is now saved has moved, and a stale group would leave the
+ * saved terminal in the group the reference calls 用完即走的终端.
+ */
+function replaceConfigAt(
+  sessions: SessionView[],
+  index: number,
+  config: SessionConfigDto,
+): SessionView[] {
+  const next = [...sessions];
+  next[index] = { ...next[index], config, group: groupForConfig(config) };
+  return next;
 }
 
 function replaceRuntime(
