@@ -112,6 +112,15 @@ export interface SessionRuntimeDto {
   /** Known once a run has ended, including an unexpected exit. */
   exitCode?: number | null;
   ptyAttached: boolean;
+  /**
+   * Whether this run is one the Hub did **not** start — an instance the user
+   * was already running, which the Hub associated with this entry (#67).
+   *
+   * A row that says "停止" for an application the Hub never started is
+   * offering something the backend will refuse, so a control that acts on a
+   * run has to be able to tell (§59 decision 11).
+   */
+  external: boolean;
   logging: RuntimeEffectiveLoggingDto;
   buffer: BufferSummaryDto;
   /** The last health reading, for a service that names a port and has a run in
@@ -281,6 +290,7 @@ export function isSessionRuntimeDto(value: unknown): value is SessionRuntimeDto 
     optionalString(candidate, "startedAt") &&
     optionalInteger(candidate, "exitCode") &&
     typeof candidate.ptyAttached === "boolean" &&
+    typeof candidate.external === "boolean" &&
     isRuntimeEffectiveLoggingDto(candidate.logging) &&
     isBufferSummaryDto(candidate.buffer) &&
     isServiceHealthDtoOrAbsent(candidate.health) &&
@@ -435,6 +445,94 @@ export interface ActivationOutcomeDto {
   runtime: SessionRuntimeDto;
   started: boolean;
   window?: WindowStepDto;
+  /**
+   * The question the Hub asked instead of deciding (#67).
+   *
+   * Present means *nothing happened*: no run was started and no instance was
+   * associated. The answer is the user's, through `resolve_session_open`.
+   */
+  choice?: OpenChoiceDto;
+}
+
+/** One instance that might be the application already running (#67). */
+export interface ExternalCandidateDto {
+  pid: number;
+  /**
+   * When the process started, as a decimal string.
+   *
+   * A string because it is a Windows `FILETIME` — far beyond what a JavaScript
+   * number holds exactly — and it travels back to the backend as the half of
+   * the identity that survives the pid being reused.
+   */
+  createdAt?: string;
+  fileName: string;
+  imagePath?: string;
+  title?: string;
+  hasWindow: boolean;
+  /** Whether the Hub confirmed this process is the configured program. */
+  verified: boolean;
+  /** Whether associating it is something the Hub can do safely. */
+  associable: boolean;
+  /** Absent when the configuration passes no arguments to compare. */
+  argumentsAgree?: boolean;
+  /** Why this one is uncertain, for the dialog to show beside it. */
+  why: string;
+}
+
+/** The question, and what it is about (#67). */
+export interface OpenChoiceDto {
+  reason: string;
+  candidates: ExternalCandidateDto[];
+}
+
+/**
+ * What the user answered when the Hub asked (#67).
+ *
+ * `associate` needs both halves of the identity it was shown — the creation
+ * time is the half that survives the pid being reused, which is why it travels
+ * back exactly as it arrived rather than being re-derived here.
+ */
+export interface OpenResolutionDto {
+  kind: "associate" | "new";
+  pid?: number;
+  createdAt?: string;
+}
+
+/** The identity of one candidate, as the resolution has to carry it. */
+export function candidateResolution(candidate: ExternalCandidateDto): OpenResolutionDto {
+  return { kind: "associate", pid: candidate.pid, createdAt: candidate.createdAt };
+}
+
+function isExternalCandidateDto(value: unknown): value is ExternalCandidateDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.pid === "number" &&
+    Number.isInteger(candidate.pid) &&
+    optionalString(candidate, "createdAt") &&
+    typeof candidate.fileName === "string" &&
+    optionalString(candidate, "imagePath") &&
+    optionalString(candidate, "title") &&
+    typeof candidate.hasWindow === "boolean" &&
+    typeof candidate.verified === "boolean" &&
+    typeof candidate.associable === "boolean" &&
+    (candidate.argumentsAgree === undefined || typeof candidate.argumentsAgree === "boolean") &&
+    typeof candidate.why === "string"
+  );
+}
+
+function isOpenChoiceDto(value: unknown): value is OpenChoiceDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.reason === "string" &&
+    Array.isArray(candidate.candidates) &&
+    candidate.candidates.every(isExternalCandidateDto)
+  );
 }
 
 /** Runtime guard for the activation answer. */
@@ -444,6 +542,9 @@ export function isActivationOutcomeDto(value: unknown): value is ActivationOutco
   }
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.started !== "boolean" || !isSessionRuntimeDto(candidate.runtime)) {
+    return false;
+  }
+  if (candidate.choice !== undefined && !isOpenChoiceDto(candidate.choice)) {
     return false;
   }
   if (candidate.window === undefined) {

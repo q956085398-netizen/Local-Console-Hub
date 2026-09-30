@@ -14,6 +14,7 @@ import StatusBar from "../components/status-bar/StatusBar";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
 import AddApplicationDialog from "../components/add-application/AddApplicationDialog";
 import SaveTerminalDialog from "../components/save-terminal/SaveTerminalDialog";
+import OpenChoiceDialog from "../components/open-choice/OpenChoiceDialog";
 import type { NewApplicationFormDto, SaveTerminalFormDto, SessionConfigDto } from "../types/config";
 import {
   filterSessions,
@@ -29,6 +30,7 @@ import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
 import { LIVE_GROUPS } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
+import type { OpenChoiceDto, OpenResolutionDto } from "../types/runtime";
 import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
 import { SESSION_OPENED, isSessionOpenedDto } from "../types/launch";
 import { copyPathToClipboard } from "./clipboard";
@@ -88,6 +90,19 @@ export default function App() {
   const [addApplicationOpen, setAddApplicationOpen] = useState(false);
   /** The terminal whose launch configuration is being saved (#65). */
   const [saveTerminalTarget, setSaveTerminalTarget] = useState<SessionConfigDto | null>(null);
+  /**
+   * The question an open raised, and the session it is about (#67).
+   *
+   * Held with the id rather than read from the selection when the user
+   * answers: the workspace can move under an open dialog, and associating the
+   * instance with whichever session happened to be selected afterwards would
+   * associate the wrong entry.
+   */
+  const [openChoice, setOpenChoice] = useState<{
+    sessionId: string;
+    sessionName: string;
+    choice: OpenChoiceDto;
+  } | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -300,10 +315,48 @@ export default function App() {
    * refusal, is reported once and nowhere else. Everything else about the open
    * still arrives as a session event.
    */
+  /** The name of a session by id, for a dialog that outlives the selection. */
+  const configNameOf = (sessionId: string): string =>
+    sessions.find((session) => session.config.id === sessionId)?.config.name ?? sessionId;
+
   const activate = (sessionId: string) => {
     void registry.activate(sessionId).then((outcome) => {
+      if (outcome === null) return;
+      // The Hub found something outside itself it will not decide about (#67):
+      // nothing was started and nothing was associated, so there is no notice
+      // to show — there is a question to ask.
+      if (outcome.choice !== undefined) {
+        setOpenChoice({
+          sessionId,
+          sessionName: configNameOf(sessionId),
+          choice: outcome.choice,
+        });
+        return;
+      }
       const notice = outcome?.window?.notice;
       if (notice) setNotice(notice);
+    });
+  };
+
+  /**
+   * Answer the question (#67).
+   *
+   * Three answers carry three different truths, and the user is owed the one
+   * that happened: an association that found a window behind it says so, an
+   * association that could not bring it forward says *that* (the window step's
+   * own notice), and starting a new copy says what it left alone.
+   */
+  const resolveOpen = (resolution: OpenResolutionDto) => {
+    if (openChoice === null) return;
+    const { sessionId } = openChoice;
+    setOpenChoice(null);
+    void registry.resolveOpen(sessionId, resolution).then((outcome) => {
+      if (outcome === null) return;
+      const fallback =
+        resolution.kind === "new"
+          ? "已由 Hub 启动它自己的一份；此前运行的那份没有被结束"
+          : "已关联正在运行的实例，Hub 没有另启一份";
+      setNotice(outcome.window?.notice ?? fallback);
     });
   };
 
@@ -370,6 +423,16 @@ export default function App() {
    * whichever session happened to be selected at that moment would save a
    * terminal the user never asked about.
    */
+  const openChoiceDialog =
+    openChoice === null ? null : (
+      <OpenChoiceDialog
+        sessionName={openChoice.sessionName}
+        choice={openChoice.choice}
+        onResolve={resolveOpen}
+        onClose={() => setOpenChoice(null)}
+      />
+    );
+
   const saveTerminalDialog =
     saveTerminalTarget === null ? null : (
       <SaveTerminalDialog
@@ -470,6 +533,7 @@ export default function App() {
         <StatusBar counts={counts} connection={connection} notice={statusNotice} />
         {addApplicationDialog}
         {saveTerminalDialog}
+        {openChoiceDialog}
       </div>
     );
   }
@@ -563,6 +627,7 @@ export default function App() {
       <StatusBar counts={counts} connection={connection} notice={statusNotice} />
       {addApplicationDialog}
       {saveTerminalDialog}
+      {openChoiceDialog}
     </div>
   );
 }

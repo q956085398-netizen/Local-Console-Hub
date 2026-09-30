@@ -14,6 +14,7 @@
 
 pub mod activation;
 pub mod applications;
+pub mod external;
 pub mod form;
 pub mod launch;
 pub mod recommend;

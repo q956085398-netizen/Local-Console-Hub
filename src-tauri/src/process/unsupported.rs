@@ -73,6 +73,41 @@ pub fn request_graceful_stop(_pid: u32) -> bool {
     false
 }
 
+/// No process table to read on a platform with no process layer (D-001).
+///
+/// An empty list is the honest answer rather than a capability error: a caller
+/// asking "is this application already running outside the Hub?" is answered
+/// "nothing was found", which is also what a machine with no such application
+/// answers.
+pub fn processes_named(_names: &[String]) -> Vec<super::ProcessReading> {
+    Vec::new()
+}
+
+/// No parent links to walk on a platform with no process layer (D-001).
+pub fn descendants(_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// There is no process object to open on a platform with no process layer.
+pub fn open_external(_identity: super::ProcessIdentity) -> Result<usize, super::ProcessError> {
+    Err(super::ProcessError::UnsupportedPlatform {
+        operation: "watching an application the Hub did not start",
+    })
+}
+
+/// Never reached: no handle is ever handed out by [`open_external`].
+pub fn wait_for_handle_timeout(_handle: usize, _timeout: std::time::Duration) -> bool {
+    true
+}
+
+/// Never reached: no handle is ever handed out by [`open_external`].
+pub fn exit_code(_handle: usize) -> Option<u32> {
+    None
+}
+
+/// Nothing to close: no handle is ever handed out by [`open_external`].
+pub fn close_handle(_handle: usize) {}
+
 fn unsupported(operation: &str) -> String {
     format!("{operation} needs the Windows supervisor backend (D-001)")
 }

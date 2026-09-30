@@ -60,6 +60,7 @@ function runtime(overrides: Partial<SessionRuntimeDto> = {}): SessionRuntimeDto 
     status: "running",
     pid: 18420,
     runId: "a91c",
+    external: false,
     startedAt: "2026-09-28T05:00:00Z",
     ptyAttached: true,
     logging: { mode: "always", source: "captured", external_path: undefined },
@@ -296,6 +297,26 @@ describe("availableActions", () => {
 
     expect(running.stop).toBe(true);
     expect(running.forceStop).toBe(true);
+  });
+
+  // An instance the Hub associated rather than started is the same answer from
+  // the other direction (#67): whatever the entry's lifecycle setting says —
+  // that setting is about the Hub's own runs — the Hub did not start this one,
+  // and the backend refuses to stop it. The controls are absent, and the flag
+  // beside them lets the header explain this reason rather than the wrong one.
+  it("withholds Stop and Restart from an instance the Hub only associated", () => {
+    const managed = config({ display: "window", lifecycle: "managed" });
+    const associated = availableActions(managed, runtime({ external: true }));
+
+    expect(associated.associated).toBe(true);
+    expect(associated.managed).toBe(true); // the configuration is unchanged
+    expect(associated.stop).toBe(false);
+    expect(associated.forceStop).toBe(false);
+    expect(associated.restart).toBe(false);
+    // Opening stays, and is the one control that does work: it brings the
+    // application's own window forward.
+    expect(associated.start).toBe(false); // the instance is running
+    expect(availableActions(managed, runtime({ status: "stopped" })).start).toBe(true);
   });
 
   // Saving a terminal's launch configuration (#65) is the one control that is

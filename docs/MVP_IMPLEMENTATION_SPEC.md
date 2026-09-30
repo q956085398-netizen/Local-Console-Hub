@@ -324,6 +324,7 @@ add_application
 recommend_display
 save_terminal_config
 activate_session
+resolve_session_open
 attach_terminal
 terminal_write
 terminal_resize
@@ -385,6 +386,15 @@ refuse while it is stopping. It is deliberately not `restart_session`. Since
 focused, refused by Windows, or no window to bring forward — for entries that
 keep one, so a click whose window did not come forward says so instead of
 starting a second copy (D-034).
+
+`resolve_session_open` is the answer to a question `activate_session` asked
+(#67, D-036): when an entry that keeps its own window has nothing running in the
+Hub, that command first looks for an instance already running outside it, and
+what it cannot decide it asks about rather than guessing. Its `associate` half
+takes the process the user picked — pid *and* creation time, re-verified against
+the process table before anything is believed about it — and its `new` half
+starts the Hub's own copy and leaves the other instance alone. Neither changes
+the configuration file.
 
 `save_terminal_config` is the other half of the quick entry (D-033): it writes
 a temporary terminal's launch method — the shell and directory it is already

@@ -54,9 +54,6 @@ const TREE_TICK: Duration = Duration::from_millis(500);
 /// "open it", not "tell me about the millisecond you asked".
 pub const WINDOW_WAIT: Duration = Duration::from_secs(5);
 
-/// How often the window wait looks again.
-const WINDOW_POLL: Duration = Duration::from_millis(50);
-
 /// How many tree readings in a row may fail before the watcher gives up.
 ///
 /// A job object the Hub holds cannot normally fail to answer, so this is the
@@ -241,21 +238,26 @@ impl IndependentProcess {
     /// Two shapes count, because a standalone application can be either: a
     /// windowed program owns its top-level window in its own process, while a
     /// console program's console window is hosted for it by Windows on a
-    /// process of its own (`crate::window::console_window`). What the user
-    /// means by "唤起原窗口" is the same thing in both cases.
+    /// process of its own. What the user means by "唤起原窗口" is the same thing
+    /// in both cases, so the search is `crate::window::application_window`'s —
+    /// the same one an instance the Hub did *not* start is found through (#67).
     pub fn window(&self) -> Option<TopLevelWindow> {
-        let pids = self.tree_pids().ok()?;
-        let windows = window::windows_of(&pids);
-        if let Some(found) = window::main_window(&windows) {
-            return Some(found.clone());
-        }
-        // The run's own pid, and only while it is still this run's: a console
-        // window found for a pid Windows has since reused would be somebody
-        // else's console (spec #59 decision 11).
-        if !self.shared.identity.matches() {
-            return None;
-        }
-        window::console_window(self.pid())
+        window::wait_for_application_window(|| self.tree_and_identity(), Duration::ZERO)
+    }
+
+    /// The processes to search for the run's window, as the current reading.
+    ///
+    /// A tree that cannot be read is an empty one rather than a failure: the
+    /// console fallback below it is still a real answer, and reporting "no
+    /// window" is more honest than reporting the read failure as one.
+    fn tree_and_identity(&self) -> (Vec<u32>, u32, bool) {
+        (
+            self.tree_pids().unwrap_or_default(),
+            self.pid(),
+            // A console window found for a pid Windows has since reused would
+            // be somebody else's console (spec #59 decision 11).
+            self.shared.identity.matches(),
+        )
     }
 
     /// The run's window, waiting up to `timeout` for one to appear.
@@ -266,16 +268,7 @@ impl IndependentProcess {
     /// outcome for an application that is still starting, and it is not a
     /// reason to start another one (spec #59 decision 11).
     pub fn wait_for_window(&self, timeout: Duration) -> Option<TopLevelWindow> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(window) = self.window() {
-                return Some(window);
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(WINDOW_POLL);
-        }
+        window::wait_for_application_window(|| self.tree_and_identity(), timeout)
     }
 
     /// Ask the application to finish, then terminate its tree if it outlasts

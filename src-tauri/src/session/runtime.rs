@@ -45,6 +45,19 @@ impl Timestamp {
         Timestamp(instant)
     }
 
+    /// The instant `secs` seconds after the Unix epoch.
+    ///
+    /// This is how an instance the Hub did not start reports when it started
+    /// (#67): Windows tells the Hub a creation time and no calendar, so the two
+    /// are joined here rather than at each call site. `None` for an instant
+    /// this type cannot represent — before the epoch — which is also what a
+    /// caller with no time to report gets.
+    pub fn from_unix_secs(secs: i64) -> Option<Self> {
+        u64::try_from(secs)
+            .ok()
+            .map(|secs| Timestamp(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)))
+    }
+
     /// Whole seconds since the Unix epoch, as the config path helpers take.
     /// `None` only for a time before the epoch, which no run can have.
     pub fn unix_secs(&self) -> Option<i64> {
@@ -170,6 +183,16 @@ pub struct SessionRuntime {
     /// Whether a PTY is currently attached to this session. T04 records the
     /// flag; T07 is what attaches one.
     pub pty_attached: bool,
+    /// Whether the run this snapshot describes is one the Hub did **not**
+    /// start — an instance the user already had running, which the Hub
+    /// associated with this entry (#67).
+    ///
+    /// A third answer beside the two `docs/DECISIONS.md` D-034 draws between a
+    /// Hub-started run and a standalone one: those two are both *the Hub's*
+    /// (it started them, and it is why it holds a handle on the tree), while
+    /// this one is only *reported* by the Hub. Nothing that acts on a run may
+    /// act on it, and a surface that says "stop this" has to be able to tell.
+    pub external: bool,
     pub logging: EffectiveLogging,
     /// The in-memory scrollback this session is holding (`docs/LOGGING.md`
     /// §8). Present whatever the logging policy is: `mode: off` decides what
@@ -204,6 +227,7 @@ impl SessionRuntime {
             started_at: None,
             exit_code: None,
             pty_attached: false,
+            external: false,
             logging,
             buffer: BufferSummary::default(),
             health: None,

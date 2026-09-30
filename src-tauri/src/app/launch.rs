@@ -373,11 +373,33 @@ impl RequestHandler for Hub {
 /// still a delivered request — the Hub did what was asked, and the answer says
 /// what it observed. Failing the request would tell the shortcut's launcher the
 /// Hub could not open the application at all, which is not what happened.
+///
+/// ## The one answer a launch request cannot give (#67)
+///
+/// When the Hub finds something outside itself it will not decide about, the
+/// question has to go to the user — and a shortcut has no dialog to put it in.
+/// So this is refused with the reason, and the Hub's window comes forward: the
+/// user is told that an instance is already running and that the Hub did not
+/// start a second copy, and the choice itself is one click away, on the entry
+/// they can now see. A `delivered` here would be a lie about an application
+/// nothing was done with, and starting a copy anyway is the duplication the
+/// whole of #67 exists to prevent.
 fn open_application(app: &AppHandle<Wry>, id: &str) -> Response {
     let Some(core) = app.try_state::<SessionCore>() else {
         return Response::failed(NO_SESSION_CORE);
     };
     match crate::app::activation::open(&core, id) {
+        Ok(outcome) if outcome.choice.is_some() => {
+            let reason = outcome
+                .choice
+                .map(|choice| choice.reason)
+                .unwrap_or_default();
+            crate::tray::focus_session(app, id);
+            Response::failed(format!(
+                "{reason}\n\nHub 没有为此再启动一份。请在 Hub 里打开这个应用，\
+                 那里可以关联已经在运行的那个实例，或者明确新开一份。"
+            ))
+        }
         Ok(_) => {
             // Shown, then pointed at the session, in that order — the same
             // pair the tray uses when a row is clicked (`tray::focus_session`).
