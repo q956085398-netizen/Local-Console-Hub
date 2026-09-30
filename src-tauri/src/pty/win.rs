@@ -29,7 +29,7 @@
 //! process layer's `win` backend.
 
 #[cfg(test)]
-use std::cell::Cell;
+use crate::process::tree::{fail_start_step, StartFailurePointForTest};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -81,38 +81,6 @@ pub struct PtyBackend {
     /// terminal whose shell exited is still a terminal whose children may not
     /// have (`docs/DECISIONS.md` D-028).
     job: Job,
-}
-
-#[cfg(test)]
-thread_local! {
-    static FAIL_START_STEP_FOR_TEST: Cell<Option<StartFailurePointForTest>> = const { Cell::new(None) };
-}
-
-/// The steps a start can be made to fail at, so the teardown each one owes is
-/// observable rather than asserted about a code path no test can reach.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StartFailurePointForTest {
-    JobCreation,
-    JobAssignment,
-    Resume,
-}
-
-#[cfg(test)]
-pub fn fail_start_step_for_test(point: StartFailurePointForTest) {
-    FAIL_START_STEP_FOR_TEST.with(|fail| fail.set(Some(point)));
-}
-
-#[cfg(test)]
-fn fail_start_step(point: StartFailurePointForTest) -> bool {
-    FAIL_START_STEP_FOR_TEST.with(|fail| {
-        if fail.get() == Some(point) {
-            fail.set(None);
-            true
-        } else {
-            false
-        }
-    })
 }
 
 impl PtyBackend {

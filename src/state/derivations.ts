@@ -333,6 +333,23 @@ export interface HeaderCallout {
  */
 const TERMINAL_TREE_NOTE = "停止该终端会同时结束它启动的子进程。";
 
+/**
+ * What the Details card says about the *mechanics* of stopping this session.
+ *
+ * A service has the graceful-then-force ladder (D-007), so its sentence names
+ * both steps and where the force path stops. A terminal has no ladder at all:
+ * its graceful gesture is Ctrl+C, which is *input*, not a stop (D-018), and
+ * stopping it ends its process tree in one action (D-028). The card therefore
+ * says the same sentence the header warns with for a terminal — it is the same
+ * fact, and the sentence that used to sit here told a terminal's user about a
+ * gentle path the Hub does not offer it.
+ */
+export function closeMechanics(config: SessionConfigDto): string {
+  return config.sessionType === "terminal"
+    ? TERMINAL_TREE_NOTE
+    : "停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。";
+}
+
 /** Pick and word the header callout for the current state. */
 export function headerCallout(
   config: SessionConfigDto,

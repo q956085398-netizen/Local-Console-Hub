@@ -22,6 +22,8 @@
 //! terminate whatever is still assigned to it, so [`Job`] is RAII: the tree
 //! lives exactly as long as this token does.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::mem::size_of;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
@@ -34,6 +36,51 @@ use windows_sys::Win32::System::JobObjects::{
 
 /// Processes reported per tree query.
 const MAX_TREE_PROCESSES: usize = 512;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_START_STEP_FOR_TEST: Cell<Option<StartFailurePointForTest>> = const { Cell::new(None) };
+}
+
+/// The steps a start can be made to fail at, so the teardown each one owes is
+/// observable rather than asserted about a code path no test can reach.
+///
+/// Shared by both backends because the steps are: each creates the job, assigns
+/// a process that is not yet running, and resumes it. What differs is only
+/// where each backend checks them, so what is here is the vocabulary and the
+/// switch, not the sites.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartFailurePointForTest {
+    JobCreation,
+    JobAssignment,
+    Resume,
+}
+
+/// Make the next start fail at `point`. Thread-local, so parallel tests cannot
+/// inject into each other's spawns.
+#[cfg(test)]
+pub(crate) fn fail_start_step_for_test(point: StartFailurePointForTest) {
+    FAIL_START_STEP_FOR_TEST.with(|fail| fail.set(Some(point)));
+}
+
+/// Whether this start is the one `fail_start_step_for_test` was aimed at.
+///
+/// Reading consumes the value: an injection that has been observed cannot be
+/// seen by a later start on the same thread, which is what keeps it from
+/// escaping the test that set it (tests sharing a thread under
+/// `--test-threads=1` included).
+#[cfg(test)]
+pub(crate) fn fail_start_step(point: StartFailurePointForTest) -> bool {
+    FAIL_START_STEP_FOR_TEST.with(|fail| {
+        if fail.get() == Some(point) {
+            fail.set(None);
+            true
+        } else {
+            false
+        }
+    })
+}
 
 /// Handle to one run's job object.
 ///

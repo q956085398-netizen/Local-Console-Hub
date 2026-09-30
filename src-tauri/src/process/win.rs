@@ -7,7 +7,7 @@
 //! Sync` whichever way `windows-sys` spells `HANDLE`.
 
 #[cfg(test)]
-use std::cell::Cell;
+use super::tree::{fail_start_step, StartFailurePointForTest};
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
@@ -37,36 +37,6 @@ pub fn require_backend(_operation: &'static str) -> Result<(), super::ProcessErr
 /// shell's tree the same way (`super::tree`); what this module adds on top is
 /// the *service* startup sequence — create suspended, assign, resume.
 pub use super::tree::Job as TreeHandle;
-
-#[cfg(test)]
-thread_local! {
-    static FAIL_START_STEP_FOR_TEST: Cell<Option<StartFailurePointForTest>> = const { Cell::new(None) };
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StartFailurePointForTest {
-    JobCreation,
-    JobAssignment,
-    Resume,
-}
-
-#[cfg(test)]
-pub fn fail_start_step_for_test(point: StartFailurePointForTest) {
-    FAIL_START_STEP_FOR_TEST.with(|fail| fail.set(Some(point)));
-}
-
-#[cfg(test)]
-fn fail_start_step(point: StartFailurePointForTest) -> bool {
-    FAIL_START_STEP_FOR_TEST.with(|fail| {
-        if fail.get() == Some(point) {
-            fail.set(None);
-            true
-        } else {
-            false
-        }
-    })
-}
 
 /// Put the run in a process group of its own, so a `CTRL_BREAK` can be aimed at
 /// this run alone (see [`request_graceful_stop`]).

@@ -471,7 +471,10 @@ impl Pty {
                 }
             }
         }
-        self.confirm_tree_gone()
+        // Whatever the termination reported, the barrier runs: the tree may
+        // already be empty, and a termination failure is then only worth
+        // reporting if something is in fact still there.
+        self.confirm_tree_gone(terminated.err())
     }
 
     /// End whatever is still alive under this terminal and confirm it is gone.
@@ -482,14 +485,8 @@ impl Pty {
     /// reported as ended while the tree the Hub owns for it is still running
     /// (spec #59 decision 13).
     pub fn end_tree(&self) -> Result<(), PtyError> {
-        self.shared
-            .backend
-            .terminate()
-            .map_err(|reason| PtyError::Kill {
-                pid: self.pid(),
-                reason,
-            })?;
-        self.confirm_tree_gone()
+        let terminated = self.shared.backend.terminate();
+        self.confirm_tree_gone(terminated.err())
     }
 
     /// Pids of every process still assigned to this terminal, the shell
@@ -507,7 +504,14 @@ impl Pty {
 
     /// Barrier behind [`Pty::kill`] and [`Pty::end_tree`]: nothing this layer
     /// created may be running when a close reports success.
-    fn confirm_tree_gone(&self) -> Result<(), PtyError> {
+    ///
+    /// `termination_failure` is why the job could not be terminated, when it
+    /// could not. The barrier is what decides success, so that cause is not an
+    /// error by itself — a tree that is already gone closes cleanly whatever
+    /// `TerminateJobObject` said — but when something *is* still running it is
+    /// half of the answer, and it travels with the other half rather than being
+    /// dropped.
+    fn confirm_tree_gone(&self, termination_failure: Option<String>) -> Result<(), PtyError> {
         let deadline = Instant::now() + TREE_GONE_TIMEOUT;
         loop {
             let remaining = self.tree_pids()?;
@@ -515,12 +519,16 @@ impl Pty {
                 return Ok(());
             }
             if Instant::now() >= deadline {
+                let mut reason = format!(
+                    "processes still assigned to the terminal: {remaining:?}, \
+                     {TREE_GONE_TIMEOUT:?} after terminating it"
+                );
+                if let Some(failure) = termination_failure {
+                    reason.push_str(&format!("; terminating the tree reported: {failure}"));
+                }
                 return Err(PtyError::Tree {
                     pid: self.pid(),
-                    reason: format!(
-                        "processes still assigned to the terminal: {remaining:?}, \
-                         {TREE_GONE_TIMEOUT:?} after terminating it"
-                    ),
+                    reason,
                 });
             }
             std::thread::sleep(TREE_POLL_INTERVAL);
@@ -1034,7 +1042,7 @@ mod tests {
     /// looks started and owns nothing (`docs/DEVELOPMENT.md` §6).
     #[test]
     fn a_start_that_cannot_own_the_shell_leaves_no_shell_running() {
-        use super::win::StartFailurePointForTest;
+        use crate::process::tree::StartFailurePointForTest;
 
         // The marker rides on the command line, so it identifies the process
         // from the moment it is created — whether or not it was ever resumed.
@@ -1045,7 +1053,7 @@ mod tests {
             StartFailurePointForTest::JobAssignment,
             StartFailurePointForTest::Resume,
         ] {
-            super::win::fail_start_step_for_test(point);
+            crate::process::tree::fail_start_step_for_test(point);
 
             let spec = PtySpec::new(POWERSHELL, std::env::temp_dir()).with_args(vec![
                 "-NoLogo".to_owned(),

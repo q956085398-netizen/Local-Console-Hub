@@ -5,6 +5,7 @@ import type { RunRecordDto, RuntimeEffectiveLoggingDto, SessionRuntimeDto } from
 import {
   availableActions,
   bufferDiscardNotice,
+  closeMechanics,
   dependenciesOf,
   filterSessions,
   formatDuration,
@@ -528,6 +529,23 @@ describe("headerCallout", () => {
 
   it("notes nothing extra for a service, whose stop rules are its own", () => {
     expect(headerCallout(config(), runtime())).not.toHaveProperty("note");
+  });
+});
+
+describe("closeMechanics", () => {
+  it("names the graceful-then-force ladder for a service (D-007)", () => {
+    const note = closeMechanics(config());
+    expect(note).toContain("优雅结束");
+    expect(note).toContain("强制结束");
+  });
+
+  it("tells a terminal what stopping it ends, with no ladder it does not have (D-018, D-028)", () => {
+    // The sentence that used to stand here offered every session a gentle path.
+    // A terminal has none — Ctrl+C is input, not a stop — so this says the one
+    // thing that is true of closing it, the same fact the header warns with.
+    const note = closeMechanics(config({ sessionType: "terminal", shell: "powershell" }));
+    expect(note).toBe("停止该终端会同时结束它启动的子进程。");
+    expect(note).not.toContain("优雅");
   });
 
   it("shows the last error instead once stopped", () => {

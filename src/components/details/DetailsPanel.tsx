@@ -1,4 +1,5 @@
 import {
+  closeMechanics,
   dependenciesOf,
   healthReading,
   isReady,
@@ -83,9 +84,7 @@ export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
       <div className="details-panel__impact">
         <p className="details-panel__eyebrow details-panel__eyebrow--busy">能不能关</p>
         <p className="details-panel__impact-text">{config.closeImpact ?? "—"}</p>
-        <p className="details-panel__impact-note">
-          停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。
-        </p>
+        <p className="details-panel__impact-note">{closeMechanics(config)}</p>
       </div>
 
       {deps.length > 0 && (

@@ -67,7 +67,8 @@ mod win;
 
 // The job object that owns a managed process tree, shared with the PTY
 // backend: a terminal shell's tree is the same Win32 object supervised under
-// the same rules, and `tree` is where the spec puts "kill tree".
+// the same rules, and `tree` is where the spec puts "kill tree". Test builds
+// also reach it through `win`'s failure-injection helpers.
 #[cfg(windows)]
 pub(crate) mod tree;
 
@@ -1039,9 +1040,9 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         let failure_points = [
-            super::win::StartFailurePointForTest::JobCreation,
-            super::win::StartFailurePointForTest::JobAssignment,
-            super::win::StartFailurePointForTest::Resume,
+            super::tree::StartFailurePointForTest::JobCreation,
+            super::tree::StartFailurePointForTest::JobAssignment,
+            super::tree::StartFailurePointForTest::Resume,
         ];
 
         for point in failure_points {
@@ -1049,7 +1050,7 @@ mod tests {
             let created_pid_for_hook = Arc::clone(&created_pid);
             before_job_assignment(move |pid| {
                 created_pid_for_hook.store(pid, Ordering::Release);
-                super::win::fail_start_step_for_test(point);
+                super::tree::fail_start_step_for_test(point);
             });
 
             let error = ManagedProcess::spawn(long_running())
