@@ -217,6 +217,10 @@ T00 落地时仓库中不存在已批准的应用图标（`assets/` 仅含 V2 UI
 
 后续如需更换：替换 `assets/brand/app-icon.svg` 源文件并重新执行 `node scripts/generate-icon.mjs && npx tauri icon assets/brand/app-icon.png` 即可，不影响其它层。
 
+> 2026-09-30（#68）：这条自绘的蓝色提示符图标已被 **D-029** 作废。用户选定的身份是 V2
+> 标题栏里那颗内部 Hub mark，而不是另一套自绘图标——「不新增另一套身份」。
+> `assets/brand/app-icon.svg` / `.png` 已删除，替换流程见 D-029。
+
 ---
 
 ## D-014：PTY 后端直接实现 ConPTY，不引入 portable-pty
@@ -541,7 +545,8 @@ spec §12 要求健康检查「低频、随会话生命周期可取消、非阻�
    窗口隐藏时事件照常到达（spec §9），这个过滤就是 §14「隐藏到托盘后接近空闲」的落点。
    它缓存上一次渲染的模型，因此一次状态变化带来的两个事件只重建一次菜单。
 8. **图标沿用应用身份，不新造资产；缺图标则不启动。** 托盘图标取
-   `default_window_icon()`——与窗口、任务栏同一个图标集（D-013），不是一个可能与它漂移的
+   `default_window_icon()`——与窗口、任务栏同一个图标集（D-013；该图标集自 #68 起由
+   `assets/brand/hub-mark.svg` 一处生成，见 D-029），不是一个可能与它漂移的
    第二份资源。它是构建期从 `bundle.icon` 嵌进来的，取不到就意味着构建有问题；此时
    `tray::install` 返回错误、`setup` 随之失败，应用不启动。理由不是洁癖：关闭窗口会隐藏
    窗口，而托盘是回到隐藏窗口的唯一入口，一个没有图标的托盘在 Windows 上就是用户找不到的
@@ -731,7 +736,63 @@ T12 要把 v0.1.0 打成可安装的包，于是有三个必须写下来的选�
 
 ---
 
-## D-029：Hub 的身份是一个命名互斥体加一条命名管道，范围是当前登录会话
+## D-029：窗口只有一层标题栏，Hub 图标只有一个来源
+
+**状态：Accepted（2026-09-30，#68 落地时签认）**
+
+系统标题栏与内部深色标题栏曾经上下叠着，两个标题说的还是同一个应用名；应用图标也有
+两套身份——任务栏/托盘用 T00 自绘的蓝色提示符（D-013），而窗口内部标题栏画的是 V2 参考
+图里那颗 mark（绿点 + 三条列表行）。规格 #59 的用户故事 46–47 要的是反过来：只保留用户
+选定的那一层深色标题，窗口操作融进它里面；各入口使用同一个 Hub 图标。
+
+1. **窗口不再有系统装饰。** `tauri.conf.json` 的 `decorations: false`（`shadow: true`
+   保留 DWM 投影与 Windows 11 圆角，`resizable` 保持默认开）。窗口操作因此全部落到内部
+   标题栏：拖动用 `data-tauri-drag-region="deep"`——Tauri 的 `drag.js` 从点击目标往上走，
+   命中 `deep` 就发 `start_dragging`，而按钮是 `<button>`，天然不参与拖动；双击同一区域
+   是 Windows 语义的 `internal_toggle_maximize`。最小化 / 最大化 / 还原 / 关闭经
+   `@tauri-apps/api/window` 发出。**缩放仍走系统边框**：Tauri 给「无装饰且可缩放」的窗口
+   挂了一层原生 hit-test 边框（`tauri-runtime-wry` 的 undecorated resizing），不需要自己
+   实现边缘拖拽。关闭仍是隐藏到托盘，D-006 未变。
+2. **权限显式授予。** `core:window:default` 只有读数（`is-maximized` 在内），动作不在里
+   面：`capabilities/default.json` 另外列了 `allow-minimize`、`allow-toggle-maximize`、
+   `allow-close`、`allow-start-dragging`。少一个不会让构建失败，只会让那一次点击在真机上
+   被拒绝——所以 `release.rs` 的 `the_title_bar_controls_are_granted_what_they_ask_for`
+   钉住这五条。
+3. **图标只有一个来源。** `assets/brand/hub-mark.svg` 是那颗 mark（V2 参考图的几何，
+   24 单位 viewBox 原样保留），标题栏**直接渲染这个文件**，Windows 图标集
+   （`src-tauri/icons/`，含 exe 资源与安装包快捷方式用的 `icon.ico`）由
+   `scripts/generate-icon.mjs` 栅格化后 `npx tauri icon` 生成；托盘继续取
+   `default_window_icon()`，与窗口、任务栏同一套。于是「任务栏/托盘/快捷方式/窗口内」是
+   同一颗 mark，而不是两份要人肉对齐的资产。D-013 的蓝色提示符图标作废（文件已删）。
+4. **最大化按钮是读数，不是本地开关。** 它在 `tauri://resize` 上重读 `is_maximized`，
+   读失败时保留上一次读数；本地布尔值会被拖动到屏幕边缘、双击、Win+↑ 这些不经过按钮的
+   最大化路径甩在后面。判断与订阅在 `src/state/window-controls.ts`（node 环境下有测试），
+   适配层是 `tauriWindowHost.ts` / `useWindowControls.ts`，按钮在
+   `src/components/title-bar/WindowControls.tsx`。
+5. **仍然不做**：参考图右上的 `Ctrl K`、全局设置 / 日志入口，以及 `退出` 按钮。退出语义
+   只有托盘一条路（D-006），本工单的范围裁定见
+   `docs/DESIGN_SPEC_EXTRACTED.md` §5.1。
+
+用户可见行为：窗口只有一层深色标题——左边是 Hub 图标与应用名，右边是全局运行摘要与
+最小化 / 最大化·还原 / 关闭三个窗口按钮；拖动、缩放、双击最大化、贴靠与关闭隐藏都还在，
+关闭依旧不结束任何受管会话；任务栏、托盘、开始菜单快捷方式与标题栏左上角是同一颗 mark。
+
+运维：`node scripts/generate-icon.mjs` + `npx tauri icon assets/brand/hub-mark-1024.png`
+重新生成图标集（`tauri icon` 会顺手生成 `android/`、`ios/` 两个目录，本项目不用，删掉）；
+`release.rs` 另有 `the_main_window_carries_its_own_title_bar` 与
+`the_icon_set_comes_from_the_one_hub_mark` 两条守卫，盯住「窗口只有一层标题」与
+「图标只有一个来源」。前端那一半由构建自己守（`TitleBar.tsx` 直接 import 这个文件，
+删了或改名 `npm run build` 就红）；**没有东西能比较栅格与矢量**，所以改了 SVG 而忘记重跑
+脚本时，仓库里那套 `icons/` 会是旧的而测试仍然全绿——这条只能靠上面的命令与
+`scripts/generate-icon.mjs` 头部的说明，不是靠断言。
+
+**尚未验证（原生）**：真实窗口上的拖动/缩放/贴靠手感、DWM 阴影与圆角外观、任务栏、
+托盘与快捷方式图标外观，以及双击最大化的实际行为——WebView 截图证明不了系统装饰。
+这些归 `docs/VERIFICATION.md` §4 的 W-1…W-6 与 #69 的原生验收。
+
+---
+
+## D-030：Hub 的身份是一个命名互斥体加一条命名管道，范围是当前登录会话
 
 **状态：Accepted（2026-09-30，#60 落地时签认）**
 

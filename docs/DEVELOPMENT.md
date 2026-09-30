@@ -115,7 +115,7 @@ PTY 层不应因为“有输出”就自动决定写文件。
 
 它不知道窗口、会话和前端：请求做什么由 `app::launch` 以 `RequestHandler` 提供。**认领
 必须发生在建立会话监管器之前** —— 不是 Hub 的那个进程绝不能再监管一遍用户的会话
-（`docs/DECISIONS.md` D-029）。
+（`docs/DECISIONS.md` D-030）。
 
 ## 4. 状态真相原则
 

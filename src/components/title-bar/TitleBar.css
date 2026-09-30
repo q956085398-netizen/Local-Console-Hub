@@ -1,3 +1,6 @@
+/* The window's only title bar (issue #68): it is the drag handle now, so a
+ * text selection started here would fight the drag, and its 8px padding is what
+ * keeps the controls clear of the window edge, where the resize border sits. */
 .title-bar {
   display: flex;
   align-items: center;
@@ -6,6 +9,7 @@
   padding: 0 8px;
   border-bottom: 1px solid var(--border);
   flex: none;
+  user-select: none;
 }
 
 .title-bar__menu {
@@ -26,7 +30,9 @@
   color: var(--fg);
 }
 
+/* The Hub icon asset itself, not a copy of it (D-029). */
 .title-bar__mark {
+  display: block;
   width: 20px;
   height: 20px;
   margin-left: 4px;
@@ -61,6 +67,9 @@
   white-space: nowrap;
 }
 
+/* The summary is the first thing to give way when the window is narrow: it
+ * shrinks before anything else, and the window controls — which are `flex: none`
+ * and sit after it — are never covered or pushed out (UI_STYLE_GUIDE §11). */
 .title-bar__summary {
   margin: 0;
   font-family: var(--font-mono);
@@ -68,5 +77,17 @@
   font-variant-numeric: tabular-nums;
   color: var(--muted-fg);
   white-space: nowrap;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Narrow: the session-list button and the window controls both have to stay
+ * reachable, so the identity keeps the mark and drops the words around it. The
+ * counts are not lost — the sidebar and the status bar both carry them. */
+@media (max-width: 767px) {
+  .title-bar__summary {
+    display: none;
+  }
 }

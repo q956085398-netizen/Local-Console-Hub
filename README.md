@@ -246,7 +246,7 @@ npm run tauri build # 产出 Windows 安装包（MSI + NSIS）
 
 **日常打开请用安装版**（开始菜单的「Local Console Hub」）。同一个入口再次点击只会把已有
 窗口恢复回来，不会起第二个 Hub：一个 Windows 登录会话里只有一个 Hub，第二次调用把请求
-交给它然后自己结束（`docs/DECISIONS.md` D-029）。
+交给它然后自己结束（`docs/DECISIONS.md` D-030）。
 
 `npm run tauri dev` 与 `scripts\verify-*.cmd` 是**开发入口**，不是日常入口：debug 构建是
 控制台子系统程序，它会带着一个启动窗口活到应用退出。日常入口（release / 安装版）是

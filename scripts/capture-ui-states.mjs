@@ -15,8 +15,15 @@
 // Output defaults to `%TEMP%\lch-ui-capture`. Compare each file against the
 // reference named beside it in the console output, and against the deliberate
 // deviations `docs/DESIGN_SPEC_EXTRACTED.md` §5 records — an `UI 预览`
-// badge, no custom window controls, `External` where the reference shows
-// `Auto`, and fixture-relative uptimes are all expected, not defects.
+// badge, `External` where the reference shows `Auto`, and fixture-relative
+// uptimes are all expected, not defects.
+//
+// Since #68 the title bar also renders the window's own minimize / maximize /
+// close controls, because the desktop window is undecorated and the bar *is*
+// its title bar. In this capture they are present but inert — a browser page
+// has no window to control — so what the capture can show about them is their
+// place and their weight in the bar. Whether they move the real window is a
+// desktop-only check (`docs/VERIFICATION.md` §4, W-1…W-6).
 
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";

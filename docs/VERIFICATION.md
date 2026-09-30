@@ -293,7 +293,21 @@ node scripts/capture-ui-states.mjs
 | R-5 | 让 `svc-fails` 跑失败，再看托盘 | 摘要的失败数 +1，会话行进列表；「重启失败的会话」变为可用，点了只重启失败的那个 |
 | R-6 | 三个会话都在跑时点托盘「退出」 | **先弹确认**（「停止受管会话并退出」/ 取消）；选取消 → 什么都没发生；选确认 → 会话被停止后应用退出 |
 | R-7 | 没有会话在跑时点托盘「退出」 | 直接退出，不弹确认 |
-| R-8 | 看任务栏与托盘图标 | 与应用图标一致（D-013） |
+| R-8 | 看任务栏与托盘图标 | 与 Hub 图标一致（D-029） |
+
+### 标题栏与窗口（#68，对应原生验收 H16）
+
+窗口自 #68 起没有系统装饰，内部深色标题栏就是窗口的标题栏（D-029），所以下面这些是
+**只能在真实窗口上做的**检查——WebView 截图证明不了系统装饰、贴靠与任务栏图标。
+
+| # | 步骤 | 期望 |
+| --- | --- | --- |
+| W-1 | 看窗口顶部 | **只有一层标题**：左边 Hub 图标 + `Local Console Hub` + （开发态）`UI 预览`，右边全局摘要与三个窗口按钮；没有第二层系统标题、没有重复的应用名 |
+| W-2 | 按住标题栏空白处拖动 | 窗口跟着走；拖到屏幕上沿/左右边缘能贴靠（Windows 的 Aero Snap）；双击标题栏在最大化与还原之间切换 |
+| W-3 | 拖窗口的四边与四角 | 都能缩放；缩放时光标变成对应的双向箭头；最大化时不能拖边框（Windows 语义） |
+| W-4 | 点 `—` / `□`（最大化后变 `❐`）/ `✕` | 最小化到任务栏；最大化铺满工作区且按钮变成「还原」形态，再点回到原尺寸；`✕` **隐藏而不是退出**（同 R-1/R-2，会话继续跑） |
+| W-5 | 看窗口在最小宽度（960）下，以及浏览器预览里的窄宽度（<768） | 会话列表按钮与窗口按钮都还在、互不遮挡；终端区域不被标题栏挤掉。桌面窗口到不了 768 以下（`minWidth: 960`），窄布局只能在预览里看 |
+| W-6 | 看任务栏、托盘、开始菜单快捷方式与标题栏左上角 | 四处是**同一颗** Hub 图标（深色圆角方块 + 绿点 + 三条列表行，D-029）；tray 与任务栏图标在 16/32px 下仍可辨认 |
 
 ### 配置校验
 
@@ -337,6 +351,8 @@ node scripts/capture-ui-states.mjs
    脚本用交付用的 `dist/` 起一个环回静态服务，在系统自带的 Edge 里把 fixture 工作区
    渲染成 1280×800，输出 `service-terminal` / `service-logs` / `service-details` /
    `terminal-terminal` / `terminal-logs` 五张 PNG（默认写 `%TEMP%\lch-ui-capture`）。
+   Edge 的 headless 启动在本会话失败（`Code: 0`）时，可以把 `EDGE_PATH` 指向本机
+   Chrome 走同一条路——#68 会话就是这么跑的，见 §6。
 
 2. 逐区域比对（布局 / 组件 / 颜色语义 / 间距 / 字号）：标题栏、侧栏分组与行、
    选中会话头部（名称 / 类型 / 状态 / 动作 / 用途 / 关闭影响 / 元数据行）、页签、
@@ -348,13 +364,15 @@ node scripts/capture-ui-states.mjs
 
 ### 与参考图的有意偏差（**不是缺陷**）
 
-`docs/DESIGN_SPEC_EXTRACTED.md` §5 记录了 7 条，比对时按「预期」处理，逐条如下：
-不实现 `Ctrl K` / 全局设置 / 自定义窗口控制（保留原生装饰）；`UI 预览` 徽标只在检测不到
+`docs/DESIGN_SPEC_EXTRACTED.md` §5 记录了 8 条，比对时按「预期」处理，逐条如下：
+不实现 `Ctrl K` / 全局设置 / 日志入口 / `退出`（窗口控制本身自 #68 起已实现，
+见 D-029）；`UI 预览` 徽标只在检测不到
 Rust 后端时出现；行内日志标签显示 `External` 而不是参考图的 `Auto`（`auto` 在到达前端前
 已被解析）；详情面板不重复头部元数据；fixture 计时是相对的，字面值不同属正常；
 `on_error` 拼作 `on error`；服务终端的连接条是 `PTY 未连接 · 只读缓冲` 而不是参考图的
 `PTY attached · stdin 可用`（受管服务没有可输入的 stdin，UI_STYLE_GUIDE §7 禁止声称
-快照没有报告的连接）。
+快照没有报告的连接）；活动终端的「关闭影响」callout 在配置原文之下多一行
+`停止该终端会同时结束它启动的子进程。`（#61，D-028）。
 
 ### 首轮环境无法完成的部分（历史边界）
 
@@ -671,6 +689,71 @@ Edge 时 `puppeteer.launch` 报 `Failed to launch the browser process: Code: 0`�
 
 ---
 
+### 2026-09-30 — #68 合并标题栏与统一 Hub 图标
+
+环境：Windows 11 Pro（10.0.26300），worktree `elegant-kilby-2aaf97`（基 `bbd1c35`，其后
+合并 main 的 #70 提交），`CARGO_TARGET_DIR` 复用主检出的 `target`。改动：
+`decorations: false` + 标题栏里的窗口控制 + 显式窗口权限 + 图标源换成
+`assets/brand/hub-mark.svg`（D-029）。
+
+**自动检查，全绿**（下表是合并 main 之后的复跑；合并前本分支上的同批命令结果相同，只是
+没有 #61 带来的那些用例）：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check`、`npm run lint`、`npm run format:check`、`npm run build` | 通过 |
+| `npm test` | 215 passed / 15 files（含新增 `src/state/window-controls.test.ts` 6 项） |
+| `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | 344 lib + 10 `tests/mvp_matrix.rs` passed / 0 failed；其中新增 3 条 release 守卫 |
+
+**带宿主的前端行为（第 2 层，`t68-harness.html` + 桩宿主，跑完删除）。** 在一个浏览器页里
+安装 `__TAURI_INTERNALS__`（其中 `invoke` / `transformCallback` / `plugin:event|listen`
+由桩实现）并在 `/src/main.tsx` 之前注入 Tauri **自己那份** `drag.js`（从 cargo registry
+的 `tauri-2.12.0/src/window/scripts/drag.js` 读入，`__TEMPLATE_os_name__` 换成
+`'windows'`），然后用 headless Chrome 驱动。实测：
+
+- 三个按钮各发一条命令，且只发自己那条：`plugin:window|minimize` /
+  `toggle_maximize` / `close`；
+- 最大化形态是**读数**：桩里把 `is_maximized` 置真并派发 `tauri://resize` 之后，第二个
+  按钮的 `aria-label` 变成「还原窗口」，置假再派发又回到「最大化窗口」；
+- 拖动区：在应用名、摘要、Hub 图标、标题栏空白处按下鼠标都发
+  `plugin:window|start_dragging`，在最小化按钮上按下**什么都不发**（按钮不参与拖动）；
+  双击应用名发 `plugin:window|internal_toggle_maximize`（Windows 的双击最大化语义）。
+
+这一层证明的是**我们的标记 + Tauri 自己的 drag.js** 的接法（`data-tauri-drag-region="deep"`、
+按钮不触发拖动），以及三个按钮接到哪条命令；它证明不了这些命令在真机上是否被权限放行、
+窗口是否真的动了——那是下面未运行的部分。
+
+**视觉（第 3 层，`scripts/capture-ui-states.mjs` 对交付 `dist/`）。** Edge headless 在本
+会话启动失败（`Code: 0`），改用 `EDGE_PATH` 指向本机 Chrome 跑同一条链路，输出五张
+1280×800 fixture 截图（`%TEMP%\lch-68-capture`）。标题栏逐区域比对参考图：左边
+Hub 图标 + 应用名 + `UI 预览`，右边全局摘要 + 三个窗口按钮，**无 MAJOR 级差异**；
+参考图的 `Ctrl K` 与 `✕` 后面的 `退出` 按 §5 的有意偏差不算缺陷。另用一个临时脚本
+（跑完删除，不进仓库）在 960 / 720 / 480 / 375 四个宽度量了标题栏各元素的矩形：
+会话列表按钮（8–40）与窗口按钮（右对齐、`flex: none`）**不重叠**、窗口按钮不出视口，
+窄宽度下摘要隐藏、名字省略，终端区域宽度未被标题栏挤掉。
+截图里浏览器没有宿主，所以三个按钮是 disabled 形态（`aria-disabled` 语义上是 `disabled`，
+只是不响应点击）；启用态的外观另由上面那份桩宿主截图确认。
+
+**图标。** `node scripts/generate-icon.mjs` + `npx tauri icon assets/brand/hub-mark-1024.png`
+重新生成整套 `src-tauri/icons/`（`tauri icon` 顺带产出的 `android/`、`ios/` 已删除）；
+生成的 `icon.png` 与 `icon.ico` 已**看图确认**是 Hub mark（深色圆角方块 + 绿点 + 三条列表行）。
+`release.rs` 的 `the_icon_set_comes_from_the_one_hub_mark` 钉住「图标集只有一个来源」。
+
+**未运行（native-only，本轮没有能力执行）：**
+
+- W-1…W-6 全部：真实窗口的一层标题、拖动/贴靠/双击最大化手感、四边缩放、最小化/最大化/
+  还原/关闭的实际效果、任务栏与托盘与开始菜单快捷方式的图标外观，以及 16/32px 下 mark 的
+  可辨认度。原因同 §5 末节：worktree 会话挡掉 `powershell`，而原生窗口在本会话无法启动与
+  截图（应用的配置路径没有覆盖开关）。**WebView 截图不构成这些项的通过证据**，
+  逐项留给 #69 的原生验收与人在桌面上走 §4 的 W 清单。
+- 「更新应用快捷方式图标」的可见结果：快捷方式图标取自 exe 内嵌资源（`icon.ico`，
+  `RELEASE.md` §4.1 的 I-7），资源已随本次重生成，但快捷方式外观本身要装一次包才看得见，
+  归 I-7。#63 那条日常 PowerShell 入口的新图标按本工单的验收条件在 #69 的组合验收里核对
+  （该工单不在本轮范围内）。
+
+---
+
 ## 7. 当前已知缺口与验收边界
 
 - **托盘验收已有通过记录。** 2026-09-29 的独立 Windows 桌面轮次确认 R-1 至 R-8 通过，见 §6。
@@ -681,6 +764,9 @@ Edge 时 `puppeteer.launch` 报 `Failed to launch the browser process: Code: 0`�
 - **#61 的终端进程树行为已按第 1 层与界面渲染证据记录。** 原生窗口里的那一次「点停止 +
   任务管理器」未由 agent 执行，与 H05/H15 的生命周期部分一并归 #69 的组合原生验收；
   见 §6 的 2026-09-30 #61 记录。
+- **标题栏与窗口尚无原生结果。** #68 换了窗口形态（无系统装饰）与图标身份，§4 的 W-1…W-6
+  一条都没在真实窗口上跑过：带桩宿主的前端驱动只到命令名，fixture 截图只到浏览器里的布局。
+  DWM 阴影/圆角、贴靠、四边缩放与任务栏/托盘/快捷方式图标必须由人在桌面上看（#69）。
 - **其他原生手工结果按条目记录。** §4 的 L-11 及其他尚无结果的项目不能由协议测试、浏览器预览或自动化通过代替；
   应在真实 Windows 桌面执行后逐项记录通过、失败或未执行。工具可用性与用户确认范围按每轮实际记录判断（§5/§6）。
 - **安装包验收仍有未完成部分。** 详见 [`RELEASE.md`](RELEASE.md) §4 / §5：I-7 图标外观、I-8 MSI 实际安装未完成，I-15 尚未执行；

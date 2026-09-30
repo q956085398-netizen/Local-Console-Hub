@@ -75,7 +75,7 @@ powershell -NoProfile -File scripts\verify-single-instance.ps1
 会话        登录用户会话；脚本在正常用户环境中运行
 时间        2026-09-30
 被测文件    src-tauri\target\release\local-console-hub.exe
-sha256      1395C84238FB5A3CA9BF7F0D27EE3A0C7FDCFB12E768D18CB14172C37A1924BF
+sha256      184A029DBF08C6FF0682A05ED7EF1291F8E9BE9582F9A2559C7330AA43669469
 PE 子系统   WINDOWS_GUI
 开始菜单快捷方式指向  E:\Local Console Hub\local-console-hub.exe（该文件是更早的构建，
                        见 §4「未运行」第 1 条）
@@ -90,7 +90,7 @@ PE 子系统   WINDOWS_GUI
 | H01 | `exactly one Hub process after opening` | 1 |
 | H01 | `the Hub process is alive and responding` | `HasExited=False, Responding=True` |
 | H01 | `the entry is not a console program` | `WINDOWS_GUI` |
-| H01 | `a window exists` | `hwnd=2364784 class='Tauri Window' 1294x837` |
+| H01 | `a window exists` | `hwnd=7799702 class='Tauri Window' 1294x808` |
 | H01 | `the Hub process owns no console` | `False`（子进程 `AttachConsole` 失败 = 该进程没有控制台对象） |
 | H01 | `no conhost or shell in the Hub process tree` | 0 |
 | H02 | `the second launch ends within the bound` | `exit code 0` |
@@ -104,9 +104,9 @@ PE 子系统   WINDOWS_GUI
 | 恢复 | `closed (hidden to the tray) then open again restores the window` | `visible=True iconic=False`，`exit code 0` |
 | 恢复 | `closed (hidden to the tray) leaves exactly one Hub process` | 1 |
 | H02 | `cleared before the race` | 0 |
-| H02 | `exactly one Hub survives the race`（间隔 40 ms 启动两次） | 1（pid 48836） |
+| H02 | `exactly one Hub survives the race`（间隔 40 ms 启动两次） | 1（pid 46200） |
 | H02 | `one side handed over and ended` | 先启动=仍在运行，后启动=`exit code 0` |
-| H02 | `the winner has a window` | `pid=48836 hwnd=1709478` |
+| H02 | `the winner has a window` | `pid=46200 hwnd=1770636` |
 | H02 | `the winner owns no console` | `False` |
 | 收尾 | `no Hub process left behind` | 0 |
 
@@ -120,6 +120,9 @@ PE 子系统   WINDOWS_GUI
 - **最小化后 `IsWindowVisible` 仍是 True**（Windows 只是把它收成图标），所以两种手势
   的「离开桌面」判据不同：最小化看 `iconic`，关闭看 `visible`。同一个判据套两种手势
   同样是永远为红的断言。
+- **这一轮是在 #68 合并之后重跑的**（窗口不再有系统装饰，D-029）。主窗口因此从
+  `1294x837` 变成 `1294x808`，但窗口识别、恢复、隐藏各条都仍然通过——标题文本由
+  应用设置，与有没有系统标题栏无关；脚本判据里没有一条依赖系统装饰。
 
 ### 冷启动与超时
 
@@ -169,7 +172,7 @@ WebView2 的机器慢上几十倍，仍在预算内。
    重新安装的原因是不在未经确认的情况下替换他机器上正在用的安装版。
 2. **托盘菜单手势、受管会话继续运行、图标外观：未运行**，见 §3。
 3. **另一个 Windows 会话里的第二个 Hub。** 身份对象落在 `Local\` 命名空间，所以承诺
-   的范围是**当前登录会话**（D-029 记录了为什么不是 `Global\`）。同一个用户的另一个
+   的范围是**当前登录会话**（D-030 记录了为什么不是 `Global\`）。同一个用户的另一个
    登录会话是另一张桌面，不在本片承诺内。
 4. **`-App` 指向 debug 产物时 H01 的子系统那一条会红。** 这是有意的：开发构建确实是
    控制台子系统，而 §1 说明了这正是那个多余启动终端的来源。验收日常入口时请指向
