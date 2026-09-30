@@ -268,8 +268,10 @@ Local Console Hub 更关注的是：
 
 🚧 **v0.1.0 release candidate。** Windows MVP（`docs/ROADMAP.md` 的 Phase 1–2，外加 Phase 3
 的端口与基础健康信号）已有实现和分范围的验证记录；这不代表所有后续复核修复或发布验收均已完成。
-截至 2026-09-29，#52–#55 的 MVP 复核修复仍未完成，本文不把它们列作已实现。终端配置可以为两种会话类型
-设置 `purpose` / `close_impact`（D-027、#38）；仍待在真实窗口完成 T-11 视觉确认。独立的 Windows 桌面记录
+2026-09-30，#52–#56 已完成并进入同一被验源码版本 `4260c49`；#57 的前端 205 项、Rust 335 单元与
+10 集成测试及静态/构建检查通过，用户明确确认整体验收通过。终端配置可以为两种会话类型
+设置 `purpose` / `close_impact`（D-027、#38）；T-11 本轮依据用户整体验收确认通过，未新增 agent 原生截图。独立的 Windows 桌面记录
 已确认托盘 R-1 至 R-8 通过。安装验收仍有 I-7 图标外观、I-8 MSI 安装、尚未执行的 I-15，以及 I-16 / I-17
-中需要真实窗口与交互的部分待完成或待确认；细节见 [v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7、
+中需要真实窗口与交互的部分待完成或待确认；修复验收不自动意味着正式发布就绪。细节见
+[MVP 集成验收](docs/MVP_INTEGRATION_ACCEPTANCE.md)、[v0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md) §7、
 [端到端验证记录](docs/VERIFICATION.md) §6–§7 和 [安装验收记录](docs/RELEASE.md) §4–§5。

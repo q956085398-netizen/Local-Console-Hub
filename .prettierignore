@@ -1,5 +1,6 @@
 node_modules
 dist
+.scratch/
 .claude/worktrees
 
 # Machine-local app settings: git-ignored, not part of the repository
