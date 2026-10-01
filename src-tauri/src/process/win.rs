@@ -19,7 +19,8 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Console::{
-    AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, CTRL_BREAK_EVENT,
+    AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleProcessList, GetConsoleWindow,
+    CTRL_BREAK_EVENT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next,
@@ -28,8 +29,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, QueryFullProcessImageNameW,
     ResumeThread, WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
-    CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    THREAD_SUSPEND_RESUME,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
 // The command line a process was started with, by way of `ntdll` (#67).
@@ -78,12 +79,77 @@ pub fn require_backend(_operation: &'static str) -> Result<(), super::ProcessErr
 pub use super::tree::Job as TreeHandle;
 
 /// Put the run in a process group of its own, so a `CTRL_BREAK` can be aimed at
-/// this run alone (see [`request_graceful_stop`]).
+/// this run alone (see [`request_graceful_stop`]), on a console the desktop is
+/// never asked to show.
 pub fn prepare(command: &mut Command) {
-    // Keep the primary thread from running user code until `attach` has put the
-    // process in its job. This closes the interval where a fast launcher could
-    // create descendants before ownership is established.
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    command.creation_flags(creation_flags_for(has_console()));
+}
+
+/// The creation flags a run is started with.
+///
+/// Split out from [`prepare`] so the rule can be read — and tested — without a
+/// console of a particular shape: what the flags depend on is only whether the
+/// Hub has a console of its own.
+fn creation_flags_for(hub_has_console: bool) -> u32 {
+    // `CREATE_NEW_PROCESS_GROUP` is what makes the run a process group of its own
+    // — the thing a graceful stop is aimed at. `CREATE_SUSPENDED` keeps the
+    // primary thread from running user code until `attach` has put the process in
+    // its job, closing the interval where a fast launcher could create
+    // descendants before ownership is established.
+    let flags = CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED;
+
+    if hub_has_console {
+        // The Hub has a console, so the run inherits it: one console, created
+        // once, that a `CTRL_BREAK` travels through with nothing to attach to
+        // (D-035). `CREATE_NO_WINDOW` here would take the run *off* that console
+        // and give it one of its own, which is a stop that has to be delivered by
+        // attaching — measured, and not something to give up for a window that
+        // already does not exist.
+        flags
+    } else {
+        // The Hub has no console, so Windows would allocate one for the run — and
+        // hand its window to whatever this machine uses as its default terminal
+        // application, leaving a stray window on the desktop titled after the
+        // program being run, one per run (D-035). `CREATE_NO_WINDOW` takes that
+        // window away and not the console: the run still gets one, so a
+        // `CTRL_BREAK` can still be aimed at its process group, and the stop path
+        // reaches that console exactly the way it already had to.
+        flags | CREATE_NO_WINDOW
+    }
+}
+
+/// Pids attached to the console this process is attached to, empty when it has
+/// none.
+///
+/// For tests that have to tell "the run shares this process's console" from
+/// "the run has one of its own": which of the two it is decides whether a
+/// `CTRL_BREAK` reaches it from here, and the answer is the environment's, not
+/// the test's.
+#[cfg(test)]
+pub fn console_members() -> Vec<u32> {
+    let mut probe = [0u32; 1];
+    let count = unsafe { GetConsoleProcessList(probe.as_mut_ptr(), 1) };
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut members = vec![0u32; count as usize];
+    let listed = unsafe { GetConsoleProcessList(members.as_mut_ptr(), count) };
+    members.truncate(listed.min(count) as usize);
+    members
+}
+
+/// Whether this process is attached to a console at all.
+///
+/// The Hub is a windowless application in a release build and is normally
+/// started from a shortcut, so it has none; a Hub started from a shell — the
+/// debug build, or a release build launched from a terminal — inherits that
+/// shell's console, and has one. What a run does with the answer is
+/// [`creation_flags_for`]'s business; this is only the question, asked of the
+/// console's own membership list (a process with a console has at least itself
+/// on it).
+fn has_console() -> bool {
+    let mut members = [0u32; 1];
+    unsafe { GetConsoleProcessList(members.as_mut_ptr(), 1) != 0 }
 }
 
 /// Put a run that keeps its own window and console in a process group of its
@@ -236,8 +302,11 @@ pub fn wait_for_handle(handle: usize) -> Result<(), String> {
 ///
 /// A `CTRL_BREAK` only reaches processes that share a console with the caller, so
 /// a run living on a console of its own is reached by attaching to that console
-/// briefly. Delivery is best-effort by design: a process with no console at all
-/// has nothing to deliver to, and that is not an error, because the force path is
+/// briefly. A run only has one of its own when the Hub has no console to inherit
+/// (`creation_flags_for`), which is the case this second half exists for.
+///
+/// Delivery stays best-effort by design: a process with no console at all has
+/// nothing to deliver to, and that is not an error, because the force path is
 /// what guarantees the stop (`docs/DECISIONS.md` D-007).
 pub fn request_graceful_stop(pid: u32) -> bool {
     unsafe {
@@ -594,4 +663,50 @@ fn wide_string(field: &[u16]) -> String {
 fn last_error(call: &str) -> String {
     let code = unsafe { GetLastError() };
     format!("Win32 error {code} from {call}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rule the flags encode: a run is always its own process group and
+    /// always starts suspended, and it is denied a console *window* only when
+    /// the Hub has no console for it to inherit.
+    #[test]
+    fn a_run_gets_no_console_window_only_when_it_has_no_console_to_inherit() {
+        let with_hub_console = creation_flags_for(true);
+        assert_eq!(
+            with_hub_console & CREATE_NO_WINDOW,
+            0,
+            "a run of a Hub that has a console keeps sharing it"
+        );
+        assert_eq!(
+            with_hub_console & (CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED),
+            CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
+        );
+
+        let without_hub_console = creation_flags_for(false);
+        assert_ne!(
+            without_hub_console & CREATE_NO_WINDOW,
+            0,
+            "a run of a windowless Hub is given a console with no window"
+        );
+        assert_eq!(
+            without_hub_console & (CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED),
+            CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
+        );
+    }
+
+    /// The question [`creation_flags_for`] is asked, answered the way a process
+    /// with a console answers it: the console's membership list is never empty
+    /// for a process that has one.
+    #[test]
+    fn having_a_console_is_read_from_the_consoles_membership() {
+        // Whichever way the test runner was started, the two readings have to
+        // agree with each other: `has_console` is true exactly when the console
+        // reports members.
+        let mut members = [0u32; 8];
+        let listed = unsafe { GetConsoleProcessList(members.as_mut_ptr(), 8) };
+        assert_eq!(has_console(), listed != 0);
+    }
 }
