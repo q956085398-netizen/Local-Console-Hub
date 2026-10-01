@@ -1473,6 +1473,30 @@ D-035 的记录同时有 main/CI 的同族失败。本轮不修改 ConPTY、不�
 一轮基线通过、最终版通过和单测 9/9 通过仍不能证明并行失败与修复无关；本轮未定位并行失败
 的机制，所以保留这项不稳定性，而不是称“已排除回归”。未弱化检查，CI 仍跑完整套件。
 
+**CI 后续：旧 PID 不是旧进程对象。** PR #86 的第一次 Windows CI
+（[run 36825044647](https://github.com/q956085398-netizen/Local-Console-Hub/actions/runs/36825044647)）
+在 `restart_leaves_exactly_one_run_alive` 失败：**540 passed / 1 failed**，lib 37.08 秒，
+`restart left a duplicate instance behind: [7316, 9256, 10040, 2704]`。
+同轮也输出一次 `could not restore the caller's console after borrowing`，所以不能将此前记录的
+best-effort 边界写成仅理论可能；这条诊断本身不证明它导致重启断言失败。
+
+旧测试把三个过去的数字 PID 存起来，最后重新打开这些数字询问是否存活；Windows 在原对象被
+释放后可将 PID 用于其他并行用例。这种询问**无法证明原 run 仍活着**，还会把等于当前 PID 的
+历史数字直接排除。因此改为保存各代原来的 `Arc<Shared>`（不添加公开 `Clone`），通过原来的
+`Child::try_wait` 检查原进程已退出，并通过原 Job 检查后代为空；当前代仍须存活且归属自己的
+Job。保留原 Job 也避免关闭 Job 的兜底清理掩盖不完整的显式 stop，断言没有弱化。
+
+本机在修改前单跑失败测试 1/1、并行 `process::tests::` 连跑 5 次（每次 13 条）、全 lib 1 次
+均通过；没有复现特定那轮 CI 的 PID 重用，也不能凭数字列表把那轮确诊为 PID 重用。
+这里修正的是已确定的测量缺陷，不宣称消除了之前所有生命周期抖动。
+
+为确认新断言会抓住真正的存活实例，临时在同一条用例省略 `restart`，保留原 run：用相同的
+`cargo test --lib process::tests::restart_leaves_exactly_one_run_alive -- --exact --nocapture`
+得到预期红灯（`restart left the original run alive: 45540`，0 passed / 1 failed，0.09 秒）。
+立即撤销该故障注入后，测试单跑通过；完整 `cargo test` 再次 **541 lib + 17 integration 全绿**
+（18.48 / 8.01 秒），Rust 格式、Clippy、debug build 均通过。故障注入不提交，超时、断言与 CI
+执行方式不放宽；此处记录的是本地修订验证，后续 CI 状态以 GitHub 为准。
+
 **未执行 / 留待。** 本轮没有启动真实 Hub，也没有驱动托盘、任务栏或窗口装饰；这项 Windows
 console 状态改动不能由浏览器 preview 证明，故未启动前端 dev server。没有新的桌面 before/after，
 没有 conhost 默认宿主机器复测，也没有在原控制台所有 peer 故意离开的真实测试进程中验证失败
