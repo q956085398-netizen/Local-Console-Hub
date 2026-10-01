@@ -1139,6 +1139,31 @@ mod tests {
         }
     }
 
+    /// Re-entered as a child process by the graceful-stop regression. The
+    /// readiness line is emitted only after the real CTRL_BREAK handler exists.
+    #[test]
+    #[ignore = "child-process fixture for the graceful-stop regression"]
+    fn graceful_stop_ready_fixture() {
+        use std::io::Write;
+        use windows_sys::Win32::System::Console::{SetConsoleCtrlHandler, CTRL_BREAK_EVENT};
+
+        unsafe extern "system" fn stop_on_break(event: u32) -> i32 {
+            if event == CTRL_BREAK_EVENT {
+                std::process::exit(0);
+            }
+            0
+        }
+
+        assert_ne!(unsafe { SetConsoleCtrlHandler(Some(stop_on_break), 1) }, 0);
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(b"issue82-ready\n").unwrap();
+        stdout.flush().unwrap();
+        drop(stdout);
+        loop {
+            thread::park();
+        }
+    }
+
     #[test]
     fn a_graceful_stop_still_reaches_a_run_whose_console_has_no_window() {
         // The stop ladder's first rung is a `CTRL_BREAK` aimed at the run's
@@ -1151,7 +1176,47 @@ mod tests {
         // a request it raised only in the Hub's own console, with the run on
         // another one, which the report below reads as `graceful_delivered:
         // true` for a stop that then had to be forced.
-        let run = start();
+        // Wait for the actual control handler before stopping the run. An exit during
+        // Windows initialization (for example 0xC0000142) is not evidence that a
+        // graceful request reached a live run.
+        let hub_has_console = !super::win::console_members().is_empty();
+        let spec = ProcessSpec::new(std::env::current_exe().unwrap(), std::env::temp_dir())
+            .with_args(vec![
+                "process::tests::graceful_stop_ready_fixture".to_owned(),
+                "--exact".to_owned(),
+                "--ignored".to_owned(),
+                "--nocapture".to_owned(),
+                "--test-threads=1".to_owned(),
+            ])
+            .with_output(OutputMode::Capture);
+        let run = ManagedProcess::spawn(spec).expect("the run starts");
+        let output = run.take_output().expect("the run exposes its output");
+        let stdout = output.stdout.expect("the fixture stdout is captured");
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let mut reader = BufReader::new(stdout);
+            let ready = loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break Ok(false),
+                    Ok(_) if line.trim_end().ends_with("issue82-ready") => break Ok(true),
+                    Ok(_) => {}
+                    Err(error) => break Err(error),
+                }
+            };
+            let _ = ready_tx.send(ready);
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the fixture answers within the startup deadline")
+            .expect("the fixture readiness line can be read");
+        assert!(
+            ready,
+            "the control handler must be ready before graceful stop is measured; exit={:?}",
+            run.exit_status()
+        );
+        assert!(run.is_running(), "the ready fixture is still alive");
 
         // Which console the run ended up on is the environment's answer, not
         // this test's: it shares the Hub's when the Hub had one to inherit at
@@ -1164,6 +1229,10 @@ mod tests {
         let shares_hub_console = super::win::console_members().contains(&run.pid());
 
         let report = run.stop(STOP_TIMEOUT).expect("the run stops");
+        eprintln!(
+            "hub_has_console={hub_has_console}; shares_hub_console={shares_hub_console}; \
+             stop_report={report:?}"
+        );
 
         if report.graceful_delivered {
             assert_eq!(
@@ -1171,6 +1240,11 @@ mod tests {
                 StopOutcome::Exited,
                 "a request reported as delivered must end the run without the \
                  force path: {report:?}"
+            );
+            assert_eq!(
+                report.exit.code,
+                Some(0),
+                "the CTRL_BREAK handler exits with 0"
             );
         }
         if shares_hub_console {

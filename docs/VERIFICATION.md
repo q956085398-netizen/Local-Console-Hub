@@ -1509,6 +1509,75 @@ console 状态改动不能由浏览器 preview 证明，故未启动前端 dev s
 
 ---
 
+### 2026-10-01 — #82 已合入修复的复核与验收工具加固
+
+复核基线为远程 `main` 的 `2748b82`；核心修复已由 PR #83 / `7045755` 合入，但议题仍开放。
+本轮使用仓库内隔离检出，主检出的既有改动不参与提交。原生测量与完整 Rust 套件均在沙箱外
+Windows 用户 `NEWNAME\q9560`、Windows `10.0.26300.0` 上运行；静态检查在 workspace-write
+沙箱内。`request_graceful_stop`、D-007、D-034 的独立窗口路径与 ConPTY 产品代码均未修改。
+
+**先复现工具的问题。** 旧脚本在 baseline 为 1、过滤器不匹配任何测试时仍输出
+`appeared_visible_console_windows=1`、`0 passed`，且脚本退出码为 0。现在按 `HWND + PID`
+排除 baseline，标题变化不算新窗口；以 `--exact` 串行执行一条测试，要求 1 passed / 0 failed /
+0 ignored。runner 失败、缺失结果、零匹配、超时、优雅报告不满足要求或新增窗口均返回非零。
+错误过滤器的补验得到 baseline 4、新增 0、0 passed、脚本退出 1，未误报通过。
+
+**停止测试的假通过也要排除。** 初次复核旧 CMD fixture 曾得到
+`Exited / graceful_delivered=true / exit=0xC0000142`，实际是 Windows 初始化失败。
+改为 CMD 输出握手后又测得 `Forced / graceful_delivered=true`：应用就绪不等于其控制处理器
+已经可以按预期退出。最终 fixture 重新进入测试二进制中的 ignored 辅助用例，注册真实
+`CTRL_BREAK` 处理器后输出就绪握手；父用例通过公开的 stdout capture 在 5 秒内等待握手并
+确认进程仍存活。处理器收到事件才以 0 退出，因此初始化失败和自然早退都不能提供通过证据。
+辅助用例只由该回归用例以 `--ignored` 启动，不是未完成的产品测试。
+
+**本轮原生测量。** 同一加固脚本、同一默认停止用例，50 ms 轮询。对照二进制仅在临时源码
+副本中移除无控制台分支的 `CREATE_NO_WINDOW`，模拟修复前行为；正式源码保持修复。
+
+| 场景 | baseline | 新增可见控制台宿主 | 实际测试与脚本结果 |
+| --- | --- | --- | --- |
+| 无控制台 runner，修复前 flag | 0 | **1**（WindowsTerminal，标题 `Terminal`） | 测试 1 passed，测量 **FAIL / exit 1** |
+| 无控制台 runner，修复后 flag | 0 | **0** | 测试 1 passed，测量 **PASS / exit 0** |
+| 共用无窗口控制台，已就绪的控制处理器 | 4 | **0** | `hub_has_console=true`、`shares_hub_console=true`、`graceful_delivered=true / Exited / exit=0`，**PASS** |
+| 无控制台 runner，run 的私有无窗口控制台 | 4 | **0** | `hub_has_console=false`、`shares_hub_console=false`、`graceful_delivered=true / Exited / exit=0`，**PASS** |
+| 无控制台 runner，`pty::tests::an_idle_unread_terminal_stays_alive` | 4 | **0** | 测试 1 passed，**PASS** |
+
+另做反例：在临时副本中无条件加 `CREATE_NO_WINDOW`，已就绪 fixture 报告
+`hub_has_console=true / shares_hub_console=false / Forced / graceful_delivered=true / exit=1`，
+回归用例退出 101、脚本退出 1，确认仍能检出“投递到错误控制台”的缺陷。
+把测量超时设为 1 秒时，脚本结束本次 runner，报告缺失测试结果并退出 1；不把超时当成零窗口通过。
+
+首次 2 → 0 的读数保留在前一记录，本轮为 1 → 0，不把不同桌面轮次的宿主数量写成相同。
+私有控制台补验现在成功，不再把首次 CMD 用例的失败推广成“AttachConsole 从不能优雅退出”。
+它只证明已就绪且响应控制事件的真实进程；任意应用仍可以忽略事件，超时后按 D-007 强制结束。
+
+**自动回归。** `cargo test -- --test-threads=1` 完整通过：535 个 lib 测试、17 个集成测试，
+0 failed；1 ignored 是上述需作为受管子进程运行的 fixture。前端 20 文件、288 项通过；
+类型检查、Lint、Prettier、生产构建、Rust 格式检查及
+`cargo clippy --all-targets -- -D warnings` 通过。两轴代码复审无剩余问题。
+
+**收尾集成。** 期间远程 main 合入 #85 / `84691bb`。本片重放到该版本，保留 D-037 的
+控制台借用规则与原生记录，解决两处文档追加冲突。最终在同一正常 Windows 用户环境重跑
+完整套件：**541 lib + 17 integration，0 failed，1 ignored fixture**；Rust 格式及
+Clippy 复验通过。最终二进制 SHA-256 为
+`F90EBA2F1CF8CF7612FA2C4A9D5616573DE4F7615F7320A9191D36090744BBFD`。
+该二进制的两种停止形态均严格验证通过，默认托管 run 测量也通过；三次 baseline 均为 0、
+新增可见窗口均为 0。未把 #85 的产品改动归入本片。
+
+**复现命令。** 在仓库根目录先构建测试二进制；如设置了 `CARGO_TARGET_DIR`，通过
+`-TestBinary` 明确传入该次构建产物，不使用别的版本的测试二进制。
+
+~~~powershell
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-run
+powershell -NoProfile -File scripts/verify-supervised-console-windows.ps1 -PollMilliseconds 50
+powershell -NoProfile -File scripts/verify-supervised-console-windows.ps1 -WindowlessRunnerConsole -TestFilter process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window
+powershell -NoProfile -File scripts/verify-supervised-console-windows.ps1 -TestFilter process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window
+~~~
+
+**边界。** 窗口数据来自真实 Windows `EnumWindows`，不是浏览器预览或 mock；轮询只能证明
+采样中没有新可见窗口，不能排除短于采样间隔的瞬时窗口，也不能把其他并发桌面活动归给 run。
+本轮未启动安装版 Hub、未驱动托盘/任务栏/窗口装饰、未切换默认终端为 conhost；这些仍属
+#69 的组合原生验收，不因本轮结果改判。测试运行完成后受管进程由 Job 回收，不关闭用户窗口。
+
 ## 7. 当前已知缺口与验收边界
 
 - **托盘验收已有通过记录。** 2026-09-29 的独立 Windows 桌面轮次确认 R-1 至 R-8 通过，见 §6。
