@@ -267,7 +267,9 @@ The process layer must:
 - know exactly which process belongs to a managed session;
 - track enough descendant/process-tree information for safe shutdown;
 - distinguish graceful stop from force kill;
-- never kill unrelated processes based only on executable name.
+- never kill unrelated processes based only on executable name;
+- start a run on a console nothing on the desktop can show, so hosting a run
+  never puts a window on screen (D-035).
 
 Default stop path:
 
@@ -280,6 +282,13 @@ confirm process exit
         ↓
 if still alive -> explicit force-kill path
 ~~~
+
+The graceful request is a `CTRL_BREAK` aimed at the run's process group, so a run
+needs a console for it to travel through. What a run must not have is a console
+*window*: a console allocated for it is what a desktop terminal application turns
+into a stray window titled after the program being run (D-035). The run therefore
+shares the Hub's console when the Hub has one, and is started with
+`CREATE_NO_WINDOW` — a console with no window — when it does not.
 
 For terminal sessions, Ctrl+C is not the same action as closing the session.
 

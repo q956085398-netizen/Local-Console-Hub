@@ -1094,6 +1094,135 @@ H08 里「托盘退出」这条路径仍未走过（本轮用结束进程代替�
 （端口 24120 无监听）；调试用的应用进程已结束。CDP 脚本与截图留在
 `%TEMP%\lch-65-verification\`，不在仓库里（`git status` 干净）。
 
+### 2026-10-01 — #82 托管 run 不再给桌面留下控制台窗口（D-035）
+
+**做了什么。** 修掉桌面上真的出现过的一个缺陷：一次 agent 会话跑完 `session::core` 的日志用例
+后，留下了 28 个标题为 `C:\WINDOWS\system32\cmd.exe` 的窗口，其中一个写着
+`启动 "cmd.exe" /c echo where-am-i 时 出现错误 2147942632 (0x800700e8)`——那条命令只由受监督
+run 执行。改动只有 `src-tauri/src/process/win.rs`：run 的创建 flag 现在取决于 **Hub 自己有没有
+控制台**（Hub 有时继承，没有时加 `CREATE_NO_WINDOW`）。工作环境为 Windows 11 Pro
+（10.0.26300）、真实用户会话 `q9560`、worktree `silly-perlman-2e920e`；本机的默认终端应用是
+Windows Terminal（`HKCU:\Console\%%Startup` 未设置，实测由它接管新分配的控制台）。
+
+**第 1 层（自动）。** 全绿（分支已合入含 #66 的最新 `main`）：
+
+| 套件 | 结果 |
+| --- | --- |
+| `cargo fmt --all --check` | 通过 |
+| `cargo clippy --all-targets -- -D warnings` | 通过 |
+| `cargo test` | **503 lib + 17 `tests/mvp_matrix.rs`，0 failed**（合并 #66 后的基线 500 + 17） |
+
+本片新增 3 条用例：`process::win::tests::a_run_gets_no_console_window_only_when_it_has_no_console_to_inherit`
+钉住 flag 规则（有/无 Hub 控制台各两条断言）、`having_a_console_is_read_from_the_consoles_membership`
+钉住「有没有控制台」的读法与 `GetConsoleProcessList` 一致、`process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window`
+钉住停止请求与它自己的报告：请求被报告为已投递时，这次停止必须走优雅路径而不是超时后强制结束。
+
+**这条用例为什么是「条件断言」而不是「一定投递到」**（合并 #66 之后才看清）：run 落在哪个控制台
+是**环境**给的答案——Hub 有控制台时继承，没有时自己一个（本决策第 2 条）——而**这个测试二进制会
+自己把自己的控制台弄丢**：#66 的 `process::independent` 在等待独立窗口时每 50ms 调一次
+`crate::window::console_window(pid)`，那个函数为了问「这个 pid 的控制台窗口是哪个」会
+`FreeConsole` + `AttachConsole(pid)` + `FreeConsole`，是**进程级**状态改动。并行的用例一旦这样
+做，本用例的 run 就在另一个控制台上了。所以断言分成两半：跨度可测的那一半（`graceful_delivered`
+为真 ⇒ 必须 `Exited`）在任何情况下都成立，另一半（run 确实在本进程控制台上时请求必须到达）只在
+读得到该条件时断言。合入 #66 后连跑 5 次全量，本用例 0 次失败。
+
+**同一缺陷类的第二个来源（测量中发现，不在本片范围）。** 在本片合入含 #66 的 `main` 之后，
+**跑一次普通的 `cargo test` 仍会往桌面上留下可见控制台窗口**。读数（干净桌面：0 个
+WindowsTerminal 进程）：
+
+| 运行 | 结果 |
+| --- | --- |
+| `cargo test --lib`（全量，含 `process::independent::tests`） | 1 个 WindowsTerminal 进程，**10 个可见窗口**：9 × `C:\WINDOWS\system32\cmd.exe` + 1 × `%TEMP%\lch-external-resolve-…\lch-ext-resolve-….exe`（一个日志用例的临时 fixture） |
+| `cargo test --lib -- --skip process::independent` | **0 个新窗口** |
+
+触发点在 #66 的独立窗口用例，机制有两个，都在 `process::independent` 这条路径上：其一，
+`display: window` 的控制台型 run 走 `win::prepare_windowed` 的 `CREATE_NEW_CONSOLE`，本来就是
+「要一个自己的控制台」；其二，`IndependentProcess::window()` 经
+`crate::window::console_window` 做 `FreeConsole` + `AttachConsole(pid)` + `FreeConsole`，这是
+**进程级**改动——测试进程一旦被它摘掉控制台，之后**任何**子进程（`taskkill`、PowerShell 辅助
+进程、fixture 可执行文件）都会被分配一个新控制台，于是各留下一个标题是它自己的窗口。这条与
+本片改的受监督路径无关，也不改变本片的结论（受监督 run 在同一台机器上是 0）。它值得单独一个
+工单：`console_window` 的 detach 同时是产品里的一个窄并发隐患（Hub 在 attach 期间若正好有一次
+停止投递，事件会落在另一个控制台里），而在有控制台的开发态 Hub 里还会抛掉开发者自己的控制台。
+本片只记录现象与读数，不改这条路径。
+
+**同一条断言位置在 CI 上也抖过（这条为 PR #83 的第一次失败补记）。** 本片第一次 CI 失败在
+`tests/mvp_matrix.rs:200` 的 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace`
+（`timed out waiting for the temporary shell to end`），与本片无关：**同一条位置、同一类消息在
+`main` 上已经失败过**——`#81` 那次 main 的 CI（run 36766198494）挂在
+`a_saved_terminal_joins_a_real_config_and_keeps_its_run` 的「`timed out waiting for the saved
+terminal to end`」，也是 `mvp_matrix.rs:200`。该位置等的是**PTY 会话**结束，本片不碰 PTY；同一
+版本在本机跑 `cargo test` 时 17 条集成用例全通过。因此按抖动处理（重跑），并把这条对应关系留在
+这里，供后来者判断这类失败时不必再从零查一遍。这个位置本身值得单独收口（超时窗口对负载敏感）。 5 次全量里有 1 次失败在
+`session::core::tests::terminal_tests::a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`
+与 `temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed`（两条都是 ConPTY 进程树
+断言），单独跑这两条 3/3 通过。本片唯一的产物改动是受监督 run 的创建 flag，与 PTY 路径无关，但
+「无关」不等于「已排除」：合并进来的 #66 带来了一批新的独立窗口用例（含上述每 50ms 的窗口轮询），
+全量运行的负载特征变了。此处只记录现象与已知读数，#66 的作者（或后续轮次）应按需要复核。
+
+**先复现，再改（本机原生读数）。** 复现要造出报告里的条件——**runner 自己没有控制台**。直接用
+`DETACHED_PROCESS` 跑 `cargo test` 不够：cargo 自己也是控制台程序，窗口会记在 `cargo.exe`
+头上（实测到，属测量噪声）。所以固化下来的工具是
+`scripts/verify-supervised-console-windows.ps1`：它用 `CreateProcessW` + `DETACHED_PROCESS`
+直接跑**测试二进制**，并在整个运行期间轮询桌面上的可见控制台宿主窗口（`EnumWindows` + class 为
+`ConsoleWindowClass` / `CASCADIA_HOSTING_WINDOW_CLASS` + `IsWindowVisible`）。同一个脚本、
+同一条用例的两次运行：
+
+| 运行 | `appeared_visible_console_windows` | 逐条出现记录 |
+| --- | --- | --- |
+| flag 临时改成无条件（= 改动前的行为） | **2** | `WindowsTerminal…title=[Terminal]`、`WindowsTerminal…title=[C:\WINDOWS\system32\cmd.exe]` |
+| 本片改动后 | **0** | 无 |
+
+两次的 `test_result` 都是 `1 passed; 0 failed`（用例本身在两种状态下都通过——泄漏的不是测试的
+结论，而是测试运行期间桌面上的窗口），`runner_exit=0`。`C:\WINDOWS\system32\cmd.exe` 这个标题
+与报告里那 28 个窗口一致。
+
+**这两次读数的边界。** 它们都是在**桌面基线为 0 个可见控制台宿主窗口**时取的，出现的那两个
+窗口也都落在用例自己运行的那几秒里（750ms / 1000ms 两次轮询），所以可以归给被测量的 run。
+但本机不是只有本会话在分配控制台：测量后期，机器上出现本会话之外的控制台活动（新的
+`WindowsTerminal`/`OpenConsole`/`chrome`/`ChatGPT` 进程，以及标题属于**别的**测试夹具
+`lch-ext-…exe` 的窗口），基线因此涨到 30–60 个，之后的读数就不再能归因了——本片在这之后停止
+了测量，并把结论限定在上面那两次基线的读数上。
+
+ConPTY 那条跑了整个 `pty::tests::` 时出现过 4 个窗口，逐个用例隔离后确认是**测试自己的裸
+`std::process::Command` 辅助进程**（`pty/mod.rs` 里的 `taskkill` 与 `powershell`）造成的，单独的
+`an_idle_unread_terminal_stays_alive` 全程 0 个——伪控制台不分配真控制台，本片不动它。
+
+**为决定 flag 做的三组测量（都是本机原生读数，不是推断）。**
+
+1. **控制台归属。** 用 `CreateProcessW` 造两种子进程并读父进程的 `GetConsoleProcessList`：
+   `CREATE_NEW_PROCESS_GROUP` 的子进程**在**父进程的控制台里；再加 `CREATE_NO_WINDOW` 之后
+   **不在**——它拿到自己的一个控制台。子进程自报的读数也一致：`attached=True`、
+   `members=[自己]`、`console_window=0`。所以这个 flag 去掉的是窗口，不是控制台。
+2. **attach 的时序。** 刚 spawn 完立刻 `AttachConsole(子进程)` 失败（`ERROR_INVALID_HANDLE`），
+   等 2 秒后成功；两种 flag 表现相同。停止发生在 run 存活若干秒之后，因此这条不影响交付路径，
+   但它是「不要照抄一个新用例里立刻 attach 的写法」的理由。
+3. **无条件加 flag 的反例（本片最值得记的一条）。** 把 flag 改成无条件后，
+   `a_graceful_stop_still_reaches_a_run_whose_console_has_no_window` 变红，读数是
+   `StopReport { outcome: Forced, exit: 1, graceful_delivered: true }`：事件只在调用者自己的
+   控制台里产生，`GenerateConsoleCtrlEvent` 却报成功，于是报告替一次**没有到达**的请求签了字。
+   这正是 D-035 第 2 条要求 flag 看 Hub 形态、而不是无脑加的原因。
+
+**未执行 / 留待。** 本片**没有启动真实的 Hub 进程**去看桌面：复现用的是「无控制台的测试二进制」
+这一等价形态，没有驱动托盘、任务栏或窗口装饰。因此 H01 与 #69 的组合原生轮次不受影响，也**不**
+记为通过。此外没有在「默认终端应用是 conhost」的机器上复测（那台机器上同样的分配会画一个
+conhost 窗口，而不是 Windows Terminal）；`display: window` 的独立窗口应用（#66/D-034）不在本
+分支、本片未触碰、未测量。前端没有任何改动，`npm` 系列检查本轮未跑。
+
+**清理。** 测量期间本机桌面确实被弄脏过。本会话开始时本机 WindowsTerminal 进程数为 **0**
+（多次读到），据此按 pid 逐窗口 `WM_CLOSE` 收掉了三个 WindowsTerminal 进程的全部可见窗口
+（pid 54692 83 个、pid 58456 61 个、pid 56068 35 个，标题都是 `cmd.exe` 或测试临时夹具），
+收完后进程数回到 0、随后一次受监督 run 的新增窗口读数是 0。**这条归因并不严密**：机器上同时
+存在本会话之外的控制台活动，因此不能排除这三批窗口里混有别人启动的静默控制台进程留下的同类
+窗口（这类窗口是同一类垃圾，但确实不是本会话产生的）。测量后期基线涨到 30–60 个之后，本会话
+**没有再关任何窗口**——那时已经无法证明归属，留着让机器的主人判断。收尾时机器上仍有的 16 个
+`cmd` 进程里只有 1 个是本会话的（其余 15 个起始于 9/30 20:24–10/1 02:56，早于本会话），未触碰。
+
+测量本身只枚举窗口，从不移动或关闭别人的窗口；受监督 run 由用例自身结束。工具留在仓库里
+（`scripts/verify-supervised-console-windows.ps1`，与 `verify-shortcut-entry.ps1` 同一层），
+每次运行的测试输出在 `%TEMP%\lch-console-windows-<pid>.log`；临时探针与中间读数写在 worktree 的
+`scratch/`，提交前删除（`git status` 干净）。
+
 ---
 
 ### 2026-10-01 — #66 自带控制台的独立窗口应用（D-034）

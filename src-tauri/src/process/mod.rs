@@ -35,6 +35,18 @@
 //! nothing to deliver to) the run falls through to the timeout and then to the
 //! force path.
 //!
+//! ## The run's console
+//!
+//! A run is a console application, and the console it is given is one the
+//! desktop is never asked to show: a console allocated for a run whose parent
+//! has none of its own is handed to whatever the machine uses as its default
+//! terminal application, which puts a stray window on screen titled after the
+//! program being run — one per run (`docs/DECISIONS.md` D-035). The run
+//! therefore shares the Hub's console when the Hub has one, and is started with
+//! `CREATE_NO_WINDOW` when it does not. What the run keeps is a console: it is
+//! what the graceful request above travels through, and removing it would take
+//! the stop ladder's first rung with it.
+//!
 //! A [`ManagedProcess`] owns its run completely: dropping the handle terminates
 //! whatever is left of the run, so a session cannot outlive the supervisor that
 //! accounts for it.
@@ -995,6 +1007,52 @@ mod tests {
                 "pid {pid} survived the stop of its run"
             );
         }
+    }
+
+    #[test]
+    fn a_graceful_stop_still_reaches_a_run_whose_console_has_no_window() {
+        // The stop ladder's first rung is a `CTRL_BREAK` aimed at the run's
+        // process group (D-007), and a `CTRL_BREAK` only travels inside one
+        // console. What every run is given is therefore a console — one it
+        // shares with the Hub where the Hub has one, and a windowless one of its
+        // own where it does not (D-035) — and this pins the half of that trade
+        // the flag could have broken. `CREATE_NO_WINDOW` applied unconditionally
+        // is what this test refuses: it makes `GenerateConsoleCtrlEvent` report
+        // a request it raised only in the Hub's own console, with the run on
+        // another one, which the report below reads as `graceful_delivered:
+        // true` for a stop that then had to be forced.
+        let run = start();
+
+        // Which console the run ended up on is the environment's answer, not
+        // this test's: it shares the Hub's when the Hub had one to inherit at
+        // the moment of the spawn, and has a windowless one of its own when it
+        // did not. Another test in this binary changes that answer under this
+        // one — `crate::window`'s console lookup attaches and detaches this
+        // process's console for the length of a call, and it does so once per
+        // poll while it waits for a standalone run's window — so the strong half
+        // is asserted only where the run is observably on this console.
+        let shares_hub_console = super::win::console_members().contains(&run.pid());
+
+        let report = run.stop(STOP_TIMEOUT).expect("the run stops");
+
+        if report.graceful_delivered {
+            assert_eq!(
+                report.outcome,
+                StopOutcome::Exited,
+                "a request reported as delivered must end the run without the \
+                 force path: {report:?}"
+            );
+        }
+        if shares_hub_console {
+            assert!(
+                report.graceful_delivered,
+                "the run is on the Hub's console, so the request had somewhere \
+                 to arrive: {report:?}"
+            );
+            assert_eq!(report.outcome, StopOutcome::Exited, "saw {report:?}");
+        }
+        assert!(!run.is_running());
+        assert!(managed_tree(&run).is_empty());
     }
 
     #[test]
