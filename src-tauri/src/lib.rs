@@ -22,6 +22,12 @@
 // copy of it rather than the one the app runs (#64).
 pub mod app;
 pub mod config;
+// The console this process is attached to, and the borrow of another one's the
+// window lookup and the graceful stop both need (D-037). Windows-only and
+// crate-private: the console model is Windows', both callers are in Windows
+// backends, and nothing above those layers names a console.
+#[cfg(windows)]
+mod console;
 /// The native message box, for the two moments there is no window to draw in
 /// (`docs/MVP_IMPLEMENTATION_SPEC.md` §11; #60).
 mod dialog;

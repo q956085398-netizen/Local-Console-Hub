@@ -28,6 +28,12 @@ pub fn prepare(_command: &mut Command) {}
 pub fn prepare_windowed(_command: &mut Command) {}
 
 /// Never reached: [`require_backend`] fails before a run can be started.
+pub fn spawn(command: &mut Command, prepare: impl FnOnce(&mut Command)) -> std::io::Result<Child> {
+    prepare(command);
+    command.spawn()
+}
+
+/// Never reached: [`require_backend`] fails before a run can be started.
 pub fn attach(_child: &Child) -> Result<TreeHandle, String> {
     Err(unsupported("attaching a run to its job object"))
 }

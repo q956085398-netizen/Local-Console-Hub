@@ -138,12 +138,14 @@ impl IndependentProcess {
         // what `display: window` means, and a GUI build of the Hub has none to
         // hand down.
         command.stdin(Stdio::null());
-        backend::prepare_windowed(&mut command);
-        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
-            program: spec.program.clone(),
-            cwd: spec.cwd.clone(),
-            source,
-        })?;
+        let mut child =
+            backend::spawn(&mut command, backend::prepare_windowed).map_err(|source| {
+                ProcessError::Spawn {
+                    program: spec.program.clone(),
+                    cwd: spec.cwd.clone(),
+                    source,
+                }
+            })?;
 
         let identity = ProcessIdentity::of_child(&child);
         let tree = match backend::attach_independent(&child) {
@@ -694,9 +696,26 @@ mod tests {
     /// brings forward for a console-shaped standalone entry: the window belongs
     /// to Windows' console host rather than to the application's own process,
     /// so finding it is a second lookup, not a bigger pid filter.
+    ///
+    /// Which half of that is observable here is the environment's answer, not
+    /// this test's: the lookup borrows the run's console, and a process whose
+    /// own console has a window — or which is alone on its console and so could
+    /// not be put back on it — does not borrow one (D-037). Both halves are
+    /// asserted, so this passes on what the environment allowed rather than on
+    /// nothing at all.
     #[test]
     fn a_console_run_presents_its_console_window() {
         let run = start();
+        let borrowable = crate::console::can_borrow();
+
+        if !borrowable {
+            // A question this process may not ask is refused, not answered with
+            // a console window belonging to somebody else.
+            let window = run.window();
+            let _ = run.force_stop();
+            assert!(window.is_none(), "a refused lookup found {window:?}");
+            return;
+        }
 
         let deadline = Instant::now() + Duration::from_secs(10);
         let window = loop {

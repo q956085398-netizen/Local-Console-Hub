@@ -532,11 +532,12 @@ impl ManagedProcess {
         if spec.output == OutputMode::Capture {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
-        backend::prepare(&mut command);
-        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
-            program: spec.program.clone(),
-            cwd: spec.cwd.clone(),
-            source,
+        let mut child = backend::spawn(&mut command, backend::prepare).map_err(|source| {
+            ProcessError::Spawn {
+                program: spec.program.clone(),
+                cwd: spec.cwd.clone(),
+                source,
+            }
         })?;
 
         #[cfg(all(test, windows))]
