@@ -183,6 +183,16 @@ export interface ActionAvailability {
    * forward.
    */
   managed: boolean;
+  /**
+   * Whether the run in flight is one the Hub did not start (#67).
+   *
+   * Reported beside `managed` rather than folded into it because the two say
+   * different things and the header has to explain the right one: an entry may
+   * be configured for Hub management *and* be associated with an instance the
+   * user was already running, and then "enable management in the config" is
+   * advice about a setting that is already on.
+   */
+  associated: boolean;
   /** Stop stays visible but inert while the session is already unwinding. */
   stopDisabled: boolean;
   /** Restart cannot launch a replacement until the previous run is gone
@@ -257,11 +267,19 @@ export function availableActions(
   // controls are absent for the same reason `remove` is absent for a configured
   // session. Opening it stays: starting an application it manages to *launch*
   // is what the entry is for (spec #59 decision 12).
-  const owned = config.lifecycle === "managed";
+  //
+  // An associated instance is the same answer from the other direction (#67):
+  // the Hub *did* start nothing here, whatever the configuration says about
+  // lifecycle — that setting is a statement about the Hub's own runs — so the
+  // controls are absent for the run in flight. A button whose only outcome is
+  // a refusal is the "看起来能用的按钮" this header's rules exist to avoid.
+  const managed = config.lifecycle === "managed";
+  const owned = managed && !runtime.external;
   return {
     start: idle,
     stop: owned && isLive(runtime.status),
-    managed: owned,
+    managed,
+    associated: runtime.external,
     stopDisabled: runtime.status === "stopping",
     restart: owned && settled,
     openUrl: config.sessionType === "service" ? config.url : undefined,

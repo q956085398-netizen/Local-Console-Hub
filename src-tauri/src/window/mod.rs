@@ -114,6 +114,73 @@ pub fn console_window(pid: u32) -> Option<TopLevelWindow> {
     backend::console_window(pid)
 }
 
+/// The window a running application presents, given the processes that belong
+/// to it (#66, #67).
+///
+/// An application's window is not always its own process's: a launcher hands
+/// off to the program that really runs, and a console program's window is
+/// hosted for it by Windows on a process of its own ([`console_window`]). Both
+/// shapes mean the same thing to a user asking to be shown the application, so
+/// both are tried — the by-pid enumeration over everything the application
+/// started, then the console host.
+///
+pub fn application_window(processes: &Processes) -> Option<TopLevelWindow> {
+    let windows = windows_of(&processes.pids);
+    if let Some(found) = main_window(&windows) {
+        return Some(found.clone());
+    }
+    if !processes.lead_is_current {
+        return None;
+    }
+    console_window(processes.lead)
+}
+
+/// The processes one running application is made of, as the caller read them.
+///
+/// Three facts that always travel together and mean little apart: the pids to
+/// search, the one pid the application is *identified* by, and whether that
+/// number still answers for the process it was taken from. The last exists
+/// because the console lookup is a lookup by number ([`console_window`]), and a
+/// pid Windows has since reused would answer with somebody else's console
+/// (spec #59 decision 11).
+///
+/// A type rather than three arguments because three callers rebuild it —
+/// `process::independent` from the run's job, `session::core` from an adopted
+/// instance, `app::external` from a candidate — and a triple that has to be
+/// passed in the right order is one transposition away from a wrong answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Processes {
+    pub pids: Vec<u32>,
+    pub lead: u32,
+    pub lead_is_current: bool,
+}
+
+/// How often the bounded wait looks again.
+const WINDOW_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// [`application_window`], waiting up to `timeout` for one to appear.
+///
+/// The caller supplies the process list on each round rather than once, because
+/// the list is a reading that goes stale: a run that is still starting can add
+/// processes, and a window drawn by the program a launcher handed off to must
+/// still be found. `timeout` of zero is a single read, which is what a caller
+/// asking about something that has been running for a while wants.
+pub fn wait_for_application_window(
+    processes: impl Fn() -> Processes,
+    timeout: std::time::Duration,
+) -> Option<TopLevelWindow> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(window) = application_window(&processes()) {
+            return Some(window);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(WINDOW_POLL);
+    }
+}
+
 /// The window a run's application presents to the user.
 ///
 /// A visible, unowned, titled window is what "唤起原窗口" means; a visible

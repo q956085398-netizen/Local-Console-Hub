@@ -228,11 +228,58 @@ pub fn activate_session(
     crate::app::activation::open(&core, &session_id).map(ActivationDto::from)
 }
 
-/// What opening one application answered with (#66).
+/// Answer the question [`activate_session`] asked (#67).
+///
+/// Two answers and no others, and both are the user's: associate the instance
+/// they picked, or start the Hub's own copy and leave that instance alone.
+/// Cancelling is not one of them — a window that closes the dialog sends
+/// nothing, and nothing is exactly what happens.
+///
+/// Only the *association* half needs the pid and creation time, and they are
+/// re-verified rather than trusted: what came back describes a moment that has
+/// passed, and `app::activation::associate` is where that is turned back into a
+/// statement about a process that exists now.
+#[tauri::command]
+pub fn resolve_session_open(
+    core: State<'_, SessionCore>,
+    session_id: String,
+    resolution: OpenResolution,
+) -> Result<ActivationDto, SessionError> {
+    const OPERATION: &str = "resolve_session_open";
+
+    let outcome = match resolution.kind {
+        OpenResolutionKind::New => crate::app::activation::open_new(&core, &session_id),
+        OpenResolutionKind::Associate => {
+            let created_at = resolution
+                .created_at
+                .as_deref()
+                .and_then(|created| created.parse::<u64>().ok());
+            match (resolution.pid, created_at) {
+                (Some(pid), Some(created_at)) => {
+                    crate::app::activation::associate(&core, &session_id, pid, created_at)
+                }
+                _ => {
+                    return Err(SessionError::failed(
+                        &session_id,
+                        OPERATION,
+                        "associating an instance needs both its pid and its creation time, and                          this request was missing one of them"
+                            .to_owned(),
+                        None,
+                    ))
+                }
+            }
+        }
+    }?;
+    Ok(ActivationDto::from(outcome))
+}
+
+/// What opening one application answered with (#66, #67).
 ///
 /// `runtime` is the lifecycle half the caller already knows how to read (the
 /// same shape `activate_session` answered with before the window step existed);
-/// `window` is present only for an entry that keeps its own window.
+/// `window` is present only for an entry that keeps its own window; and
+/// `choice` is present only when the Hub found something outside itself it
+/// will not decide about on the user's behalf (#67).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationDto {
@@ -241,6 +288,83 @@ pub struct ActivationDto {
     pub started: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowStepDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choice: Option<OpenChoiceDto>,
+}
+
+/// The question the Hub is asking instead of answering (#67).
+///
+/// A field rather than a separate command result, so the window reads one shape
+/// for every open: "here is the session, here is what happened to its window,
+/// and — when there is one — here is what the Hub could not decide".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenChoiceDto {
+    /// What could not be established, in a sentence.
+    pub reason: String,
+    pub candidates: Vec<ExternalCandidateDto>,
+}
+
+/// One instance that might be the application already running (#67).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalCandidateDto {
+    pub pid: u32,
+    /// When the process started, as a decimal string.
+    ///
+    /// A string because this is a Windows `FILETIME` — hundreds of quadrillions
+    /// of 100-ns ticks — and a JSON number is a double in the window: the value
+    /// would come back through `resolve_session_open` rounded, and the identity
+    /// check would then fail for the instance the user picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    pub file_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether the instance has a window the Hub could bring forward, so the
+    /// dialog can say which candidate is one the user can actually be shown.
+    pub has_window: bool,
+    /// Whether associating it is something the Hub can do safely.
+    ///
+    /// The one field the dialog's "associate" control turns on, and the reason
+    /// `verified` is not sent beside it: the flag is the *action's* answer, and
+    /// what makes it false is already in `reason` in the user's words.
+    pub associable: bool,
+    /// Whether the arguments it was started with are the configured ones;
+    /// absent when the configuration passes none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments_agree: Option<bool>,
+    /// Why this one is uncertain, for the dialog to show beside it.
+    pub reason: String,
+}
+
+/// What the user answered when the Hub asked (#67).
+///
+/// `kind` is a type rather than a string matched against two literals: the
+/// window models the same two answers as a union, and a command that could be
+/// sent a third one has a branch that can never be reached and no way to say
+/// so.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenResolution {
+    pub kind: OpenResolutionKind,
+    /// The process the user picked; required for `associate`.
+    pub pid: Option<u32>,
+    /// Its creation time as it was shown, as a decimal string; required for
+    /// `associate`. The half that survives the pid being reused.
+    pub created_at: Option<String>,
+}
+
+/// The two answers there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenResolutionKind {
+    /// Take the instance the user picked.
+    Associate,
+    /// Start the Hub's own copy and leave the other one alone.
+    New,
 }
 
 /// What bringing an application's own window forward did (#66).
@@ -288,10 +412,34 @@ impl From<crate::app::activation::OpenOutcome> for ActivationDto {
                 notice: step.notice(),
             }
         });
+        let choice = outcome.choice.map(|choice| OpenChoiceDto {
+            reason: choice.reason,
+            candidates: choice
+                .candidates
+                .into_iter()
+                .map(|candidate| {
+                    let associable = candidate.associable();
+                    ExternalCandidateDto {
+                        pid: candidate.pid,
+                        created_at: candidate.created_at.map(|created| created.to_string()),
+                        file_name: candidate.file_name,
+                        image_path: candidate
+                            .image_path
+                            .map(|path| path.to_string_lossy().into_owned()),
+                        title: candidate.title,
+                        has_window: candidate.has_window,
+                        associable,
+                        arguments_agree: candidate.arguments_agree,
+                        reason: candidate.reason,
+                    }
+                })
+                .collect(),
+        });
         ActivationDto {
             runtime: outcome.activation.runtime,
             started: outcome.activation.started,
             window,
+            choice,
         }
     }
 }

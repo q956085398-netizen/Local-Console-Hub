@@ -1,15 +1,17 @@
 /*
- * The modal form surface (#64, #65).
+ * The modal surface (#64, #65, #67).
  *
- * One stylesheet for the two entries that save a launch configuration from a
- * form — "添加应用" and "保存启动配置" — because they are the same surface: a
- * momentary task over the workspace rather than another region to keep open
- * (UI_STYLE_GUIDE §3 has no permanent side panel). Colors come from the shared
- * tokens in `index.css`; interaction stays neutral and lifecycle color is not
- * used here, because nothing in a dialog is a session state.
+ * One stylesheet for the entries that stop the workspace and ask for something
+ * — the two that save a launch configuration from a form ("添加应用" and
+ * "保存启动配置") and the one that asks which running instance an entry means
+ * (#67) — because they are the same surface: a momentary task over the
+ * workspace rather than another region to keep open (UI_STYLE_GUIDE §3 has no
+ * permanent side panel). Colors come from the shared tokens in `index.css`;
+ * interaction stays neutral and lifecycle color is not used here, because
+ * nothing in a dialog is a session state.
  *
- * Two dialogs, one vocabulary: a second copy of these rules under a second
- * prefix would be two places for the modal to drift apart.
+ * One vocabulary, however many dialogs: a second copy of these rules under a
+ * second prefix would be two places for the modal to drift apart.
  */
 
 .dialog__backdrop {

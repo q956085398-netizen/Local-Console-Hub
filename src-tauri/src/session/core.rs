@@ -41,7 +41,8 @@ use crate::logging::{
 };
 use crate::process::independent::IndependentProcess;
 use crate::process::{
-    ExitStatus, ManagedProcess, OutputMode, ProcessSpec, StopOutcome, StopReport,
+    ExitStatus, ExternalProcess, ManagedProcess, OutputMode, ProcessIdentity, ProcessSpec,
+    StopOutcome, StopReport,
 };
 use crate::pty::{Pty, PtySpec, DEFAULT_COLS, DEFAULT_ROWS, MAX_DIMENSION};
 use crate::window::TopLevelWindow;
@@ -230,6 +231,18 @@ struct SessionState {
     /// The current run, shared with its watcher so the watcher can wait on it
     /// without holding this lock.
     run: Option<Run>,
+    /// An instance of this session's application that the user was already
+    /// running, which the Hub associated rather than starting a second copy
+    /// (#67).
+    ///
+    /// Deliberately *not* a [`Run`]: a run is a handle the Hub holds on
+    /// something it started, and every operation built on that (`tree_pids`,
+    /// `settle_tree`, the log, the record) would have to answer a question it
+    /// has no answer for. What the Hub has here is a fact about somebody
+    /// else's process — that it is the application this entry names — and two
+    /// things it may do with it: bring its window forward, and notice when it
+    /// ends.
+    adopted: Option<Adopted>,
     /// Bumped on every start. A watcher captures the generation it was started
     /// for and refuses to publish an exit that belongs to a superseded run.
     generation: u64,
@@ -269,6 +282,34 @@ struct SessionState {
     /// (`docs/LOGGING.md` §1.4 — the user must never be left thinking output is
     /// being recorded when it is not).
     log_problem: Option<LogError>,
+}
+
+/// An application already running outside the Hub, as this session's instance
+/// (#67).
+///
+/// Two halves, and both are needed for different questions. The
+/// [`ProcessIdentity`] is what every *number*-based lookup has to be checked
+/// against first — the window search above all, because a console window is
+/// found by pid (`crate::window`). The [`ExternalProcess`] is the handle the
+/// ending is noticed through, and opening it already verified the identity, so
+/// the wait is on the process itself rather than on a number that may since
+/// have changed meaning.
+#[derive(Debug, Clone)]
+struct Adopted {
+    identity: ProcessIdentity,
+    process: Arc<ExternalProcess>,
+}
+
+impl Adopted {
+    /// Whether this is still the process it was associated with.
+    ///
+    /// A liveness *check* rather than a liveness *test*: while the handle is
+    /// open Windows cannot reuse the pid, so an ended process still matches its
+    /// own identity — which is the right answer for "is this the process I
+    /// associated?" (`crate::process::ProcessIdentity`).
+    fn is_current(&self) -> bool {
+        self.identity.matches()
+    }
 }
 
 /// One session's current run, whichever kind it is.
@@ -733,6 +774,39 @@ fn require_managed(
     ))
 }
 
+/// Refuse a lifecycle action on an instance the Hub did not start (#67).
+///
+/// Associating an application the user was already running is not the same as
+/// taking ownership of it. Decision 11 says so from both sides: 关联已有实例不自动
+/// 取得终止权限, and 关联不自动扩大停止／退出范围. What the Hub gained is the
+/// ability to *report* the instance and bring its window forward; what it did
+/// not gain is a handle on the process tree it would need to end it — and this
+/// layer is where "I cannot end what I did not start" is enforced rather than
+/// left to each caller to remember.
+///
+/// The two ways out are both things the user can do and neither is guessable
+/// from a refusal alone, so the message names them: close the application
+/// itself, or let the Hub start its own copy next time.
+fn require_owned(
+    handle: &Arc<Mutex<SessionState>>,
+    session_id: &str,
+    operation: &str,
+) -> Result<(), SessionError> {
+    let state = lock(handle);
+    if state.adopted.is_none() {
+        return Ok(());
+    }
+    Err(SessionError::unsupported(
+        session_id,
+        operation,
+        format!(
+            "session `{session_id}` is associated with an instance that was already running \
+             outside the Hub; the Hub did not start it and will not end it. Close the \
+             application itself, or start the Hub's own copy"
+        ),
+    ))
+}
+
 /// Lock a mutex, surviving a previous holder's panic.
 ///
 /// A poisoned lock means some other thread panicked mid-operation. Refusing to
@@ -849,6 +923,7 @@ impl SessionCore {
                 temporary,
                 runtime: runtime.clone(),
                 run: None,
+                adopted: None,
                 generation: 0,
                 record: None,
                 buffer: Arc::new(Mutex::new(TerminalBuffer::new(self.scrollback))),
@@ -1491,6 +1566,10 @@ impl SessionCore {
         let handle = self
             .handle(session_id)
             .ok_or_else(|| SessionError::unknown_session(session_id, "restart"))?;
+        // Nothing to restart: a restarting a standalone-window application
+        // would end the copy the user already had and start the Hub's own,
+        // which is the opposite of what association is for (#67).
+        require_owned(&handle, session_id, "restart")?;
         require_managed(&handle, session_id, "restart")?;
 
         if current.status == SessionStatus::Running {
@@ -1499,6 +1578,17 @@ impl SessionCore {
         }
 
         self.start(session_id)
+    }
+
+    /// This session's validated configuration, for a caller that has to reason
+    /// about the entry before any lifecycle operation (#67).
+    ///
+    /// A copy rather than a reference: the session lock is released before the
+    /// caller uses it, and a configuration cannot change under a running
+    /// session anyway.
+    pub fn session_config(&self, session_id: &str) -> Option<SessionConfig> {
+        self.handle(session_id)
+            .map(|handle| lock(&handle).config.clone())
     }
 
     /// Whether this session keeps the application's own window (#66).
@@ -1510,6 +1600,195 @@ impl SessionCore {
         self.handle(session_id)
             .map(|handle| lock(&handle).config.is_window())
             .unwrap_or(false)
+    }
+
+    /// Whether this session is associated with an instance the Hub did not
+    /// start (#67).
+    pub fn is_external(&self, session_id: &str) -> bool {
+        self.handle(session_id)
+            .map(|handle| lock(&handle).adopted.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Associate an application that was already running outside the Hub
+    /// (#67).
+    ///
+    /// The caller has done the identifying — [`crate::app::external`] is where
+    /// the evidence rules live — and what arrives here is the answer: an
+    /// identity the Hub will check again before every later lookup, and a
+    /// handle on the process itself, which is both what the ending is noticed
+    /// through and the proof that the identity was verified when it was opened.
+    ///
+    /// ## Which states this may come from
+    ///
+    /// The same three a start may come from — `Stopped`, `Exited`, `Error` —
+    /// and for the same reason: those are exactly the states that mean nothing
+    /// of the Hub's is alive. What the session gets afterwards is `Running`,
+    /// because the application really is.
+    ///
+    /// That move is deliberately not in [`SessionStatus::can_transition_to`]'s
+    /// table. The table describes runs the Hub creates, and this creates none:
+    /// nothing is spawned, no tree is owned, and no record is opened. What
+    /// changes is only that the Hub now accounts for something already
+    /// happening, which is a statement about the session rather than a move a
+    /// lifecycle operation made.
+    pub fn adopt(
+        &self,
+        session_id: &str,
+        identity: ProcessIdentity,
+        process: ExternalProcess,
+    ) -> Result<SessionRuntime, SessionError> {
+        const OPERATION: &str = "adopt";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        let generation = {
+            let mut state = lock(&handle);
+            let from = state.runtime.status;
+            if !matches!(
+                from,
+                SessionStatus::Stopped | SessionStatus::Exited | SessionStatus::Error
+            ) {
+                return Err(SessionError::invalid_transition(
+                    session_id,
+                    OPERATION,
+                    from,
+                    SessionStatus::Running,
+                ));
+            }
+
+            // The identity is checked once more here, against the process the
+            // handle belongs to: between identifying it and this call the
+            // caller did other work, and what it identified is a number
+            // (decision 11).
+            if !identity.matches() {
+                return Err(SessionError::failed(
+                    session_id,
+                    OPERATION,
+                    format!(
+                        "process {} is no longer the one that was identified; Windows may have \
+                         reused the number, so the Hub did not associate it",
+                        identity.pid()
+                    ),
+                    Some(from),
+                ));
+            }
+
+            state.generation += 1;
+            let generation = state.generation;
+            state.adopted = Some(Adopted {
+                identity,
+                process: Arc::new(process),
+            });
+            // A run the Hub did not start has no run id, no log and no record.
+            // Its `started_at` is the process's own creation time, which is a
+            // real answer to "how long has this been up" — and the honest one,
+            // because the Hub's own clock started watching later.
+            state.runtime.status = SessionStatus::Running;
+            state.runtime.pid = Some(identity.pid());
+            state.runtime.run_id = None;
+            state.runtime.started_at = crate::process::started_unix_secs(identity.created_at())
+                .and_then(Timestamp::from_unix_secs);
+            state.runtime.exit_code = None;
+            state.runtime.external = true;
+            state.runtime.health = None;
+            state.runtime.last_error = None;
+
+            generation
+        };
+
+        self.publish_state_and_summary(session_id);
+        self.watch_adopted(session_id, &handle, generation);
+        let runtime = lock(&handle).runtime.clone();
+        Ok(runtime)
+    }
+
+    /// Forget an association, without touching the process (#67).
+    ///
+    /// This is the "明确新开" half of the choice: the user said the running
+    /// instance is not the one they want this entry to be, so the Hub stops
+    /// claiming it and starts its own. The instance itself is left exactly as
+    /// it was — nothing here ends it, because the Hub never owned it — and the
+    /// session goes back to the state it was in before, so the open that
+    /// follows creates the Hub's own run.
+    ///
+    /// The session goes to `Stopped` rather than to `Exited`: an `Exited` here
+    /// would claim a run of the Hub's had ended, and none ever existed.
+    pub fn release_adopted(&self, session_id: &str) -> Result<SessionRuntime, SessionError> {
+        const OPERATION: &str = "release_adopted";
+        let handle = self
+            .handle(session_id)
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+
+        {
+            let mut state = lock(&handle);
+            if state.adopted.take().is_none() {
+                return Ok(state.runtime.clone());
+            }
+            // A new generation, so the watcher that was waiting on the process
+            // the Hub has just stopped claiming cannot publish an ending for
+            // it.
+            state.generation += 1;
+            state.runtime.status = SessionStatus::Stopped;
+            state.runtime.pid = None;
+            state.runtime.started_at = None;
+            state.runtime.external = false;
+            state.runtime.health = None;
+        }
+        self.publish_state_and_summary(session_id);
+        let runtime = lock(&handle).runtime.clone();
+        Ok(runtime)
+    }
+
+    /// Notice an associated instance ending on its own (#67).
+    ///
+    /// The same shape as [`watch_run`], and for the same reasons: the wait
+    /// blocks on the process object so a tray-resident Hub holds no timer per
+    /// instance, and an ending is published only for the generation it was
+    /// started for — a release or a later start must not be told that the
+    /// process it has stopped claiming has ended.
+    fn watch_adopted(&self, session_id: &str, handle: &Arc<Mutex<SessionState>>, generation: u64) {
+        let Some(process) = lock(handle)
+            .adopted
+            .as_ref()
+            .map(|adopted| Arc::clone(&adopted.process))
+        else {
+            return;
+        };
+
+        let core = self.clone();
+        let handle = Arc::clone(handle);
+        let session_id = session_id.to_owned();
+        let _ = std::thread::Builder::new()
+            .name(format!("lch-external-{session_id}"))
+            .spawn(move || {
+                while !process.wait(WATCH_TICK) {
+                    // Still alive: stop waiting if this watcher no longer owns
+                    // the instance.
+                    if lock(&handle).generation != generation {
+                        return;
+                    }
+                }
+
+                let mut state = lock(&handle);
+                if state.generation != generation
+                    || state.runtime.status != SessionStatus::Running
+                    || state.adopted.is_none()
+                {
+                    return;
+                }
+                let code = process.exit_code();
+                state.adopted = None;
+                state.runtime.external = false;
+                state.runtime.pid = None;
+                state.runtime.started_at = None;
+                state.runtime.status = SessionStatus::Exited;
+                state.runtime.exit_code = code;
+                drop(state);
+
+                core.publish_state_and_summary(&session_id);
+            });
     }
 
     /// The window this session's application presents, if it keeps its own
@@ -1532,15 +1811,39 @@ impl SessionCore {
         session_id: &str,
         timeout: std::time::Duration,
     ) -> Option<TopLevelWindow> {
-        let run = self.handle(session_id).and_then(|handle| {
-            let state = lock(&handle);
-            if state.config.is_window() {
-                state.run.clone()
-            } else {
-                None
+        let (run, adopted) = match self.handle(session_id) {
+            Some(handle) => {
+                let state = lock(&handle);
+                if !state.config.is_window() {
+                    (None, None)
+                } else {
+                    (state.run.clone(), state.adopted.clone())
+                }
             }
-        })?;
-        run.application_window(timeout)
+            None => (None, None),
+        };
+
+        // An instance the Hub associated is found the other way round: there is
+        // no job object to ask for its tree, so the processes are read from the
+        // table — and the console lookup is gated on the identity still
+        // holding, because that lookup is by number (#67).
+        if let Some(adopted) = adopted {
+            let lead = adopted.identity.pid();
+            return crate::window::wait_for_application_window(
+                || {
+                    let mut pids = vec![lead];
+                    pids.extend(crate::process::descendants(lead));
+                    crate::window::Processes {
+                        pids,
+                        lead,
+                        lead_is_current: adopted.is_current(),
+                    }
+                },
+                timeout,
+            );
+        }
+
+        run?.application_window(timeout)
     }
 
     /// Open a session: start it if nothing is running, otherwise answer with
@@ -1661,6 +1964,12 @@ impl SessionCore {
         let handle = self
             .handle(session_id)
             .ok_or_else(|| SessionError::unknown_session(session_id, operation))?;
+        // An instance the Hub did not start is not one it may end (#67), and
+        // that question comes first: an associated application's own
+        // configuration may well say the Hub manages its lifecycle, which is
+        // exactly the case where answering the second question alone would let
+        // a stop through (decision 11).
+        require_owned(&handle, session_id, operation)?;
         // A run the Hub does not own is not one it may end (#66).
         require_managed(&handle, session_id, operation)?;
 
@@ -7346,6 +7655,297 @@ mod tests {
                 .expect_err("a removed session cannot be saved");
 
             assert_eq!(error.kind, SessionErrorKind::UnknownSession);
+        }
+    }
+
+    /// Associating an application the user was already running (#67).
+    ///
+    /// The instance is a real process this test starts itself — the Hub must
+    /// not have started it, which is the whole point — so these are the same
+    /// kind of test as T03's: real pids, real process objects, real endings.
+    mod external_tests {
+        use super::*;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        /// A process outside the Hub, with the identity the Hub would have read
+        /// from the process table.
+        struct Outsider {
+            child: KillOnDrop,
+            identity: ProcessIdentity,
+        }
+
+        impl Outsider {
+            fn start() -> Self {
+                let child = Command::new("cmd.exe")
+                    .args(["/c", "ping -n 120 127.0.0.1"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("the outside process starts");
+                let identity = ProcessIdentity::of_child(&child);
+                Outsider {
+                    child: KillOnDrop(child),
+                    identity,
+                }
+            }
+
+            fn pid(&self) -> u32 {
+                self.child.0.id()
+            }
+
+            /// The handle the Hub would open on it, which is also what verifies
+            /// the identity against the process object.
+            fn open(&self) -> ExternalProcess {
+                ExternalProcess::open(self.identity).expect("the outside process opens")
+            }
+
+            /// End it, and wait until the OS agrees it is gone.
+            fn end(&mut self) {
+                let _ = self.child.0.kill();
+                let _ = self.child.0.wait();
+            }
+
+            /// Whether it is still running — asked of the test's *own* handle
+            /// rather than through the Hub's, so "the instance survives a
+            /// refused stop" is a fact about the process and not about the
+            /// Hub's opinion of it.
+            fn is_alive(&mut self) -> bool {
+                self.child
+                    .0
+                    .try_wait()
+                    .expect("the fixture process is waitable")
+                    .is_none()
+            }
+        }
+
+        /// A process the test started, ended when the test ends however it ends.
+        struct KillOnDrop(Child);
+
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        /// A long-running command that writes nothing, because a
+        /// standalone-window run keeps the Hub's console rather than a pipe
+        /// and a chatty fixture would bury the test output.
+        const QUIET_LONG_RUNNING: &str = "cmd.exe /c ping -n 120 127.0.0.1 > NUL";
+
+        /// A window entry: the shape #67 applies to.
+        ///
+        /// Deliberately with management *on*, which is the case where the
+        /// association is the only thing standing between a stop and the
+        /// user's application. A default (independent) entry would be refused
+        /// by its configuration as well, and the tests below would then pass
+        /// for the wrong reason.
+        fn window_entry(id: &str) -> SessionConfig {
+            let mut config = service(id);
+            config.command = Some(QUIET_LONG_RUNNING.to_owned());
+            config.display = DisplayMode::Window;
+            config.lifecycle = LifecycleOwner::Managed;
+            config
+        }
+
+        fn core_with_window_entry(id: &str) -> (SessionCore, Arc<RecordingSink>) {
+            let sink = Arc::new(RecordingSink::default());
+            let core = SessionCore::new(sink.clone());
+            core.register(window_entry(id))
+                .expect("registration succeeds");
+            (core, sink)
+        }
+
+        /// Wait for a condition the watcher thread produces, so the assertion
+        /// is about the state rather than about a sleep.
+        fn wait_until(what: &str, condition: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !condition() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        /// The core promise: the session reports the application as running,
+        /// with the outside process's own pid — and nothing was started.
+        #[test]
+        fn an_adopted_instance_makes_the_session_running_without_starting_anything() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let outsider = Outsider::start();
+
+            let runtime = core
+                .adopt("comfyui", outsider.identity, outsider.open())
+                .expect("adoption succeeds");
+
+            assert_eq!(runtime.status, SessionStatus::Running);
+            assert_eq!(runtime.pid, Some(outsider.pid()));
+            assert!(runtime.external, "the Hub did not start this run");
+            assert_eq!(
+                runtime.run_id, None,
+                "a run the Hub did not start has no run id"
+            );
+            assert!(
+                runtime.started_at.is_some(),
+                "the process's own creation time is its start time"
+            );
+            assert_eq!(core.summary().running, 1);
+            assert!(core.is_external("comfyui"));
+        }
+
+        /// Decision 11's 关联不自动取得终止权限: the Hub reports the instance and
+        /// may bring its window forward, and that is all it may do with it.
+        #[test]
+        fn an_adopted_instance_cannot_be_stopped_restarted_or_force_stopped() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let mut outsider = Outsider::start();
+            core.adopt("comfyui", outsider.identity, outsider.open())
+                .expect("adoption succeeds");
+
+            for error in [
+                core.stop("comfyui").expect_err("a stop is refused"),
+                core.force_stop("comfyui")
+                    .expect_err("a force stop is refused"),
+                core.restart("comfyui").expect_err("a restart is refused"),
+            ] {
+                assert_eq!(error.kind, SessionErrorKind::Unsupported, "{error:?}");
+                assert!(
+                    error.message.contains("did not start it"),
+                    "the refusal has to say why: {}",
+                    error.message
+                );
+            }
+
+            assert!(
+                outsider.is_alive(),
+                "a refused lifecycle action must leave the instance running"
+            );
+            assert_eq!(
+                core.snapshot("comfyui").expect("registered").status,
+                SessionStatus::Running,
+                "a refused stop must not move the session"
+            );
+        }
+
+        /// Opening an application that is already adopted answers with the
+        /// instance the Hub holds — it does not look outside again, and it
+        /// certainly does not start a second copy (story 36).
+        #[test]
+        fn activating_an_adopted_session_answers_with_the_instance_it_holds() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let outsider = Outsider::start();
+            core.adopt("comfyui", outsider.identity, outsider.open())
+                .expect("adoption succeeds");
+
+            let activation = core.activate("comfyui").expect("activation succeeds");
+
+            assert!(!activation.started, "nothing was created by this call");
+            assert_eq!(activation.runtime.pid, Some(outsider.pid()));
+            assert_eq!(activation.runtime.status, SessionStatus::Running);
+        }
+
+        /// An instance that ends on its own is noticed, and the session stops
+        /// claiming a run: the row must not say "running" for an application
+        /// that has been closed (user story 48's honesty, applied backwards).
+        #[test]
+        fn an_adopted_instance_that_ends_returns_the_session_to_exited() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let mut outsider = Outsider::start();
+            core.adopt("comfyui", outsider.identity, outsider.open())
+                .expect("adoption succeeds");
+
+            outsider.end();
+
+            wait_until("the ending to be noticed", || {
+                core.snapshot("comfyui")
+                    .is_some_and(|runtime| runtime.status == SessionStatus::Exited)
+            });
+            let runtime = core.snapshot("comfyui").expect("registered");
+            assert!(!runtime.external);
+            assert_eq!(runtime.pid, None, "nothing is running under this entry");
+            assert_eq!(core.summary().running, 0);
+            assert!(
+                !outsider.is_alive(),
+                "the fixture really did end, so the ending noticed is a real one"
+            );
+        }
+
+        /// The "明确新开" half: the Hub lets go of the instance and the entry is
+        /// startable again — and the process it was associated with is left
+        /// exactly as it was.
+        #[test]
+        fn releasing_an_association_leaves_the_instance_running() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let mut outsider = Outsider::start();
+            core.adopt("comfyui", outsider.identity, outsider.open())
+                .expect("adoption succeeds");
+
+            let runtime = core.release_adopted("comfyui").expect("release succeeds");
+
+            assert_eq!(runtime.status, SessionStatus::Stopped);
+            assert!(!runtime.external);
+            assert_eq!(runtime.pid, None);
+            assert!(!core.is_external("comfyui"));
+            assert!(
+                outsider.is_alive(),
+                "letting go of an instance is not ending it"
+            );
+        }
+
+        /// A number Windows has reused is not the process the Hub identified,
+        /// and the association is refused rather than made about somebody else
+        /// (decision 11's PID-reuse rule).
+        #[test]
+        fn adopting_an_identity_that_does_not_match_is_refused() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            let outsider = Outsider::start();
+            let stale = ProcessIdentity::for_test(
+                outsider.identity.pid(),
+                outsider.identity.created_at().wrapping_add(1),
+            );
+
+            let error = core
+                .adopt("comfyui", stale, outsider.open())
+                .expect_err("a stale identity is refused");
+
+            assert_eq!(error.kind, SessionErrorKind::Failed, "{error:?}");
+            assert_eq!(
+                core.snapshot("comfyui").expect("registered").status,
+                SessionStatus::Stopped,
+                "a refused adoption must leave the session alone"
+            );
+        }
+
+        /// A session with a run of the Hub's own is not one an outside instance
+        /// may be adopted into: it already has its answer.
+        #[test]
+        fn adopting_into_a_running_session_is_refused() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+            core.start("comfyui").expect("the Hub starts its own copy");
+            let outsider = Outsider::start();
+
+            let error = core
+                .adopt("comfyui", outsider.identity, outsider.open())
+                .expect_err("a running session cannot adopt");
+
+            assert_eq!(error.kind, SessionErrorKind::InvalidTransition, "{error:?}");
+            let runtime = core.snapshot("comfyui").expect("registered");
+            assert_eq!(runtime.status, SessionStatus::Running);
+            assert!(!runtime.external, "the run is still the Hub's own");
+
+            core.force_stop("comfyui").expect("cleanup");
+        }
+
+        /// Releasing is idempotent: a session nothing is associated with is
+        /// already where the caller wants it.
+        #[test]
+        fn releasing_a_session_with_no_association_changes_nothing() {
+            let (core, _sink) = core_with_window_entry("comfyui");
+
+            let runtime = core.release_adopted("comfyui").expect("release succeeds");
+
+            assert_eq!(runtime.status, SessionStatus::Stopped);
+            assert!(!runtime.external);
         }
     }
 }

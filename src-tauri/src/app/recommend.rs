@@ -81,7 +81,7 @@ pub fn advise(command: &str, cwd: Option<&str>) -> DisplayAdvice {
         }
     };
 
-    let Some(program) = resolve(&token, cwd) else {
+    let Some(program) = resolve_program(&token, cwd) else {
         return DisplayAdvice {
             recommended: None,
             reason: format!(
@@ -132,7 +132,12 @@ pub fn advise(command: &str, cwd: Option<&str>) -> DisplayAdvice {
 /// working directory first (which is what the user sees when they test the
 /// command by hand) and then along `PATH`, with the extensions Windows would
 /// try.
-fn resolve(token: &str, cwd: Option<&str>) -> Option<PathBuf> {
+///
+/// Shared with the association search (#67) rather than copied: "which file
+/// would this configuration start" has one answer, and a second resolution that
+/// disagreed with this one by a directory or an extension would make the Hub
+/// look for a different program than the one it launches.
+pub(crate) fn resolve_program(token: &str, cwd: Option<&str>) -> Option<PathBuf> {
     let looks_like_path = token.contains('/') || token.contains('\\');
     let cwd = cwd.map(PathBuf::from);
 
@@ -175,7 +180,14 @@ fn existing(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn is_batch(path: &Path) -> bool {
+/// Whether this file is a batch script — read by `cmd.exe` rather than loaded
+/// as an image.
+///
+/// Shared with the association search (#67) rather than copied: "is this a
+/// script" decides both what the advice says about the launch method and which
+/// process the Hub looks for, and two answers to it would be two chances to
+/// disagree about the same file.
+pub(crate) fn is_batch(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|extension| extension.to_str())

@@ -17,6 +17,7 @@ import {
   isCreatedSessionDto,
   sessionErrorMessage,
   type ActivationOutcomeDto,
+  type OpenResolutionDto,
 } from "../types/runtime";
 import { FIXTURE_SESSIONS } from "../state/fixtures";
 import type { SessionView } from "../state/session-view";
@@ -64,6 +65,20 @@ export interface SessionRegistry {
    * that did not come forward; the registry is transport.
    */
   activate(sessionId: string): Promise<ActivationOutcomeDto | null>;
+  /**
+   * Answer the question `activate` asked (#67).
+   *
+   * Two answers and no others: associate the instance the user picked, or
+   * start the Hub's own copy. Cancelling calls nothing, which is also what
+   * happens — the dialog closing is the whole of "leave it as it is".
+   *
+   * The answer is the same shape `activate` gives, so the window reads one
+   * thing either way — including the window step that follows an association.
+   */
+  resolveOpen(
+    sessionId: string,
+    resolution: OpenResolutionDto,
+  ): Promise<ActivationOutcomeDto | null>;
   stop(sessionId: string): void;
   restart(sessionId: string): void;
   forceStop(sessionId: string): void;
@@ -326,6 +341,32 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     }
   }, []);
 
+  /**
+   * Answering "which of these is the application?" (#67).
+   *
+   * The same reading as `activate`, because the answer is the same shape: an
+   * association ends with a window step of its own, and the user is owed the
+   * same truth about it — including when it could not be brought forward.
+   */
+  const resolveOpen = useCallback(
+    async (
+      sessionId: string,
+      resolution: OpenResolutionDto,
+    ): Promise<ActivationOutcomeDto | null> => {
+      try {
+        const raw = await invoke<unknown>("resolve_session_open", { sessionId, resolution });
+        if (!isActivationOutcomeDto(raw)) {
+          throw new Error("resolve_session_open 返回了无法识别的载荷");
+        }
+        return raw;
+      } catch (cause) {
+        setError(sessionErrorMessage(cause));
+        return null;
+      }
+    },
+    [],
+  );
+
   return useMemo<SessionRegistry>(
     () => ({
       sessions,
@@ -340,6 +381,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       // start: the same call a launch request handed to the Hub performs, so
       // the two entries cannot disagree about what "open" means.
       activate,
+      resolveOpen,
       stop: (sessionId) => run("stop_session", sessionId),
       restart: (sessionId) => run("restart_session", sessionId),
       forceStop: (sessionId) => run("force_stop_session", sessionId),
@@ -361,6 +403,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       configReportError,
       run,
       activate,
+      resolveOpen,
       createTerminal,
       addApplication,
       saveTerminal,

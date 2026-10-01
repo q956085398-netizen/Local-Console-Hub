@@ -65,6 +65,13 @@ pub fn stop_targets(snapshots: &[SessionRuntime], entries: &[SessionEntry]) -> V
     })
 }
 
+/// A bulk action is the Hub acting on runs it holds. An instance the user was
+/// already running and the Hub merely associated is not one of them: the Hub
+/// never started it, holds no handle on its tree, and cannot end it (#67,
+/// spec #59 decision 11). Its configuration may well say the Hub manages its
+/// lifecycle — that is a statement about the Hub's *own* runs — so the
+/// snapshot's `external` flag is what a bulk action has to read, not the
+/// entry's.
 fn targets(
     snapshots: &[SessionRuntime],
     entries: &[SessionEntry],
@@ -74,6 +81,7 @@ fn targets(
     snapshots
         .iter()
         .filter(|runtime| wanted(runtime.status))
+        .filter(|runtime| !runtime.external)
         .filter(|runtime| !independent.contains(runtime.session_id.as_str()))
         .map(|runtime| runtime.session_id.clone())
         .collect()
@@ -433,6 +441,29 @@ mod tests {
 
         assert_eq!(stop_targets(&snapshots, &entries), vec!["launcher"]);
         assert!(exit_plan(&snapshots, &entries).needs_confirmation());
+    }
+
+    /// A session associated with an instance the Hub did not start is not the
+    /// Hub's to stop in bulk (#67) — and this is the one case the entry cannot
+    /// answer, which is why the snapshot is asked at all: the user may well
+    /// have turned management *on* for that entry, and turning it on is a
+    /// statement about the Hub's own runs.
+    #[test]
+    fn stop_all_leaves_an_associated_instance_alone() {
+        let mut adopted = snapshot("comfyui", SessionStatus::Running);
+        adopted.external = true;
+        let snapshots = vec![snapshot("svc", SessionStatus::Running), adopted];
+        let entries = vec![
+            entry("svc", DisplayMode::Internal, LifecycleOwner::Managed),
+            managed_window("comfyui"),
+        ];
+
+        assert_eq!(stop_targets(&snapshots, &entries), vec!["svc"]);
+        assert_eq!(
+            exit_plan(&snapshots, &entries).stop,
+            vec!["svc"],
+            "Exit asks about the Hub's own run and not about the associated one"
+        );
     }
 
     /// "Restart Failed" is a Hub lifecycle action too, so it does not restart an

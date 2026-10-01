@@ -1,0 +1,55 @@
+/* The "which of these is the application?" dialog (#67). Only what the shared
+   dialog skin (`dialog.css`) does not already give: a list of instances, each
+   one a choice, with the evidence the Hub actually looked at underneath. */
+
+.open-choice__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.open-choice__item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.open-choice__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.open-choice__row:has(input:disabled) {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.open-choice__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.open-choice__label {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.open-choice__detail,
+.open-choice__reason {
+  font-size: 12px;
+  color: var(--muted-fg);
+  overflow-wrap: anywhere;
+}
+
+.open-choice__none {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted-fg);
+}

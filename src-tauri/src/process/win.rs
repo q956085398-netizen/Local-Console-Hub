@@ -14,19 +14,56 @@ use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
 use windows_sys::Win32::Foundation::FILETIME;
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_NO_MORE_FILES, WAIT_OBJECT_0,
+};
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Console::{
     AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleProcessList, GetConsoleWindow,
     CTRL_BREAK_EVENT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next,
+    PROCESSENTRY32W, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject,
-    CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, QueryFullProcessImageNameW,
+    ResumeThread, WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
+
+// The command line a process was started with, by way of `ntdll` (#67).
+//
+// Windows exposes this nowhere in `kernel32`: the documented way to read
+// another process's command line is WMI, which means a COM apartment and a
+// query round-trip to answer a question asked while the user waits. The
+// `ntdll` call is the one every process viewer uses for the same reason, and
+// its class number is stable. A failure here is reported as "could not read"
+// and never guessed at, which is what keeps an unreadable command line from
+// becoming a confident association (spec #59 decision 11).
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQueryInformationProcess(
+        process: isize,
+        class: u32,
+        info: *mut std::ffi::c_void,
+        length: u32,
+        returned: *mut u32,
+    ) -> i32;
+}
+
+/// `ProcessCommandLineInformation` — one `UNICODE_STRING` in the caller's
+/// buffer, with the string itself in the bytes that follow it.
+const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
+
+/// The `UNICODE_STRING` `ntdll` writes for the class above.
+#[repr(C)]
+struct UnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer: *const u16,
+}
 
 /// Capability gate for the process layer: this backend can own a process tree,
 /// so there is nothing to refuse.
@@ -357,6 +394,272 @@ pub fn is_process_alive(pid: u32) -> bool {
     let read = unsafe { GetExitCodeProcess(process as _, &mut code) };
     unsafe { CloseHandle(process as _) };
     read != 0 && code == STILL_ACTIVE as u32
+}
+
+/// Every process whose executable file name is one of `names` (#67).
+///
+/// One snapshot of the process table gives every pid and its file name; only
+/// the entries whose name is wanted are then opened, because the image path and
+/// the command line live inside the process rather than in the table.
+pub fn processes_named(names: &[String]) -> Option<Vec<super::ProcessReading>> {
+    let wanted: Vec<String> = names.iter().map(|name| name.to_ascii_lowercase()).collect();
+
+    // The snapshot itself is retried (`process_entries`), because taking it can
+    // fail outright. What is *not* retried is an empty answer: a caller asking
+    // "is this application already running?" must be able to trust "no", and a
+    // table that was read and did not contain the name is exactly that answer.
+    for _ in 0..SNAPSHOT_ATTEMPTS {
+        let Some(entries) = process_entries() else {
+            continue;
+        };
+        return Some(
+            entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let name = wide_string(&entry.szExeFile);
+                    wanted
+                        .contains(&name.to_ascii_lowercase())
+                        .then(|| read_process(entry.th32ProcessID, name))
+                })
+                .collect(),
+        );
+    }
+
+    // `None` is "the table could not be read, so I do not know" — which is not
+    // the same claim as "nothing is running" (spec #59 decision 11).
+    None
+}
+
+/// Every process started by `pid`, directly or through a chain of children.
+pub fn descendants(pid: u32) -> Vec<u32> {
+    let Some(entries) = process_entries() else {
+        return Vec::new();
+    };
+
+    // A breadth-first walk over the parent links of one snapshot. A process
+    // table is a graph a launcher can make confusing — a child of a pid that
+    // has already exited keeps a parent number that now belongs to somebody
+    // else — so the walk refuses to visit anything twice rather than trusting
+    // the table to be a tree.
+    let mut found: Vec<u32> = Vec::new();
+    let mut frontier = vec![pid];
+    while let Some(current) = frontier.pop() {
+        for entry in &entries {
+            let child = entry.th32ProcessID;
+            if entry.th32ParentProcessID != current || child == current || child == pid {
+                continue;
+            }
+            if !found.contains(&child) {
+                found.push(child);
+                frontier.push(child);
+            }
+        }
+    }
+    found
+}
+
+/// Open the process an identity describes, refusing one that is not it (#67).
+pub fn open_external(identity: super::ProcessIdentity) -> Result<usize, super::ProcessError> {
+    let handle = unsafe {
+        OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            identity.pid(),
+        )
+    } as usize;
+    if handle == 0 {
+        return Err(super::ProcessError::Supervision {
+            operation: "opening the application already running outside the Hub",
+            reason: format!(
+                "process {} could not be opened ({}); it may have ended, or it may be running \
+                 with rights this Hub does not have",
+                identity.pid(),
+                last_error("OpenProcess"),
+            ),
+        });
+    }
+
+    // The pid was read from a table that is already history. A process Windows
+    // has since ended and replaced would answer `OpenProcess` happily, and
+    // everything downstream would then be about somebody else's process — so
+    // the creation time is checked against the identity before the handle is
+    // kept (spec #59 decision 11).
+    if process_times(handle) != Some(identity.created_at()) {
+        unsafe { CloseHandle(handle as _) };
+        return Err(super::ProcessError::Supervision {
+            operation: "opening the application already running outside the Hub",
+            reason: format!(
+                "process {} is not the one that was found a moment ago — Windows has reused \
+                 the number; the Hub will not act on a process it did not verify",
+                identity.pid()
+            ),
+        });
+    }
+    Ok(handle)
+}
+
+/// Wait up to `timeout` for an opened process to end. `true` means it has.
+pub fn wait_for_handle_timeout(handle: usize, timeout: std::time::Duration) -> bool {
+    // `INFINITE` is `u32::MAX` and is not what a bounded wait means; a timeout
+    // longer than that is rounded down rather than turned into "never".
+    let millis = timeout.as_millis().min(u32::MAX as u128 - 1) as u32;
+    unsafe { WaitForSingleObject(handle as _, millis) == WAIT_OBJECT_0 }
+}
+
+/// The code an opened process ended with, once it has ended.
+pub fn exit_code(handle: usize) -> Option<u32> {
+    let mut code: u32 = 0;
+    (unsafe { GetExitCodeProcess(handle as _, &mut code) } != 0).then_some(code)
+}
+
+/// Close a handle this module handed out.
+pub fn close_handle(handle: usize) {
+    if handle != 0 {
+        unsafe { CloseHandle(handle as _) };
+    }
+}
+
+/// How many times a process-table read is attempted before it is given up on.
+const SNAPSHOT_ATTEMPTS: usize = 3;
+
+/// One process table snapshot, or `None` when it could not be taken.
+///
+/// Retried, because a snapshot of a *live* machine routinely comes back short:
+/// the list is copied while processes come and go, and Windows answers
+/// `ERROR_BAD_LENGTH` rather than block. A truncated list is worse than a
+/// failed one here — it would silently omit the very process the caller is
+/// looking for, and "nothing is running outside" is the answer that starts a
+/// second copy (spec #59 decision 11).
+fn process_entries() -> Option<Vec<PROCESSENTRY32W>> {
+    for _ in 0..SNAPSHOT_ATTEMPTS {
+        if let Some(entries) = one_process_snapshot() {
+            return Some(entries);
+        }
+    }
+    None
+}
+
+fn one_process_snapshot() -> Option<Vec<PROCESSENTRY32W>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let snapshot = ScopedHandle(snapshot as usize);
+
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    if unsafe { Process32FirstW(snapshot.0 as _, &mut entry) } == 0 {
+        return None;
+    }
+
+    let mut entries = Vec::new();
+    loop {
+        entries.push(entry);
+        if unsafe { Process32NextW(snapshot.0 as _, &mut entry) } == 0 {
+            // `ERROR_NO_MORE_FILES` is the end of the list; anything else is
+            // the walk being cut short by a process appearing or leaving.
+            let reached_end = unsafe { GetLastError() } == ERROR_NO_MORE_FILES;
+            return reached_end.then_some(entries);
+        }
+    }
+}
+
+/// One process' image path, command line and creation time, as far as this
+/// process may look (#67).
+fn read_process(pid: u32, file_name: String) -> super::ProcessReading {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } as usize;
+    if handle == 0 {
+        return super::ProcessReading {
+            pid,
+            created_at: None,
+            file_name,
+            image_path: None,
+            command_line: None,
+        };
+    }
+    let reading = super::ProcessReading {
+        pid,
+        created_at: process_times(handle),
+        file_name,
+        image_path: image_path_of(handle),
+        command_line: command_line_of(handle),
+    };
+    unsafe { CloseHandle(handle as _) };
+    reading
+}
+
+/// The full path of the image a process is running, if it can be read.
+fn image_path_of(process: usize) -> Option<std::path::PathBuf> {
+    // `MAX_PATH` is not the limit for this call; the documented bound for a
+    // long path is 32 767 wide characters, and the size is passed in and out.
+    let mut buffer = vec![0u16; 32_768];
+    let mut size = buffer.len() as u32;
+    let read = unsafe {
+        QueryFullProcessImageNameW(
+            process as _,
+            PROCESS_NAME_WIN32,
+            buffer.as_mut_ptr(),
+            &mut size,
+        )
+    };
+    if read == 0 {
+        return None;
+    }
+    buffer.truncate(size as usize);
+    Some(std::path::PathBuf::from(String::from_utf16_lossy(&buffer)))
+}
+
+/// The command line a process was started with, if it can be read.
+fn command_line_of(process: usize) -> Option<String> {
+    let mut needed: u32 = 0;
+    // The sizing call is expected to fail — it is how the length is asked for.
+    unsafe {
+        NtQueryInformationProcess(
+            process as _,
+            PROCESS_COMMAND_LINE_INFORMATION,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if needed == 0 {
+        return None;
+    }
+
+    // `u64` rather than `u8`: the answer begins with a `UNICODE_STRING`, and a
+    // byte buffer is only aligned for a byte.
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(size_of::<u64>())];
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process as _,
+            PROCESS_COMMAND_LINE_INFORMATION,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    };
+    if status < 0 {
+        return None;
+    }
+
+    // The string lives inside the buffer this call filled; the structure only
+    // points at it.
+    let command = unsafe { &*(buffer.as_ptr() as *const UnicodeString) };
+    if command.buffer.is_null() || command.length == 0 {
+        return None;
+    }
+    let characters =
+        unsafe { std::slice::from_raw_parts(command.buffer, (command.length / 2) as usize) };
+    Some(String::from_utf16_lossy(characters))
+}
+
+/// The NUL-terminated contents of a fixed-width wide string field.
+fn wide_string(field: &[u16]) -> String {
+    let end = field
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(field.len());
+    String::from_utf16_lossy(&field[..end])
 }
 
 /// Describe the last Win32 failure as a bare cause — the raw error code and the

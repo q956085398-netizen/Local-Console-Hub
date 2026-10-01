@@ -156,6 +156,7 @@ pub fn run() {
             ipc::session::recommend_display,
             ipc::session::save_terminal_config,
             ipc::session::activate_session,
+            ipc::session::resolve_session_open,
             ipc::session::get_session,
             ipc::session::start_session,
             ipc::session::stop_session,

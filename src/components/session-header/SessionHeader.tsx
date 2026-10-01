@@ -119,11 +119,13 @@ export default function SessionHeader({
             className="btn btn--secondary btn--sm"
             disabled={!actions.restart}
             title={
-              actions.managed
-                ? actions.restart
-                  ? undefined
-                  : "需等待上一次运行结束"
-                : "此应用由自己管理生命周期；在配置中启用 Hub 生命周期管理后可从这里重启"
+              actions.associated
+                ? "这个实例是在 Hub 之外启动的；Hub 没有启动它，也不会重启或结束它"
+                : actions.managed
+                  ? actions.restart
+                    ? undefined
+                    : "需等待上一次运行结束"
+                  : "此应用由自己管理生命周期；在配置中启用 Hub 生命周期管理后可从这里重启"
             }
             onClick={() => onAction("restart")}
           >

@@ -118,6 +118,7 @@ export function stoppedRuntime(config: SessionConfigDto): SessionRuntimeDto {
     sessionId: config.id,
     status: "stopped",
     ptyAttached: false,
+    external: false,
     // The nested logging block is the config-layer struct verbatim, which
     // serializes its path in snake_case (see the note in `types/runtime.ts`).
     logging: {

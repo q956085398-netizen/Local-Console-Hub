@@ -254,6 +254,135 @@ impl ProcessIdentity {
     }
 }
 
+/// When a process with this identity started, as whole seconds since the Unix
+/// epoch (#67).
+///
+/// Windows reports creation time in 100-ns units from 1601-01-01; the epoch
+/// offset is the constant every reader of `FILETIME` uses, and it is written
+/// here rather than derived so a wrong answer is one number to check. `None`
+/// for an identity taken without a readable creation time, which is the
+/// `u64::MAX` sentinel [`ProcessIdentity::of_child`] stores.
+pub fn started_unix_secs(created_at: u64) -> Option<i64> {
+    const TICKS_PER_SECOND: u64 = 10_000_000;
+    /// Seconds between 1601-01-01 and 1970-01-01.
+    const EPOCH_OFFSET: i64 = 11_644_473_600;
+    if created_at == u64::MAX {
+        return None;
+    }
+    Some((created_at / TICKS_PER_SECOND) as i64 - EPOCH_OFFSET)
+}
+
+/// One process, as the operating system currently reports it (#67).
+///
+/// A reading, not a handle: everything here was true when the process table was
+/// read, and the process may be gone — or its number handed to somebody else —
+/// by the time a caller acts on it. What keeps an action aimed at *this*
+/// process is [`ProcessIdentity`], which the caller takes from `created_at` and
+/// checks again before acting (`ProcessIdentity::matches`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessReading {
+    pub pid: u32,
+    /// When the process was created, in the same units [`ProcessIdentity`]
+    /// compares. `None` when it could not be read — and a reading without it is
+    /// one no identity can be taken from, which is why a caller that needs to
+    /// act later treats it as "could not confirm".
+    pub created_at: Option<u64>,
+    /// The executable's file name. Present even for a process this user may not
+    /// inspect, because it comes from the table rather than from the process.
+    pub file_name: String,
+    /// The full path of the image that is running, when it could be read.
+    ///
+    /// `None` is the "could not check" answer — usually permissions — and it is
+    /// deliberately not the same value as a path that differs: one says this
+    /// process *is* the program, the other says it is not, and "could not
+    /// check" is the answer that must not be promoted to either (spec #59
+    /// decision 11).
+    pub image_path: Option<PathBuf>,
+    /// The command line the process was started with, when it could be read.
+    pub command_line: Option<String>,
+}
+
+impl ProcessReading {
+    /// The identity this reading describes.
+    ///
+    /// `None` when the creation time could not be read, which is also the
+    /// answer for a process this user may not open: a reading without one is
+    /// one nothing may be remembered about ([`ProcessIdentity`]).
+    pub fn identity(&self) -> Option<ProcessIdentity> {
+        Some(ProcessIdentity {
+            pid: self.pid,
+            created_at: self.created_at?,
+        })
+    }
+}
+
+/// Every process whose executable file name is one of `names` (#67).
+///
+/// A name-shaped filter rather than the whole table: reading a process' image
+/// path and command line means opening it, and the caller already knows which
+/// name it is looking for. Reading it any wider would be the "全系统扫描"
+/// D-009 rules out, on a path a user triggers by clicking an entry.
+///
+/// `None` means the table **could not be read**, which is a different claim
+/// from an empty list — and the difference is the point. A caller asking "is
+/// this application already running?" starts a second copy when it hears "no",
+/// so "I could not look" must never be reported as "nothing is there".
+pub fn processes_named(names: &[String]) -> Option<Vec<ProcessReading>> {
+    backend::processes_named(names)
+}
+
+/// Every process started by `pid`, directly or through a chain of children
+/// (#67).
+///
+/// The window an application presents is not always its own process's: a
+/// launcher hands off to the program that really runs, and the window belongs
+/// to that one (`crate::window`). Descendants are how the two are connected
+/// without a name — never by title, and never by executable name.
+pub fn descendants(pid: u32) -> Vec<u32> {
+    backend::descendants(pid)
+}
+
+/// A handle on a process the Hub did not start (#67).
+///
+/// An application the user ran outside the Hub is not one the Hub may end, but
+/// it *is* one whose ending the Hub has to notice: an associated instance that
+/// has closed must stop being reported as running. Opening the process object
+/// once gives an efficient wait and an exact answer — the handle is the process
+/// itself, so no later reading of the number can be about somebody else.
+///
+/// Opening verifies the identity it was given, which is the whole reason this
+/// takes one rather than a pid: between reading the process table and opening
+/// the process, Windows may have ended it and handed its number to another
+/// program, and a handle to *that* one would make the Hub report, and later
+/// watch, the wrong process (spec #59 decision 11).
+#[derive(Debug)]
+pub struct ExternalProcess {
+    handle: usize,
+}
+
+impl ExternalProcess {
+    /// Open the process an identity describes, or say why it could not be.
+    pub fn open(identity: ProcessIdentity) -> Result<Self, ProcessError> {
+        backend::open_external(identity).map(|handle| ExternalProcess { handle })
+    }
+
+    /// Wait up to `timeout` for the process to end. `true` means it has.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        backend::wait_for_handle_timeout(self.handle, timeout)
+    }
+
+    /// The code the process ended with, once it has ended.
+    pub fn exit_code(&self) -> Option<u32> {
+        backend::exit_code(self.handle)
+    }
+}
+
+impl Drop for ExternalProcess {
+    fn drop(&mut self) {
+        backend::close_handle(self.handle);
+    }
+}
+
 /// How a stop ended the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopOutcome {
