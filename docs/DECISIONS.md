@@ -1211,9 +1211,10 @@ terminal 不可携带这两个键、独立条目不允许捕获），`config::sa
 2. **加不加这个 flag，取决于 Hub 自己有没有控制台。** 实测（`console-shape.ps1` 的
    `GetConsoleProcessList` 读数）：父进程有控制台时，`CREATE_NEW_PROCESS_GROUP` 的 run 会
    **继承**那个控制台；加上 `CREATE_NO_WINDOW` 之后 run 不再继承，而是拿到自己的一个无窗口
-   控制台。继承是优雅停止唯一被实测走通的形态（Hub 与 run 共用控制台时
-   `GenerateConsoleCtrlEvent` 直接命中；换成私有控制台后必须靠 `AttachConsole` 兜底，而本机
-   实测**没有一次**用这条路真的结束过 run）。所以规则是：**Hub 有控制台就让 run 继承它**
+   控制台。首次 CMD 用例只测得继承形态的优雅退出；换成私有控制台后没有观察到成功退出。
+   后续以已就绪的真实控制处理器补验，确认无控制台 Hub 可以通过 `AttachConsole` 投递并退出
+   （第 6 条），但已有控制台时先在错误控制台上产生事件的问题仍存在。
+   所以规则仍是：**Hub 有控制台就让 run 继承它**
    （此时本来就不会多出窗口，`CREATE_NO_WINDOW` 反而会把 run 挪走），**Hub 没有控制台才加
    `CREATE_NO_WINDOW`**（此时新的控制台本来就会被分配，去掉窗口是纯收益）。
 3. **不改的东西写在这里，免得下次顺手改掉。** `request_graceful_stop` 的机制未动（同控制台
@@ -1230,6 +1231,13 @@ terminal 不可携带这两个键、独立条目不允许捕获），`config::sa
    要等控制台就绪后才行——停止发生在 run 存活若干秒之后，所以这不是新引入的限制；`FreeConsole`
    会废掉调用进程已获得的控制台标准句柄（实测：之后连 `Command::spawn` 都失败），这也是第 3 条
    不动交付路径的原因之一。
+6. **优雅停止证据必须来自已就绪的处理器。** #82 的后续复核曾观察到旧 CMD 用例在
+   `0xC0000142` 初始化失败退出时仍通过。现在具名回归用例重新进入测试二进制的子进程夹具，
+   注册真实 `CTRL_BREAK` 处理器后才输出就绪握手；处理器收到事件才以 0 退出。
+   共用无窗口控制台与无控制台 runner 两种隔离形态均实测
+   `graceful_delivered=true / Exited / exit=0`，且新增可见控制台窗口均为 0。
+   完整套件保留对进程级控制台变化的条件断言；独立测量工具则强制核对上述报告，不能把
+   `graceful_delivered=false / Forced` 当作优雅停止验收通过。
 
 用户可见行为：常驻托盘的 Hub 启动/重启服务时，桌面上不会再出现标题是程序名的控制台窗口；停止
 的语义与顺序完全不变（优雅优先、超时转强制、报告如实）。交互终端（ConPTY 伪控制台）本来就不
@@ -1239,8 +1247,10 @@ terminal 不可携带这两个键、独立条目不允许捕获），`config::sa
 钉住 flag 规则本身（两种 Hub 形态各一条断言），
 `process::win::tests::having_a_console_is_read_from_the_consoles_membership` 钉住「有没有
 控制台」的读法，`process::tests::a_graceful_stop_still_reaches_a_run_whose_console_has_no_window`
-钉住优雅停止仍能到达且 `graceful_delivered` 不说谎；原生 before/after（无控制台 runner 下
-可见控制台窗口 2 → 0）与未运行项记在 `docs/VERIFICATION.md` §6。
+钉住已就绪的处理器确实收到优雅停止请求且 `graceful_delivered` 不说谎。
+`scripts/verify-supervised-console-windows.ps1` 按窗口句柄与 PID 排除已有窗口，要求精确命中并
+通过一条测试，失败、忽略、零匹配、超时或新增窗口均返回非零。原生 before/after
+（首次 2 → 0、后续复核 1 → 0）与未运行项记在 `docs/VERIFICATION.md` §6。
 
 ---
 

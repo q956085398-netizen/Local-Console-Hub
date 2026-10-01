@@ -315,6 +315,12 @@ reported as a successful borrow. Run preparation (including D-035's console
 observation) and actual process creation take the same claim, so they never see
 a transient borrowed console. The creation-flag rules and stop ladder are unchanged.
 
+Graceful-stop acceptance must wait for a live child to register its actual
+control handler. Startup failure is not graceful delivery. The isolated console
+measurement requires `graceful_delivered=true`, `Exited`, and the handler's exit
+code 0, while counting only newly observed console-host window identities.
+See D-035 and VERIFICATION §6 for both console shapes and measurement limits.
+
 For terminal sessions, Ctrl+C is not the same action as closing the session.
 
 ## 8. Logging contract
