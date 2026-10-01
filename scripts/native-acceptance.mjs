@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, writeFile, mkdtemp, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createServer } from "node:net";
+import { createServer, createConnection } from "node:net";
 import { release } from "node:os";
 import { chromium } from "playwright-core";
 
@@ -140,25 +140,53 @@ const fixture = `sessions:
     logging: {mode: on_error, source: captured}
 `;
 
-async function launch(name, config) {
+async function launch(name, config, applicationId) {
   const root = join(output, name);
   const configPath = join(root, "roaming", "LocalConsoleHub", "config.yaml");
   await mkdir(join(root, "roaming", "LocalConsoleHub"), { recursive: true });
   if (config?.directory === true) await mkdir(configPath);
   else if (config !== null) await writeFile(configPath, config, "utf8");
   const port = await unusedPort();
+  const entry = applicationId ? join(root, "Application entry.lnk") : undefined;
+  if (entry) {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-File",
+        join(repository, "scripts/create-application-shortcut.ps1"),
+        "-Shortcut",
+        entry,
+        "-Hub",
+        binary,
+        "-ApplicationId",
+        applicationId,
+      ],
+      { windowsHide: true },
+    );
+  }
   let spawnError;
-  const child = spawn(binary, [], {
-    cwd: repository,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      LCH_ACCEPTANCE_ROOT: root,
-      WEBVIEW2_USER_DATA_FOLDER: join(root, "webview2"),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`,
+  const child = spawn(
+    entry ? "powershell.exe" : binary,
+    entry
+      ? [
+          "-NoProfile",
+          "-Command",
+          `$app = Start-Process -FilePath '${entry.replaceAll("'", "''")}' -PassThru; $app.WaitForExit(); exit $app.ExitCode`,
+        ]
+      : [],
+    {
+      cwd: repository,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        LCH_ACCEPTANCE_ROOT: root,
+        WEBVIEW2_USER_DATA_FOLDER: join(root, "webview2"),
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`,
+      },
     },
-  });
+  );
   child.on("error", (error) => {
     spawnError = error;
   });
@@ -171,6 +199,7 @@ async function launch(name, config) {
   });
   let browser;
   let page;
+  const hubPids = [];
   const stop = async () => {
     let sessionPids = [];
     if (page && !page.isClosed()) {
@@ -209,7 +238,20 @@ async function launch(name, config) {
         `Owned session pid ${pid} survived cleanup`,
       );
     }
-    report.cleanup.push({ scenario: name, appPid: child.pid, sessionPids, status: "passed" });
+    for (const pid of hubPids) {
+      await until(
+        async () => isAlive(pid),
+        (alive) => !alive,
+        `Hub pid ${pid} survived cleanup`,
+      );
+    }
+    report.cleanup.push({
+      scenario: name,
+      launcherPid: child.pid,
+      hubPids,
+      sessionPids,
+      status: "passed",
+    });
     await writeFile(join(root, "application.log"), logs);
   };
   try {
@@ -245,7 +287,7 @@ async function launch(name, config) {
       (count) => count === 0,
       "Session initialization did not complete",
     );
-    return { page, root, configPath, configReport, stop };
+    return { page, root, configPath, configReport, stop, entry, hubPids };
   } catch (error) {
     await stop();
     throw error;
@@ -256,6 +298,33 @@ async function ipc(page, command, args = {}) {
     ({ command, args }) => globalThis.__TAURI_INTERNALS__.invoke(command, args),
     { command, args },
   );
+}
+// The public launch-request transport, with the real Hub's answer. Unlike an
+// invalid CLI launch this can assert the failure without leaving a native
+// message box awaiting a user.
+function applicationRequest(id) {
+  return new Promise((done, reject) => {
+    const pipe = createConnection(String.raw`\\.\pipe\LocalConsoleHub.Instance.v1`);
+    let frame = "";
+    pipe.setEncoding("utf8");
+    pipe.setTimeout(20000, () => pipe.destroy(new Error("Launch request timed out")));
+    pipe.on("error", reject);
+    pipe.on("connect", () => pipe.write(JSON.stringify({ request: "openApplication", id }) + "\n"));
+    pipe.on("data", (data) => {
+      frame += data;
+      if (frame.includes("\n")) {
+        try {
+          done(JSON.parse(frame.trim()));
+        } catch (error) {
+          reject(error);
+        }
+        pipe.destroy();
+      }
+    });
+    pipe.on("end", () => {
+      if (!frame.includes("\n")) reject(new Error("Incomplete launch response"));
+    });
+  });
 }
 async function select(page, name) {
   await page.locator(".session-row").filter({ hasText: name }).click();
@@ -276,6 +345,82 @@ async function screenshot(page, name) {
 }
 
 try {
+  await check("configured application shortcut: cold launch and running reuse", async () => {
+    const app = await launch("application-entry", fixture, "service");
+    try {
+      const current = () => ipc(app.page, "get_session", { sessionId: "service" });
+      const first = await until(
+        current,
+        (value) => value.status === "running",
+        "Cold shortcut did not activate service",
+      );
+      assert.ok(first.pid);
+      const before = await optionalHash(app.configPath);
+      assert.equal(before, createHash("sha256").update(fixture).digest("hex"));
+      await until(
+        () => app.page.locator("h1").innerText(),
+        (text) => text === "Save Service",
+        "Cold shortcut did not select its application",
+      );
+      const metadata = execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          `$link = (New-Object -ComObject WScript.Shell).CreateShortcut('${app.entry.replaceAll("'", "''")}'); @($link.TargetPath,$link.Arguments,$link.IconLocation) | ConvertTo-Json -Compress`,
+        ],
+        { encoding: "utf8", windowsHide: true },
+      );
+      const [target, arguments_, icon] = JSON.parse(metadata);
+      assert.equal(target.toLowerCase(), binary.toLowerCase());
+      assert.equal(arguments_, "--open-app service");
+      assert.equal(icon.toLowerCase(), `${binary},0`.toLowerCase());
+      for (let index = 0; index < 2; index++) {
+        const exit = execFileSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-Command",
+            `$env:LCH_ACCEPTANCE_ROOT='${app.root.replaceAll("'", "''")}'; $p=Start-Process -FilePath '${app.entry.replaceAll("'", "''")}' -PassThru; if (-not $p.WaitForExit(20000)) { throw 'Shortcut handoff timed out' }; $p.ExitCode`,
+          ],
+          { encoding: "utf8", windowsHide: true, timeout: 25000 },
+        );
+        assert.equal(exit.trim(), "0");
+        assert.equal((await current()).pid, first.pid);
+      }
+      const hubs = JSON.parse(
+        execFileSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-Command",
+            `ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${binary.replaceAll("'", "''")}' } | Select-Object ProcessId,ExecutablePath)`,
+          ],
+          { encoding: "utf8", windowsHide: true },
+        ),
+      );
+      assert.equal(hubs.length, 1, "The actual binary must have exactly one Hub process");
+      app.hubPids.push(hubs[0].ProcessId);
+      const invalid = await applicationRequest("missing-saved-application");
+      assert.equal(invalid.delivered, false);
+      assert.match(invalid.message, /missing-saved-application/);
+      assert.equal((await current()).pid, first.pid);
+      assert.equal(await optionalHash(app.configPath), before);
+      await screenshot(app.page, "application-shortcut");
+      return {
+        entry: app.entry,
+        target,
+        arguments: arguments_,
+        icon,
+        hubs,
+        servicePid: first.pid,
+        configurationUnchanged: true,
+        unknownIdResponse: invalid,
+      };
+    } finally {
+      await app.stop();
+    }
+  });
   let app;
   try {
     await check("isolated real backend connection", async () => {
@@ -300,7 +445,10 @@ try {
       await screenshot(page, "terminal-fields");
       await select(page, "Manual Terminal");
       await start(page);
-      assert.equal(await page.locator(".callout__text").innerText(), "—");
+      assert.equal(
+        await page.locator(".callout__text").innerText(),
+        "停止该终端会同时结束它启动的子进程。",
+      );
     });
     await check("manual recording starts and stops in the real window", async () => {
       await page.getByRole("tab", { name: "日志", exact: true }).click();
