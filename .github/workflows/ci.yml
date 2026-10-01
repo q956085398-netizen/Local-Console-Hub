@@ -122,7 +122,9 @@ jobs:
 
       - name: Rust unit tests
         timeout-minutes: 10
-        run: cargo test
+        # Native tests share this process's Windows console and desktop state.
+        # Keep test cases serial; concurrency exercised inside tests is retained.
+        run: cargo test -- --test-threads=1
         working-directory: src-tauri
 
       - name: Build backend (debug)

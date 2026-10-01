@@ -315,7 +315,7 @@ mod tests {
         let borrowable = can_borrow();
 
         let mut child = std::process::Command::new("ping.exe")
-            .args(["-n", "30", "127.0.0.1"])
+            .args(["-n", "120", "127.0.0.1"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -345,10 +345,21 @@ mod tests {
             console.borrow(0, || panic!("an invalid target must not be queried"))
         };
         let panicked = if borrowed.is_some() {
-            Some(std::panic::catch_unwind(|| {
-                let console = Console::claim();
-                console.borrow(pid, || panic!("fixture panic during a console borrow"))
-            }))
+            // A prior successful attach does not guarantee the next one:
+            // console availability is a live reading. Require the callback
+            // to run and unwind within the bound, rather than treating a
+            // refused attach (which never ran it) as a broken unwind guard.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let result = std::panic::catch_unwind(|| {
+                    let console = Console::claim();
+                    console.borrow(pid, || panic!("fixture panic during a console borrow"))
+                });
+                if result.is_err() || std::time::Instant::now() >= deadline {
+                    break Some(result);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         } else {
             None
         };
