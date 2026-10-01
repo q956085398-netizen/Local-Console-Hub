@@ -5,10 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows-build:
     name: Windows build check
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -116,6 +121,7 @@ jobs:
         working-directory: src-tauri
 
       - name: Rust unit tests
+        timeout-minutes: 10
         run: cargo test
         working-directory: src-tauri
 
