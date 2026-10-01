@@ -1,0 +1,56 @@
+
+> local-console-hub@0.1.0 tauri
+> tauri bundle --verbose
+
+       Debug [tauri_cli::helpers::app_paths] Found Tauri project inside C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri on early lookup
+        Info [tauri_bundler::bundle] Patching C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe with bundle type information: msi
+        Warn [tauri_bundler::bundle] Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable not found in binary. Make sure tauri crate and tauri-cli are up to date. Updater plugin may not be able to update this package. This shouldn't normally happen, please report it to https://github.com/tauri-apps/tauri/issues
+        Info [tauri_bundler::bundle::windows::msi] Target: x64
+     Running [tauri_bundler::bundle::windows::msi] candle for "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\wix\\x64\\main.wxs"
+     Running [tauri_bundler::utils] Command `C:\Users\q9560\AppData\Local\tauri\WixTools314\candle.exe  -arch x64 C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\main.wxs -dSourceDir=C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe`
+Windows Installer XML Toolset Compiler version 3.14.1.8722
+Copyright (c) .NET Foundation and contributors. All rights reserved.
+
+main.wxs
+     Running [tauri_bundler::bundle::windows::msi] light to produce C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\msi\Local Console Hub_0.1.0_x64_en-US.msi
+     Running [tauri_bundler::utils] Command `C:\Users\q9560\AppData\Local\tauri\WixTools314\light.exe  -ext C:\Users\q9560\AppData\Local\tauri\WixTools314\WixUtilExtension.dll -ext C:\Users\q9560\AppData\Local\tauri\WixTools314\WixUIExtension.dll -o C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\output.msi -cultures:en-us -loc C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\locale.wxl *.wixobj`
+Windows Installer XML Toolset Linker version 3.14.1.8722
+Copyright (c) .NET Foundation and contributors. All rights reserved.
+
+C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\main.wxs(201) : warning LGHT1076 : ICE03: String overflow (greater than length permitted in column); Table: CustomAction, Column: Target, Key(s): DownloadAndInvokeBootstrapper
+C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\main.wxs(33) : warning LGHT1076 : ICE40: REINSTALLMODE is defined in the Property table. This may cause difficulties.
+C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\main.wxs(123) : warning LGHT1076 : ICE57: Component 'CMP_UninstallShortcut' has both per-user and per-machine data with an HKCU Registry KeyPath.
+C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\wix\x64\main.wxs(40) : warning LGHT1076 : ICE61: This product should remove only older versions of itself. No Maximum version was detected for the current product. (WIX_UPGRADE_DETECTED)
+        Info [tauri_bundler::bundle] Patching C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe with bundle type information: nsis
+        Warn [tauri_bundler::bundle] Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable not found in binary. Make sure tauri crate and tauri-cli are up to date. Updater plugin may not be able to update this package. This shouldn't normally happen, please report it to https://github.com/tauri-apps/tauri/issues
+        Info [tauri_bundler::bundle::windows::nsis] Target: x64
+     Running [tauri_bundler::bundle::windows::nsis] makensis to produce C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe
+     Running [tauri_bundler::utils] Command `C:\Users\q9560\AppData\Local\tauri\NSIS\makensis.exe  -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 -V3 C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\nsis\x64\installer.nsi`
+MakeNSIS v3.11 - Copyright 1999-2025 Contributors
+See the file COPYING for license details.
+Credits can be found in the Users Manual.
+
+Processing config: C:\Users\q9560\AppData\Local\tauri\NSIS\nsisconf.nsh
+Processing script file: "C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\nsis\x64\installer.nsi" (UTF8)
+
+Processed 1 file, writing output (x86-unicode):
+
+Output: "C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\nsis\x64\nsis-output.exe"
+Install: 6 pages (384 bytes), 3 sections (6216 bytes), 1892 instructions (52976 bytes), 401 strings (15722 bytes), 1 language table (414 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (2072 bytes), 650 instructions (18200 bytes), 198 strings (8038 bytes), 1 language table (274 bytes).
+Datablock optimizer saved 26498 bytes (~0.2%).
+
+Using lzma (compress whole) compression.
+
+EXE header size:               52736 / 38912 bytes
+Install code:                          (76176 bytes)
+Install data:                          (11347870 bytes)
+Uninstall code+data:                   (95376 bytes)
+Compressed data:             3392526 / 11519422 bytes
+CRC (0xC0684726):                  4 / 4 bytes
+
+Total size:                  3445266 / 11558338 bytes (29.8%)
+    Finished [tauri_bundler::bundle] 2 bundles at:
+        C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\msi\Local Console Hub_0.1.0_x64_en-US.msi (4.35 MiB)
+        C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe (3.29 MiB)
+

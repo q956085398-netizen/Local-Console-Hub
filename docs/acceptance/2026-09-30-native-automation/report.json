@@ -1,0 +1,289 @@
+{
+  "startedAt": "2026-09-30T09:16:44.738Z",
+  "sourceCommit": "bbd1c358add024a019e0db5c04bfbee1005e902e",
+  "sourceStatus": "M package-lock.json\n M package.json\n M src-tauri/Cargo.toml\n M src-tauri/src/config/paths.rs\n?? .scratch/\n?? docs/specs/\n?? scripts/native-acceptance.mjs",
+  "binary": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\issue-57\\debug\\local-console-hub.exe",
+  "binarySha256": "8b2c70cc988a9083d9daeef03fc736bf8fc4df1ed318f6f796dc6fd19fcc9446",
+  "platform": "win32",
+  "node": "v25.2.1",
+  "windowsRelease": "10.0.26300",
+  "architecture": "x64",
+  "scriptSha256": "f8e2612bfa9126ed5e41d4ca17a88f21c7253af62d7be0e45a5250e74e3aaf44",
+  "backendPathsSha256": "d90a080e298ded7d6c0e1eb0b64f9fcf618b32f62a0120127ce14c45beac1671",
+  "cargoManifestSha256": "ed4d7d2094a171bc6da81d2ec7ffdc27fd15b3c4147fac30e913053cdc81f8e8",
+  "execution": "signed-in Windows user; serial; real Tauri WebView2 and IPC",
+  "results": [
+    {
+      "name": "isolated real backend connection",
+      "status": "passed",
+      "milliseconds": 1134,
+      "evidence": {
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\roaming\\LocalConsoleHub\\config.yaml",
+        "binarySha256": "8b2c70cc988a9083d9daeef03fc736bf8fc4df1ed318f6f796dc6fd19fcc9446"
+      }
+    },
+    {
+      "name": "T-11 terminal purpose and close impact",
+      "status": "passed",
+      "milliseconds": 505
+    },
+    {
+      "name": "manual recording starts and stops in the real window",
+      "status": "passed",
+      "milliseconds": 438,
+      "evidence": {
+        "sessionId": "manual",
+        "mode": "manual",
+        "source": "captured",
+        "state": "capturing",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-09\\2026-09-30_17-16-46__run-1a0f19a261e0001.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-09",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real terminal keyboard input reaches ConPTY",
+      "status": "passed",
+      "milliseconds": 517,
+      "evidence": {
+        "sessionId": "manual",
+        "marker": "LCH_NATIVE_ROUNDTRIP_57",
+        "generation": 1
+      }
+    },
+    {
+      "name": "save reports an existing log and enables its file action",
+      "status": "passed",
+      "milliseconds": 596,
+      "evidence": {
+        "sessionId": "service",
+        "mode": "on_error",
+        "source": "captured",
+        "state": "on_error",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-09\\2026-09-30_17-16-47__run-1a0f19a2a590002.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-09",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 92,
+          "lines": 3,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real log write failure remains visible and never says success",
+      "status": "passed",
+      "milliseconds": 359,
+      "evidence": {
+        "sessionId": "write-error",
+        "mode": "manual",
+        "source": "captured",
+        "state": "off",
+        "logFile": null,
+        "logFilePresent": false,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-09",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": {
+          "operation": "creating the log directory",
+          "message": "something is already in the way of that path — remove or rename it, or configure a different log location (当文件已存在时，无法创建该文件。 (os error 183))",
+          "path": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-09"
+        }
+      }
+    },
+    {
+      "name": "frontend reload preserves latest backend running sessions",
+      "status": "passed",
+      "milliseconds": 137
+    },
+    {
+      "name": "native configuration diagnostics: mixed-config",
+      "status": "passed",
+      "milliseconds": 1826,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\mixed-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [
+          {
+            "id": "manual",
+            "name": "Manual Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "powershell",
+            "name": "PowerShell",
+            "sessionType": "terminal",
+            "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub",
+            "purpose": "日常交互终端，跑一次性命令与 REPL。",
+            "closeImpact": "仅结束本终端；不会停止其它受管服务。",
+            "shell": "powershell",
+            "logging": {
+              "mode": "off",
+              "source": "none"
+            }
+          },
+          {
+            "id": "service",
+            "name": "Save Service",
+            "sessionType": "service",
+            "cwd": ".",
+            "command": "cmd.exe /c ping -n 120 127.0.0.1",
+            "logging": {
+              "mode": "on_error",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "write-error",
+            "name": "Write Error Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          }
+        ],
+        "errors": [
+          {
+            "index": 5,
+            "sessionId": "invalid",
+            "field": "type",
+            "message": "unsupported type `nonsense` — use `service` (managed process) or `terminal` (interactive shell)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: bad-yaml",
+      "status": "passed",
+      "milliseconds": 1690,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\bad-yaml\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "message": "config file is not valid YAML: did not find expected node content at line 2 column 1, while parsing a flow node"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: missing-config",
+      "status": "passed",
+      "milliseconds": 1718,
+      "evidence": {
+        "fileStatus": "missing",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\missing-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: empty-config",
+      "status": "passed",
+      "milliseconds": 1719,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\empty-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: unreadable-config",
+      "status": "passed",
+      "milliseconds": 1724,
+      "evidence": {
+        "fileStatus": "unreadable",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "field": "configPath",
+            "message": "无法读取配置文件 `C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-XG7AVP\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml`：拒绝访问。 (os error 5)。请检查文件权限后重启应用。"
+          }
+        ]
+      }
+    }
+  ],
+  "exclusions": [
+    "Native tray menu clicks",
+    "Installation/MSI and installed-version acceptance",
+    "Whole-window decorations and taskbar/icon appearance"
+  ],
+  "cleanup": [
+    {
+      "scenario": "valid",
+      "appPid": 18144,
+      "sessionPids": [
+        14136,
+        32700,
+        20804,
+        34924
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "mixed-config",
+      "appPid": 38500,
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "bad-yaml",
+      "appPid": 37400,
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "missing-config",
+      "appPid": 41792,
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "empty-config",
+      "appPid": 40232,
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "unreadable-config",
+      "appPid": 10536,
+      "sessionPids": [],
+      "status": "passed"
+    }
+  ],
+  "userConfigurationUnchanged": true,
+  "finishedAt": "2026-09-30T09:16:57.715Z"
+}

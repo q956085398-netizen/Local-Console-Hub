@@ -1,0 +1,20 @@
+[
+  {
+    "Path": "src-tauri/target/release/bundle/nsis/Local Console Hub_0.1.0_x64-setup.exe",
+    "Bytes": 3445266,
+    "Sha256": "8baf9938dcfdf36baf978c78e6ff96e7f90e49f53d0f03e1a281f8b86d09b630",
+    "Modified": "2026-09-30T18:28:39.6292334+08:00"
+  },
+  {
+    "Path": "src-tauri/target/release/bundle/msi/Local Console Hub_0.1.0_x64_en-US.msi",
+    "Bytes": 4558848,
+    "Sha256": "d29f5c3c794a02d8a0d7068e85f468d539ddc35f3b4eb9e6b2b98de176c6aabc",
+    "Modified": "2026-09-30T18:28:30.2820000+08:00"
+  },
+  {
+    "Path": "src-tauri/target/release/local-console-hub.exe",
+    "Bytes": 11236352,
+    "Sha256": "e94ec5083c41dd31f32b998c5631522146d01468b48e9922870374a09736ade2",
+    "Modified": "2026-09-30T18:28:39.6614172+08:00"
+  }
+]
