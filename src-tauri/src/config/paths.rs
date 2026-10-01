@@ -73,9 +73,18 @@ impl AppPaths {
     /// callers turn that into an actionable message rather than guessing a
     /// fallback location.
     pub fn from_env() -> Option<Self> {
-        let config_root = dirs::config_dir()?;
-        let data_root = dirs::data_local_dir()?;
-        Some(Self::new(&config_root, &data_root))
+        #[cfg(feature = "acceptance")]
+        {
+            let root = PathBuf::from(std::env::var_os("LCH_ACCEPTANCE_ROOT")?);
+            root.is_absolute()
+                .then(|| Self::new(&root.join("roaming"), &root.join("local")))
+        }
+        #[cfg(not(feature = "acceptance"))]
+        {
+            let config_root = dirs::config_dir()?;
+            let data_root = dirs::data_local_dir()?;
+            Some(Self::new(&config_root, &data_root))
+        }
     }
 }
 

@@ -113,7 +113,7 @@ config or logs)**，删掉的就是内嵌浏览器（WebView2）自己的配置�
 2. **只有 Windows。** 跨平台在 `docs/ROADMAP.md` 的 Phase 6，不在这一版（D-001）。
 3. **交互终端的原生视觉证据边界。** `purpose` / `close_impact` 已按 D-027 和
    [#38](https://github.com/q956085398-netizen/Local-Console-Hub/issues/38) 成为两种会话类型共有的可选配置字段；
-   T-11 于 2026-09-30 随 #57 获用户整体验收确认；本轮没有新增原生截图或 agent 逐区域比对记录。
+   T-11 于 2026-09-30 随 #57 获用户整体验收确认；随后真实 Tauri/WebView2 脚本补验通过并归档字段截图。
    本地配置、载荷与自动化覆盖本身不代替原生确认，见 [`MVP_INTEGRATION_ACCEPTANCE.md`](MVP_INTEGRATION_ACCEPTANCE.md)。
 4. **受管服务没有可输入的 stdin。** 服务会话的终端面板是只读缓冲，顶部写
    `PTY 未连接 · 只读缓冲`。需要输入的程序（REPL、要确认的命令）请配成 `type: terminal`。
@@ -152,7 +152,8 @@ config or logs)**，删掉的就是内嵌浏览器（WebView2）自己的配置�
 
 **还差 / 尚未验收**：
 
-- **原生证据边界：** T-11 已获用户整体验收确认；本轮未新增原生截图或 agent 逐区域比对，未扩展为其他尚无结果条目的通过。
+- **原生证据边界：** T-11 已获用户确认及后续真实窗口脚本补验；日志与配置等 12 项原生自动化结果见
+  [`NATIVE_AUTOMATION_ACCEPTANCE.md`](NATIVE_AUTOMATION_ACCEPTANCE.md)，未扩展为托盘、窗口装饰及安装版待验条目通过。
 - **安装版：** I-7 图标外观、I-8 MSI 实际安装仍待验；I-15 尚未执行；I-16 / I-17 中的窗口与交互部分仍待完成或确认。
   NSIS 的文件系统安装、卸载与覆盖安装证据不替代这些项目。
 - **MVP 复核修复已完成：** #52–#56 均进入 `4260c49`，#57 获用户验收确认；修复验收不自动关闭安装版发布门槛。

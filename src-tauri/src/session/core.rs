@@ -6425,10 +6425,15 @@ mod tests {
 
             core.terminal_write("term", &[INTERRUPT_BYTE])
                 .expect("the interrupt reaches the terminal");
-            // Only then is a follow-up command meaningful: sending it earlier
-            // races the console host's interrupt handling, which flushes
-            // pending input (the quirk T02's own test records).
-            std::thread::sleep(std::time::Duration::from_millis(700));
+            // Wait for the new prompt after the execution marker, not the
+            // startup prompt already in scrollback. A fixed delay races the
+            // console host's interrupt handling on busy CI runners, which
+            // flushes pending input and can discard the follow-up command.
+            wait_until("the prompt after Ctrl+C", || {
+                scrollback(&core, "term")
+                    .split_once("LCH-STARTED-CTRLC")
+                    .is_some_and(|(_, after)| after.contains("PS ") && after.contains("> "))
+            });
             send(&core, "term", "Write-Host (\"LCH-RESUMED-\" + \"CTRLC\")");
 
             expect_in_scrollback(&core, "term", "LCH-RESUMED-CTRLC");

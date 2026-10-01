@@ -84,7 +84,11 @@ struct Shared {
 impl Shared {
     /// Whether the run has ended, reading the process and then the tree.
     fn ended_now(&self) -> Option<ExitStatus> {
-        let own = match *lock(&self.own_exit) {
+        // Drop the read guard before polling: the unrecorded-exit arm writes
+        // this same mutex, and a match scrutinee's temporary lives through its
+        // arms. Keeping that guard would make the fallback deadlock itself.
+        let recorded = *lock(&self.own_exit);
+        let own = match recorded {
             Some(exit) => Some(exit),
             None => match lock(&self.child).try_wait() {
                 Ok(Some(status)) => {
@@ -462,6 +466,54 @@ mod tests {
 
     fn stop_timeout() -> Duration {
         Duration::from_secs(3)
+    }
+
+    /// A caller can observe exit before the watcher records it. Exercise that
+    /// ordering without a watcher so this cannot pass just by winning a race.
+    #[test]
+    fn an_unrecorded_exit_is_observed_without_waiting_for_the_watcher() {
+        let mut command = StdCommand::new("cmd.exe");
+        command.args(["/d", "/c", "exit 0"]);
+        let child = backend::spawn(&mut command, backend::prepare_windowed)
+            .expect("the fixture starts suspended");
+        let identity = ProcessIdentity::of_child(&child);
+        let tree = backend::attach_independent(&child).expect("the fixture is owned and resumed");
+        let child = Mutex::new(child);
+        let status = super::super::poll_child(&child, Instant::now() + Duration::from_secs(10));
+        let expected = observe_exit(status.expect("the fixture exits before observation"));
+        // Windows can keep the console host in the job briefly after cmd exits.
+        // Settle the tree too, so the assertion is about the fallback exit read.
+        backend::terminate_tree(&tree).expect("the fixture tree ends");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !backend::tree_pids(&tree)
+            .expect("the tree is readable")
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline, "the fixture tree settles");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let shared = Shared {
+            child,
+            tree,
+            identity,
+            own_exit: Mutex::new(None),
+            ended: Mutex::new(None),
+            ended_signal: Condvar::new(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let run = IndependentProcess {
+                shared: Arc::new(shared),
+            };
+            let first = run.exit_status();
+            let second = run.exit_status();
+            tx.send((first, second)).expect("the result is awaited");
+        });
+        let (first, second) = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("observing an unrecorded exit must not deadlock");
+        assert_eq!(first, Some(expected));
+        assert_eq!(second, first, "the observed exit stays recorded");
     }
 
     /// A private directory for the handshake scripts these tests use.

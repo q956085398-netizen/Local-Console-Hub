@@ -6,6 +6,10 @@ authors = ["Local Console Hub contributors"]
 edition = "2021"
 rust-version = "1.77.2"
 
+[features]
+# Explicitly built acceptance binaries use private data roots, never user data.
+acceptance = []
+
 [lib]
 name = "local_console_hub_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
