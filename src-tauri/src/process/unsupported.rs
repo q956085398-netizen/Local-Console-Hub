@@ -75,12 +75,11 @@ pub fn request_graceful_stop(_pid: u32) -> bool {
 
 /// No process table to read on a platform with no process layer (D-001).
 ///
-/// An empty list is the honest answer rather than a capability error: a caller
-/// asking "is this application already running outside the Hub?" is answered
-/// "nothing was found", which is also what a machine with no such application
-/// answers.
-pub fn processes_named(_names: &[String]) -> Vec<super::ProcessReading> {
-    Vec::new()
+/// `None` — "could not read it" — rather than an empty list, which would be the
+/// claim that nothing is running. There is no way to check on this platform,
+/// and a caller deciding whether to start a second copy has to be told that.
+pub fn processes_named(_names: &[String]) -> Option<Vec<super::ProcessReading>> {
+    None
 }
 
 /// No parent links to walk on a platform with no process layer (D-001).

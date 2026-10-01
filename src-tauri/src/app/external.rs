@@ -65,6 +65,14 @@ use crate::window::{self, TopLevelWindow};
 pub enum Outside {
     /// Nothing that could be the application is running.
     None,
+    /// The process table could not be read, so the Hub does not know whether
+    /// anything is running.
+    ///
+    /// A case of its own rather than folded into [`Outside::None`], because the
+    /// two lead to opposite actions: "nothing is there" starts the
+    /// application, and "I could not look" must not (spec #59 decision 11 —
+    /// 不盲目重复启动).
+    Unreadable,
     /// Exactly one instance, and it is the one the configuration describes.
     Certain(ExternalInstance),
     /// Something might be the application, and the Hub will not guess which —
@@ -148,7 +156,9 @@ pub fn find(config: &SessionConfig) -> Outside {
         // "ambiguous" out of it would replace it with a worse one.
         return Outside::None;
     };
-    let readings = process::processes_named(&target.file_names);
+    let Some(readings) = process::processes_named(&target.file_names) else {
+        return Outside::Unreadable;
+    };
     let mut found = classify(&target, &readings);
     decorate(&mut found, &readings);
     found
@@ -173,7 +183,12 @@ pub fn confirm(
                 .to_owned(),
         );
     };
-    let readings = process::processes_named(&target.file_names);
+    let Some(readings) = process::processes_named(&target.file_names) else {
+        return Err(
+            "the process table could not be read, so the Hub cannot confirm the instance you              picked"
+                .to_owned(),
+        );
+    };
     let Some(reading) = readings
         .iter()
         .find(|reading| reading.pid == pid && reading.created_at == Some(created_at))
@@ -912,8 +927,17 @@ pub(crate) mod native_tests {
         /// rest of this test suite. The product takes that reading when the
         /// user clicks an entry — seconds after the application appeared — so
         /// what a test has to wait for is the reading, not the spawn.
-        pub(crate) fn wait_until_listed(&self, child: &mut Child) {
-            wait_until_listed_as(&self.program_name(), child);
+        /// A running fixture process, already visible in the process table.
+        ///
+        /// The process is started again when it died *before it could be
+        /// seen*. On a loaded Windows session that is how `STATUS_DLL_INIT_FAILED`
+        /// (0xC0000142) presents — the machine could not initialise a new
+        /// process, which is the condition D-035 (#82) describes and says
+        /// nothing about the behaviour under test. Retrying the apparatus is
+        /// not the same as tolerating a wrong answer: every assertion below
+        /// still runs against a process the OS really has.
+        pub(crate) fn start_listed(&self) -> KillOnDrop {
+            start_listed(&self.program_name(), || self.start())
         }
 
         /// The file name of the copied program.
@@ -990,34 +1014,45 @@ pub(crate) mod native_tests {
         }
     }
 
-    /// Wait until the process table lists `pid` under `name`, so a test asks
-    /// about a machine that has settled rather than one mid-churn.
+    /// A running process named `name`, started by `spawn`, once the process
+    /// table lists it.
     ///
-    /// The process table is a reading of a *live* system: it is taken while
-    /// processes are being created and destroyed, including by the rest of this
-    /// test suite. The product takes that reading when the user clicks an entry
-    /// — seconds after the application appeared — so what a test has to wait
-    /// for is the reading, not the spawn.
-    pub(crate) fn wait_until_listed_as(name: &str, child: &mut Child) {
-        let pid = child.id();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        loop {
-            if process::processes_named(&[name.to_owned()])
-                .iter()
-                .any(|reading| reading.pid == pid)
-            {
-                return;
+    /// The process table is a reading of a *live* system. The product takes
+    /// that reading when the user clicks an entry — seconds after the
+    /// application appeared — so what a test waits for is the reading, not the
+    /// spawn. A process that dies at startup is started again (see
+    /// `Fixture::start_listed`), and one that never appears within the attempt
+    /// is a failure rather than something to paper over.
+    pub(crate) fn start_listed(name: &str, mut spawn: impl FnMut() -> Child) -> KillOnDrop {
+        for _ in 0..START_ATTEMPTS {
+            let mut child = KillOnDrop(spawn());
+            let pid = child.0.id();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                if process::processes_named(&[name.to_owned()])
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|reading| reading.pid == pid)
+                {
+                    return child;
+                }
+                if matches!(child.0.try_wait(), Ok(Some(_))) {
+                    // The machine could not get it up, so try again.
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the process {pid} never appeared in the process table as `{name}`"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            if let Ok(Some(status)) = child.try_wait() {
-                panic!("the process {pid} ended before it could be found: {status:?}");
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the process {pid} never appeared in the process table as `{name}`"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(25));
         }
+        panic!("this machine could not start a process to look at");
     }
+
+    /// How many times a fixture process is started before the machine is
+    /// declared unable to run one.
+    const START_ATTEMPTS: usize = 5;
 
     /// Kill a fixture process the test started outside any supervisor, so a
     /// failing assertion cannot leave a pinger behind.
@@ -1052,8 +1087,7 @@ pub(crate) mod native_tests {
     #[test]
     fn a_real_process_is_found_by_its_program_and_arguments() {
         let fixture = Fixture::new("found");
-        let mut child = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut child.0);
+        let child = fixture.start_listed();
 
         let found = find(&fixture.config());
 
@@ -1089,17 +1123,16 @@ pub(crate) mod native_tests {
 ping -n 120 127.0.0.1 > NUL
 ",
         );
-        let mut child = KillOnDrop(
+        // The process the search must find is the shell, not the script.
+        let child = start_listed("cmd.exe", || {
             Command::new("cmd.exe")
                 .args(["/d", "/c"])
                 .arg(&script)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
-                .expect("the shell starts"),
-        );
-        // The process the search must find is the shell, not the script.
-        wait_until_listed_as("cmd.exe", &mut child.0);
+                .expect("the shell starts")
+        });
 
         let found = find(&fixture.config_for(script.to_string_lossy().into_owned()));
 
@@ -1128,10 +1161,8 @@ ping -n 120 127.0.0.1 > NUL
     #[test]
     fn two_real_processes_are_a_question_with_two_candidates() {
         let fixture = Fixture::new("twice");
-        let mut first = KillOnDrop(fixture.start());
-        let mut second = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut first.0);
-        fixture.wait_until_listed(&mut second.0);
+        let first = fixture.start_listed();
+        let second = fixture.start_listed();
 
         let found = find(&fixture.config());
 
@@ -1155,8 +1186,7 @@ ping -n 120 127.0.0.1 > NUL
     #[test]
     fn choosing_a_candidate_is_re_verified_against_its_creation_time() {
         let fixture = Fixture::new("confirm");
-        let mut child = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut child.0);
+        let child = fixture.start_listed();
         let config = fixture.config();
 
         // What the window would have been shown: the pid and the creation time

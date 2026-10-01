@@ -37,6 +37,9 @@
 //! the three things a click can mean:
 //!
 //! - nothing found — the ordinary open, unchanged;
+//! - the table could not be read — a question with no candidates, because "I
+//!   could not look" is not "nothing is there" and must not start a second
+//!   copy;
 //! - one confirmed instance — associate it and bring its window forward, and
 //!   start nothing;
 //! - anything else — answer with the question
@@ -179,6 +182,24 @@ pub fn open(core: &SessionCore, session_id: &str) -> Result<OpenOutcome, Session
                     choice: Some(ambiguity),
                 });
             }
+            // The Hub could not look, so "nothing is running" is not an answer
+            // it has. The question it asks instead has no candidates — there is
+            // nothing to point at — which leaves the two answers that are still
+            // honest: start the Hub's own copy, or leave it alone.
+            Outside::Unreadable => {
+                return Ok(OpenOutcome {
+                    activation: Activation {
+                        runtime: before,
+                        started: false,
+                    },
+                    window: None,
+                    choice: Some(external::Ambiguity {
+                        reason: "Hub 读不到系统进程表，因此无法确认这个应用是不是已经在运行。"
+                            .to_owned(),
+                        candidates: Vec::new(),
+                    }),
+                })
+            }
             Outside::None => {}
         }
     }
@@ -305,7 +326,7 @@ fn stand_forward(
 #[cfg(all(test, windows))]
 mod native_tests {
     use super::*;
-    use crate::app::external::native_tests::{Fixture, KillOnDrop};
+    use crate::app::external::native_tests::Fixture;
     use crate::session::core::SessionCore;
     use crate::session::state::SessionStatus;
 
@@ -322,8 +343,7 @@ mod native_tests {
     #[test]
     fn an_application_already_running_outside_is_associated_not_started() {
         let fixture = Fixture::new("associate");
-        let mut running = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut running.0);
+        let running = fixture.start_listed();
         let core = core_with(&fixture);
 
         let outcome = open(&core, "fixture").expect("opening succeeds");
@@ -373,10 +393,8 @@ mod native_tests {
     #[test]
     fn two_instances_ask_and_change_nothing() {
         let fixture = Fixture::new("ask");
-        let mut first = KillOnDrop(fixture.start());
-        let mut second = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut first.0);
-        fixture.wait_until_listed(&mut second.0);
+        let first = fixture.start_listed();
+        let second = fixture.start_listed();
         let core = core_with(&fixture);
 
         let outcome = open(&core, "fixture").expect("opening succeeds");
@@ -398,8 +416,7 @@ mod native_tests {
     #[test]
     fn the_user_can_associate_the_one_they_picked_or_start_a_new_one() {
         let mut fixture = Fixture::new("resolve");
-        let mut running = KillOnDrop(fixture.start());
-        fixture.wait_until_listed(&mut running.0);
+        let mut running = fixture.start_listed();
         let core = core_with(&fixture);
 
         // What the dialog would have been shown for a confirmed instance.

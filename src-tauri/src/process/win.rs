@@ -401,25 +401,33 @@ pub fn is_process_alive(pid: u32) -> bool {
 /// One snapshot of the process table gives every pid and its file name; only
 /// the entries whose name is wanted are then opened, because the image path and
 /// the command line live inside the process rather than in the table.
-pub fn processes_named(names: &[String]) -> Vec<super::ProcessReading> {
+pub fn processes_named(names: &[String]) -> Option<Vec<super::ProcessReading>> {
     let wanted: Vec<String> = names.iter().map(|name| name.to_ascii_lowercase()).collect();
-    let Some(entries) = process_entries() else {
-        // A snapshot that could not be taken is "nothing found", which the
-        // caller reads as "nothing is running outside" — the honest answer to
-        // a question this build could not ask, and the one that does not
-        // invent an instance.
-        return Vec::new();
-    };
 
-    entries
-        .into_iter()
-        .filter_map(|entry| {
-            let name = wide_string(&entry.szExeFile);
-            wanted
-                .contains(&name.to_ascii_lowercase())
-                .then(|| read_process(entry.th32ProcessID, name))
-        })
-        .collect()
+    // The snapshot itself is retried (`process_entries`), because taking it can
+    // fail outright. What is *not* retried is an empty answer: a caller asking
+    // "is this application already running?" must be able to trust "no", and a
+    // table that was read and did not contain the name is exactly that answer.
+    for _ in 0..SNAPSHOT_ATTEMPTS {
+        let Some(entries) = process_entries() else {
+            continue;
+        };
+        return Some(
+            entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let name = wide_string(&entry.szExeFile);
+                    wanted
+                        .contains(&name.to_ascii_lowercase())
+                        .then(|| read_process(entry.th32ProcessID, name))
+                })
+                .collect(),
+        );
+    }
+
+    // `None` is "the table could not be read, so I do not know" — which is not
+    // the same claim as "nothing is running" (spec #59 decision 11).
+    None
 }
 
 /// Every process started by `pid`, directly or through a chain of children.

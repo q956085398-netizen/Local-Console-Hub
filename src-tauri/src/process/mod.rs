@@ -318,12 +318,16 @@ impl ProcessReading {
 
 /// Every process whose executable file name is one of `names` (#67).
 ///
-/// A `bool`-shaped filter rather than the whole table: reading a process'
-/// image path and command line means opening it, and the caller of this
-/// function already knows which name it is looking for. Reading it any wider
-/// would be the "全系统扫描" D-009 rules out, on a path a user triggers by
-/// clicking an entry.
-pub fn processes_named(names: &[String]) -> Vec<ProcessReading> {
+/// A name-shaped filter rather than the whole table: reading a process' image
+/// path and command line means opening it, and the caller already knows which
+/// name it is looking for. Reading it any wider would be the "全系统扫描"
+/// D-009 rules out, on a path a user triggers by clicking an entry.
+///
+/// `None` means the table **could not be read**, which is a different claim
+/// from an empty list — and the difference is the point. A caller asking "is
+/// this application already running?" starts a second copy when it hears "no",
+/// so "I could not look" must never be reported as "nothing is there".
+pub fn processes_named(names: &[String]) -> Option<Vec<ProcessReading>> {
     backend::processes_named(names)
 }
 
