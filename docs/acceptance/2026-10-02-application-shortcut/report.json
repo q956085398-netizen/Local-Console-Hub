@@ -1,0 +1,337 @@
+{
+  "startedAt": "2026-10-01T18:40:45.701Z",
+  "sourceCommit": "f71bd4147647f1459419051557761ba9baaca3b9",
+  "sourceStatus": "M scripts/native-acceptance.mjs\n M src-tauri/src/app/launch.rs\n M src-tauri/src/instance/protocol.rs\n?? scripts/create-application-shortcut.ps1",
+  "binary": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\local-console-hub.exe",
+  "binarySha256": "43bc8006951336f87ea45397f8deca4bad5483d1c648b50ae1f059319f6e2bc0",
+  "platform": "win32",
+  "node": "v25.2.1",
+  "windowsRelease": "10.0.26300",
+  "architecture": "x64",
+  "scriptSha256": "529d0b23e7d24b86e2c574bebb1d6746f44ba0ba98e3d97eb4dac0a3230d2aec",
+  "backendPathsSha256": "d90a080e298ded7d6c0e1eb0b64f9fcf618b32f62a0120127ce14c45beac1671",
+  "cargoManifestSha256": "33294ca56d91c99858d5a2276330dc6f5da5404409620f31a0bbdd6c7e759c1d",
+  "execution": "signed-in Windows user; serial; real Tauri WebView2 and IPC",
+  "results": [
+    {
+      "name": "configured application shortcut: cold launch and running reuse",
+      "status": "passed",
+      "milliseconds": 4413,
+      "evidence": {
+        "entry": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\application-entry\\Application entry.lnk",
+        "target": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\local-console-hub.exe",
+        "arguments": "--open-app service",
+        "icon": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\local-console-hub.exe,0",
+        "hubs": [
+          {
+            "ProcessId": 63788,
+            "ExecutablePath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\local-console-hub.exe"
+          }
+        ],
+        "servicePid": 63248,
+        "configurationUnchanged": true,
+        "unknownIdResponse": {
+          "delivered": false,
+          "message": "no session is registered as `missing-saved-application`"
+        }
+      }
+    },
+    {
+      "name": "isolated real backend connection",
+      "status": "passed",
+      "milliseconds": 1038,
+      "evidence": {
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\roaming\\LocalConsoleHub\\config.yaml",
+        "binarySha256": "43bc8006951336f87ea45397f8deca4bad5483d1c648b50ae1f059319f6e2bc0"
+      }
+    },
+    {
+      "name": "T-11 terminal purpose and close impact",
+      "status": "passed",
+      "milliseconds": 570
+    },
+    {
+      "name": "manual recording starts and stops in the real window",
+      "status": "passed",
+      "milliseconds": 405,
+      "evidence": {
+        "sessionId": "manual",
+        "mode": "manual",
+        "source": "captured",
+        "state": "capturing",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-10\\2026-10-02_02-40-51__run-1a0f8c4f29c0001.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real terminal keyboard input reaches ConPTY",
+      "status": "passed",
+      "milliseconds": 491,
+      "evidence": {
+        "sessionId": "manual",
+        "marker": "LCH_NATIVE_ROUNDTRIP_57",
+        "generation": 1
+      }
+    },
+    {
+      "name": "save reports an existing log and enables its file action",
+      "status": "passed",
+      "milliseconds": 611,
+      "evidence": {
+        "sessionId": "service",
+        "mode": "on_error",
+        "source": "captured",
+        "state": "on_error",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-10\\2026-10-02_02-40-52__run-1a0f8c4f6a40002.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 92,
+          "lines": 3,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real log write failure remains visible and never says success",
+      "status": "passed",
+      "milliseconds": 366,
+      "evidence": {
+        "sessionId": "write-error",
+        "mode": "manual",
+        "source": "captured",
+        "state": "off",
+        "logFile": null,
+        "logFilePresent": false,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": {
+          "operation": "creating the log directory",
+          "message": "something is already in the way of that path — remove or rename it, or configure a different log location (当文件已存在时，无法创建该文件。 (os error 183))",
+          "path": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-10"
+        }
+      }
+    },
+    {
+      "name": "frontend reload preserves latest backend running sessions",
+      "status": "passed",
+      "milliseconds": 113
+    },
+    {
+      "name": "native configuration diagnostics: mixed-config",
+      "status": "passed",
+      "milliseconds": 1695,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\mixed-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [
+          {
+            "id": "manual",
+            "name": "Manual Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "powershell",
+            "name": "PowerShell",
+            "sessionType": "terminal",
+            "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub",
+            "purpose": "日常交互终端，跑一次性命令与 REPL。",
+            "closeImpact": "仅结束本终端；不会停止其它受管服务。",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "off",
+              "source": "none"
+            }
+          },
+          {
+            "id": "service",
+            "name": "Save Service",
+            "sessionType": "service",
+            "cwd": ".",
+            "command": "cmd.exe /c ping -n 120 127.0.0.1",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "on_error",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "write-error",
+            "name": "Write Error Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          }
+        ],
+        "errors": [
+          {
+            "index": 5,
+            "sessionId": "invalid",
+            "field": "type",
+            "message": "unsupported type `nonsense` — use `service` (managed process) or `terminal` (interactive shell)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: bad-yaml",
+      "status": "passed",
+      "milliseconds": 1794,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\bad-yaml\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "message": "config file is not valid YAML: did not find expected node content at line 2 column 1, while parsing a flow node"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: missing-config",
+      "status": "passed",
+      "milliseconds": 1791,
+      "evidence": {
+        "fileStatus": "missing",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\missing-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: empty-config",
+      "status": "passed",
+      "milliseconds": 1835,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\empty-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: unreadable-config",
+      "status": "passed",
+      "milliseconds": 1843,
+      "evidence": {
+        "fileStatus": "unreadable",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "field": "configPath",
+            "message": "无法读取配置文件 `C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-drgu9a\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml`：拒绝访问。 (os error 5)。请检查文件权限后重启应用。"
+          }
+        ]
+      }
+    }
+  ],
+  "exclusions": [
+    "Native tray menu clicks",
+    "Installation/MSI and installed-version acceptance",
+    "Whole-window decorations and taskbar/icon appearance"
+  ],
+  "cleanup": [
+    {
+      "scenario": "application-entry",
+      "launcherPid": 75076,
+      "hubPids": [
+        63788
+      ],
+      "sessionPids": [
+        63248
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "valid",
+      "launcherPid": 110604,
+      "hubPids": [],
+      "sessionPids": [
+        107084,
+        111808,
+        48432,
+        80696
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "mixed-config",
+      "launcherPid": 73052,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "bad-yaml",
+      "launcherPid": 88612,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "missing-config",
+      "launcherPid": 88012,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "empty-config",
+      "launcherPid": 89056,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "unreadable-config",
+      "launcherPid": 79640,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    }
+  ],
+  "userConfigurationUnchanged": true,
+  "finishedAt": "2026-10-01T18:41:03.307Z"
+}

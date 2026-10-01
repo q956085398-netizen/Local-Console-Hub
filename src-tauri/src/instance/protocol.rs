@@ -96,6 +96,9 @@ pub const NEW_TERMINAL_FLAG: &str = "--new-terminal";
 /// The command-line flag that names the directory the terminal opens in.
 pub const DIRECTORY_FLAG: &str = "--directory";
 
+/// Open a saved configuration through the same activation as the window.
+pub const OPEN_APPLICATION_FLAG: &str = "--open-app";
+
 /// The request this process was started with, from the real command line.
 ///
 /// The program name is dropped: what a request is about is never the exe.
@@ -121,11 +124,26 @@ pub fn request_from_env() -> Result<Request, String> {
 pub fn from_command_line(arguments: &[OsString]) -> Result<Request, String> {
     let mut new_terminal = false;
     let mut directory: Option<String> = None;
+    let mut application: Option<String> = None;
 
     let mut index = 0;
     while index < arguments.len() {
         let argument = text(&arguments[index])?;
         match argument.as_str() {
+            OPEN_APPLICATION_FLAG => {
+                if application.is_some() {
+                    return Err(format!("启动参数 `{OPEN_APPLICATION_FLAG}` 不能重复。"));
+                }
+                index += 1;
+                let id = arguments.get(index).ok_or_else(|| {
+                    format!("启动参数 `{OPEN_APPLICATION_FLAG}` 后面缺少配置 id。")
+                })?;
+                let id = text(id)?;
+                if !crate::config::is_filesystem_safe_component(&id) {
+                    return Err("配置 id 必须以字母或数字开头，且只含字母、数字、下划线或连字符，最多 64 字符。".into());
+                }
+                application = Some(id);
+            }
             NEW_TERMINAL_FLAG => new_terminal = true,
             DIRECTORY_FLAG => {
                 index += 1;
@@ -146,6 +164,13 @@ pub fn from_command_line(arguments: &[OsString]) -> Result<Request, String> {
             }
         }
         index += 1;
+    }
+
+    if let Some(id) = application {
+        if new_terminal || directory.is_some() {
+            return Err(format!("`{OPEN_APPLICATION_FLAG}` 不能与 `{NEW_TERMINAL_FLAG}` 或 `{DIRECTORY_FLAG}` 一起使用。"));
+        }
+        return Ok(Request::OpenApplication { id });
     }
 
     match (new_terminal, directory) {
@@ -450,10 +475,10 @@ mod tests {
     /// would open the wrong thing.
     #[test]
     fn an_unknown_flag_stops_the_launch_by_name() {
-        let reason = from_command_line(&command_line(&["--open-app", "comfyui"]))
+        let reason = from_command_line(&command_line(&["--unknown", "comfyui"]))
             .expect_err("this build has no such request");
 
-        assert!(reason.contains("--open-app"), "{reason}");
+        assert!(reason.contains("--unknown"), "{reason}");
     }
 
     /// The wire form of the new request, asserted where a rename would be
@@ -543,6 +568,34 @@ mod tests {
         assert_eq!(response.message.as_deref(), Some("第一行\n第二行"));
     }
 
+    #[test]
+    fn a_configured_application_entry_carries_its_stable_id() {
+        assert_eq!(
+            from_command_line(&command_line(&["--open-app", "comfyui"])),
+            Ok(Request::OpenApplication {
+                id: "comfyui".into()
+            })
+        );
+    }
+
+    #[test]
+    fn application_entries_reject_missing_invalid_duplicate_and_conflicting_targets() {
+        for arguments in [
+            vec!["--open-app"],
+            vec!["--open-app", ""],
+            vec!["--open-app", "app;calc.exe"],
+            vec!["--open-app", "--new-terminal"],
+            vec!["--open-app", "comfyui", "--open-app", "other"],
+            vec!["--open-app", "comfyui", "--new-terminal"],
+            vec!["--new-terminal", "--open-app", "comfyui"],
+            vec!["--directory", "D:\\Work", "--open-app", "comfyui"],
+        ] {
+            assert!(
+                from_command_line(&command_line(&arguments)).is_err(),
+                "{arguments:?}"
+            );
+        }
+    }
     /// The configured-application request carries the session it names, so the
     /// Hub knows *which* application to open — and its operation name is what
     /// an older build refuses by.

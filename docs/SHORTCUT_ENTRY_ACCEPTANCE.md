@@ -183,3 +183,7 @@ powershell -NoProfile -File scripts\verify-shortcut-entry.ps1
 
 脚本会**拒绝**在已有 Hub 运行时执行，并且只结束它自己启动的 Hub 进程，不按进程名扫。三个
 `.ps1`（安装脚本、本验收脚本、`verify-single-instance.ps1`）都是纯 ASCII，中文结论在本文件里。
+
+## 配置应用入口（#89）
+
+已保存应用另使用 --open-app <id>；创建方式及原生证据见 [APPLICATION_SHORTCUT_ACCEPTANCE.md](APPLICATION_SHORTCUT_ACCEPTANCE.md)。

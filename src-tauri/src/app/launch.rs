@@ -354,7 +354,15 @@ impl RequestHandler for Hub {
             // what a shortcut asking for a shell does differently (stories 10
             // and 12, and H01's "no terminal comes with an open").
             Request::NewTerminal { directory } => self.new_terminal(&app, directory),
-            Request::OpenApplication { id } => open_application(&app, &id),
+            Request::OpenApplication { id } => {
+                let response = open_application(&app, &id);
+                if response.delivered {
+                    // A cold launch precedes the frontend listener, just as
+                    // a new-terminal request does. Retain its selection too.
+                    self.open_session(&app, &id);
+                }
+                response
+            }
         }
     }
 }
@@ -400,14 +408,7 @@ fn open_application(app: &AppHandle<Wry>, id: &str) -> Response {
                  那里可以关联已经在运行的那个实例，或者明确新开一份。"
             ))
         }
-        Ok(_) => {
-            // Shown, then pointed at the session, in that order — the same
-            // pair the tray uses when a row is clicked (`tray::focus_session`).
-            // Whether this call started the run or found it already going is
-            // not the answer the caller needs: both are "it is open".
-            crate::tray::focus_session(app, id);
-            Response::delivered()
-        }
+        Ok(_) => Response::delivered(),
         Err(error) => Response::failed(error.message),
     }
 }
