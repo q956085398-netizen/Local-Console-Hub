@@ -89,48 +89,30 @@ fn read(window: HWND, pid: u32) -> TopLevelWindow {
 ///
 /// Reaching it means attaching to that process's console for the length of one
 /// call, because `GetConsoleWindow` answers about *this* process's console and
-/// nothing else. Attaching is a process-wide state change, so the two calls
-/// that use it are serialized: two threads attaching to different consoles at
-/// once would each get an answer about the other's.
+/// nothing else. That is a process-wide state change, and it is made through
+/// the crate's console module (D-037): the borrow is serialized against every
+/// other console attach in the crate — most importantly the graceful stop's
+/// `CTRL_BREAK`, which would otherwise be raised in whichever console a lookup
+/// happened to be attached to — and this process is put back on the console it
+/// came from.
 ///
-/// The Hub's own console has to be absent for this to work — and it is, in
-/// every packaged build (`docs/RELEASE.md`): the same condition
-/// [`crate::process`]'s graceful-stop path relies on. A Hub that did have a
-/// console would have to give it up to ask, which is not a trade worth making
-/// for a window lookup.
+/// A Hub that has a console of its own still gets no answer here, and that is
+/// unchanged: it is the user's terminal, and a window lookup is not worth
+/// trading it for. What is refused, and what it costs to ask, is D-037's.
 pub fn console_window(pid: u32) -> Option<TopLevelWindow> {
-    use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
 
-    let _serialized = console_attach_lock();
-    // Never asked while the Hub holds a console of its own: attaching would
-    // detach it, and the question is not worth that.
-    if !unsafe { GetConsoleWindow() }.is_null() {
+    let console = crate::console::Console::claim();
+    let window = console.borrow(pid, || unsafe { GetConsoleWindow() })?;
+    if window.is_null() {
         return None;
     }
-
-    unsafe {
-        FreeConsole();
-        if AttachConsole(pid) == 0 {
-            return None;
-        }
-        let window = GetConsoleWindow();
-        FreeConsole();
-        if window.is_null() {
-            return None;
-        }
-        // Read like any other window; the pid recorded is the one the caller
-        // asked about, because the window's real owner is Windows' console
-        // host — a number that says nothing about which application this is.
-        let mut read_back = read(window, pid);
-        read_back.pid = pid;
-        Some(read_back)
-    }
-}
-
-/// Serializes console attach/detach, which is process-wide state.
-fn console_attach_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    // Read like any other window; the pid recorded is the one the caller asked
+    // about, because the window's real owner is Windows' console host — a
+    // number that says nothing about which application this is.
+    let mut read_back = read(window, pid);
+    read_back.pid = pid;
+    Some(read_back)
 }
 
 fn title_of(window: HWND) -> String {

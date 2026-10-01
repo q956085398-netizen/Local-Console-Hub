@@ -305,6 +305,16 @@ into a stray window titled after the program being run (D-035). The run therefor
 shares the Hub's console when the Hub has one, and is started with
 `CREATE_NO_WINDOW` — a console with no window — when it does not.
 
+Console borrowing is process-wide (D-037). Window lookup and both graceful-stop
+attempts share one console claim, and return the caller to its original console
+through surviving original members, including on failed attachment and unwind.
+Borrowing is refused when the caller has a console window, is its console's sole
+member, or cannot obtain a complete bounded membership list. If every original
+peer leaves during a borrow, restoration can fail; it is diagnosed and not
+reported as a successful borrow. Run preparation (including D-035's console
+observation) and actual process creation take the same claim, so they never see
+a transient borrowed console. The creation-flag rules and stop ladder are unchanged.
+
 For terminal sessions, Ctrl+C is not the same action as closing the session.
 
 ## 8. Logging contract

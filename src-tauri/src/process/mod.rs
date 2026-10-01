@@ -532,11 +532,12 @@ impl ManagedProcess {
         if spec.output == OutputMode::Capture {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
-        backend::prepare(&mut command);
-        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
-            program: spec.program.clone(),
-            cwd: spec.cwd.clone(),
-            source,
+        let mut child = backend::spawn(&mut command, backend::prepare).map_err(|source| {
+            ProcessError::Spawn {
+                program: spec.program.clone(),
+                cwd: spec.cwd.clone(),
+                source,
+            }
         })?;
 
         #[cfg(all(test, windows))]
@@ -1401,11 +1402,14 @@ mod tests {
     #[test]
     fn restart_leaves_exactly_one_run_alive() {
         let mut run = start();
-        let mut pids = vec![run.pid()];
+        let mut retired = Vec::new();
 
         for _ in 0..3 {
+            // Retain the original process and job objects, not just their PID.
+            // Windows may recycle a retired PID for another parallel test;
+            // opening that number later cannot prove this run survived.
+            retired.push(Arc::clone(&run.shared));
             restart(&mut run);
-            pids.push(run.pid());
         }
 
         assert!(run.is_running());
@@ -1414,10 +1418,19 @@ mod tests {
             tree.contains(&run.pid()),
             "the replacement run owns its own process"
         );
-        for stale in pids.iter().filter(|pid| **pid != run.pid()) {
+        for stale in retired {
             assert!(
-                !super::win::is_process_alive(*stale),
-                "restart left a duplicate instance behind: {pids:?}"
+                lock(&stale.child)
+                    .try_wait()
+                    .expect("the original process object can be observed")
+                    .is_some(),
+                "restart left the original run alive: {}",
+                stale.pid
+            );
+            let remaining = backend::tree_pids(&stale.tree).expect("the original job is readable");
+            assert!(
+                remaining.is_empty(),
+                "restart left descendants in the original job: {remaining:?}"
             );
         }
 

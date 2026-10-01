@@ -1379,6 +1379,136 @@ H05/H09/H10/H14/H15/H16 一并归 #69 的组合原生轮次。用户真实的
 **清理。** 临时 CDP 驱动脚本、验收截图与 fixture 目录已删除；`lch67-demo.exe` 与它起的进程
 已结束；`npm run dev` 的预览服务已停止；用户 `config.yaml` 已还原并核对 sha256。
 
+### 2026-10-01 — #85：借控制台不再主动让调用者丢控制台（D-037，#82 后续）
+
+**做了什么。** 接手 `handoff-console-borrow.md` 的两份 WIP（`8656c51`、`4d6d471`），
+在 worktree `silly-heyrovsky-01f4fc`、基线 `2748b82` 上整合。这个基线已经包含 #83 的 D-035
+和 #84 的 D-036，因此本片使用 **D-037**，不是交接稿预留的 D-036。窗口查询与优雅停止统一
+借控制台，先记录原成员、结束后恢复，目标 attach 失败和 panic 都走归还；托管和独立 run
+的 preparation 与实际 spawn 一起认领。`prepare` / `prepare_windowed` 的 flags 规则及
+D-007 的停止阶梯不变。没有 UI、配置格式或日志策略改动。
+
+**接手审查补上的三件事。** 交接代码只锁 spawn，而 D-035 在它之前读控制台选 flags；现将
+两步放进同一段临界区。`GetConsoleProcessList` 缓冲区不足时不写 PID，原来的截断会使用 PID 0；
+现拒绝 oversized、无效与读失败的列表。最后，原控制台的全部成员可能在借用期间离开，原对象
+一旦销毁就无法恢复；现显式归还后才返回结果，失败诊断并返回 `None`，不再静默声称成功。
+不增加 keeper，也不宣称能抵御原成员全部退出／detach。诊断忽略 stderr 的写失败，不在 Drop
+里造成第二次 panic；停止另外保留已经发生的投递结果，不让恢复失败把已投递记成未投递。
+
+**第 1 层（本轮自动）。** Windows 11 Pro（10.0.26300），本机工具链，非 CI 读数：
+
+| 套件 | 结果 |
+| --- | --- |
+| `npm run check` / `npm run build` | 通过 |
+| `npm test` | **288 passed，20 files** |
+| `npm run lint` / `npm run format:check` | 通过 |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo clippy --all-targets -- -D warnings` | 通过；第一次整合报 unused import，移除后复验通过 |
+| `cargo test` | **541 lib + 17 integration，0 failed** |
+
+新增 6 条测试（基线 535 lib）：孤立控制台路由、真实借用与归还、互斥、列表 63/64/65 边界、
+多候选恢复与全失败、run preparation 等待认领。真实借用用 `CREATE_NO_WINDOW` 的 `ping.exe`
+作独立控制台，结束时只 kill/wait 自己的直接子进程；同一条用例还检查 PID 0 attach 失败与
+`catch_unwind` 后的成员状态。环境不允许借用时不空等 10 秒，仍检查调用者成员未被改变。
+独立窗口现有用例在环境拒绝时检查诚实的阴性，在允许时仍检查可见窗口；没有忽略测试或放宽
+超时。真实 borrowed 分支是否能执行仍由运行环境决定，不能把拒绝分支通过写成已覆盖成功 attach。
+
+`npm ci` 有 `EBADENGINE` 警告（本机 Node `v25.2.1` 不在 `vitest@5.0.2` 声明的范围内），
+实际前端检查通过；Vite 保留既有大 chunk 提示。本轮没有为了消除警告改依赖或构建策略。
+
+**读数（交接继承，不是本轮新测）。** 前序 worktree `wizardly-dewdney-0635da` 的记录采用
+`EnumWindows` 可见宿主 HWND 的前后集合差，而不是只比标题或进程数。它的旧基线是 `2025938`，
+**尚未包含 D-035**；下面不能当作 `2748b82` 的新 before/after：
+
+| 前序树／运行 | 新增可见控制台宿主窗口 | 边界 |
+| --- | --- | --- |
+| `2025938`，第 1 次全 lib | 7 | 标题均为 `C:\WINDOWS\system32\cmd.exe` |
+| `2025938`，第 2 次全 lib | 16 | 同上 |
+| 中间版，只用单个恢复候选 | 11 | 候选退出会让恢复静默失败，促成改用完整已读成员名单 |
+| 交接最终版，全 lib，第 1 次 | 1 | 仍有独立窗口路径 |
+| 交接最终版，全 lib，第 2–3 次 | 0–2 | 共享桌面，不能据此保证零残留 |
+
+前序还记录：每个 `process::independent::tests::*` 单跑新增 0，`process::` 并行约 1；
+`pty::`、`session::`、`logging::`、`tray::`、`app::`、`config::`、`window::` 分组各新增 0。
+这些读数来自交接文本，原始 `scratch/` 文件未复制到当前 worktree；本轮没有重新枚举窗口，
+所以只注明出处，不把继承的结果包装成本轮测量。
+
+**测试卫生的决定。** 保留真实 `display: window` 测试，它们要验证的就是独立控制台及其窗口。
+交接将剩余 0–2 个窗口解释为 Windows Terminal 的 `closeOnExit: graceful` 保留异常退出 pane，
+或宿主接管晚于 run 的强制结束；这是合理的残留机制，但本轮没有对每个残留 HWND 证明归属，
+故不写成已排他的根因。run PID 消失后也无法靠 PID 查回迟到的宿主窗口。不能为了收干净桌面
+关闭整个 Windows Terminal 或按 `cmd.exe` 标题清理：同一宿主可含其他会话和用户自己的终端。
+修复的是 borrow 侧对调用者的破坏，不承诺独立窗口测试绝不留下宿主 pane。
+
+**关于全量抖动。** 前序同一共享机器记录旧基线 4/4 通过、修复版 8 次中 3 次在 50–53 秒的
+慢轮失败；失败属 ConPTY／进程树结束等待（包括 `an_ended_terminal_keeps_its_output_until_it_is_removed`、
+`a_saved_terminal_is_no_longer_the_windows_to_remove`、`an_externally_killed_shell_is_observed_as_exited`）。
+跳过 `console::` 的 4/4 通过，跳过两条重测试的 4 次仍有 1 次失败；这些相关性**不足以排除回归**。
+D-035 的记录同时有 main/CI 的同族失败。本轮不修改 ConPTY、不加重试到测试里、不放宽断言；
+新的完整检查结果见上表，不宣称一次绿就根治了共享负载下的抖动。
+
+本轮实际复跑记录（同一共享桌面，源码版本不同则注明）：
+
+| 运行 | 结果 |
+| --- | --- |
+| 整合版第 1 次 `cargo test`（诊断／投递失败路径修正之前） | 541 lib + 17 integration 全通过；lib 18.25 秒 |
+| 换成直接 `ping.exe` 夹具后第 2 次 `cargo test` | 541 lib + 17 integration 全通过；lib 17.60 秒 |
+| 随后 `cargo test --lib` | **538 passed / 3 failed**；19.28 秒，后续串联的一次 lib 未执行 |
+| 未修改 `2748b82` 的归档源码 `cargo test --lib` | 535 passed；20.10 秒 |
+| 诊断／投递失败路径修正后的最终 `cargo test` | **541 lib + 17 integration 全通过**；17.89 / 7.70 秒 |
+| 三条失败测试分别单跑 3 次 | **9/9 passed** |
+
+这次失败不是交接里那三条超时的原样重现：
+
+- `process::tests::force_stop_removes_the_managed_tree_but_not_an_unrelated_process`：
+  `a process the supervisor never owned must survive, even with the same executable name`。
+- `process::tests::stop_ends_a_live_run_and_leaves_nothing_in_the_tree`：
+  `StopReport { outcome: Forced, exit: ExitStatus { code: Some(1) }, graceful_delivered: true }`，
+  断言要求 `Exited`。
+- `session::core::tests::terminal_tests::stopping_a_terminal_ends_the_processes_its_shell_started`：
+  `the shell's child should be running before the close`。
+
+基线对照用 `git archive HEAD` 写入当前 worktree 忽略的 `src-tauri/target/console-baseline-2748b82/`，
+复制本轮同源前端 `dist/`，共享编译缓存后顺序运行，**没有改动当前工作树的源码或切换分支**。
+一轮基线通过、最终版通过和单测 9/9 通过仍不能证明并行失败与修复无关；本轮未定位并行失败
+的机制，所以保留这项不稳定性，而不是称“已排除回归”。未弱化检查，CI 仍跑完整套件。
+
+**CI 后续：旧 PID 不是旧进程对象。** PR #86 的第一次 Windows CI
+（[run 36825044647](https://github.com/q956085398-netizen/Local-Console-Hub/actions/runs/36825044647)）
+在 `restart_leaves_exactly_one_run_alive` 失败：**540 passed / 1 failed**，lib 37.08 秒，
+`restart left a duplicate instance behind: [7316, 9256, 10040, 2704]`。
+同轮也输出一次 `could not restore the caller's console after borrowing`，所以不能将此前记录的
+best-effort 边界写成仅理论可能；这条诊断本身不证明它导致重启断言失败。
+
+旧测试把三个过去的数字 PID 存起来，最后重新打开这些数字询问是否存活；Windows 在原对象被
+释放后可将 PID 用于其他并行用例。这种询问**无法证明原 run 仍活着**，还会把等于当前 PID 的
+历史数字直接排除。因此改为保存各代原来的 `Arc<Shared>`（不添加公开 `Clone`），通过原来的
+`Child::try_wait` 检查原进程已退出，并通过原 Job 检查后代为空；当前代仍须存活且归属自己的
+Job。保留原 Job 也避免关闭 Job 的兜底清理掩盖不完整的显式 stop，断言没有弱化。
+
+本机在修改前单跑失败测试 1/1、并行 `process::tests::` 连跑 5 次（每次 13 条）、全 lib 1 次
+均通过；没有复现特定那轮 CI 的 PID 重用，也不能凭数字列表把那轮确诊为 PID 重用。
+这里修正的是已确定的测量缺陷，不宣称消除了之前所有生命周期抖动。
+
+为确认新断言会抓住真正的存活实例，临时在同一条用例省略 `restart`，保留原 run：用相同的
+`cargo test --lib process::tests::restart_leaves_exactly_one_run_alive -- --exact --nocapture`
+得到预期红灯（`restart left the original run alive: 45540`，0 passed / 1 failed，0.09 秒）。
+立即撤销该故障注入后，测试单跑通过；完整 `cargo test` 再次 **541 lib + 17 integration 全绿**
+（18.48 / 8.01 秒），Rust 格式、Clippy、debug build 均通过。故障注入不提交，超时、断言与 CI
+执行方式不放宽；此处记录的是本地修订验证，后续 CI 状态以 GitHub 为准。
+
+**未执行 / 留待。** 本轮没有启动真实 Hub，也没有驱动托盘、任务栏或窗口装饰；这项 Windows
+console 状态改动不能由浏览器 preview 证明，故未启动前端 dev server。没有新的桌面 before/after，
+没有 conhost 默认宿主机器复测，也没有在原控制台所有 peer 故意离开的真实测试进程中验证失败
+分支（候选全失败由纯测试覆盖）。H01/#69 的组合原生验收仍未因此通过。
+
+**清理。** 当前 worktree 未引入前序 `scratch/`，未复制或删除另一 worktree 的文件。
+本轮对照用的 `src-tauri/target/console-baseline-2748b82/` 源码快照在验证后删除。本轮不关闭
+任何按标题识别的桌面窗口；测试只清理自己持有的进程句柄。`dist/`、`node_modules/` 与 Cargo
+构建目录是忽略的本地构建输出，不提交。没有覆盖用户配置。
+
+---
+
 ## 7. 当前已知缺口与验收边界
 
 - **托盘验收已有通过记录。** 2026-09-29 的独立 Windows 桌面轮次确认 R-1 至 R-8 通过，见 §6。

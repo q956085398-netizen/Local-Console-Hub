@@ -19,8 +19,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Console::{
-    AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleProcessList, GetConsoleWindow,
-    CTRL_BREAK_EVENT,
+    GenerateConsoleCtrlEvent, GetConsoleProcessList, CTRL_BREAK_EVENT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next,
@@ -164,6 +163,23 @@ pub fn prepare_windowed(command: &mut Command) {
     command.creation_flags(CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
 }
 
+/// Start the run, on the console this process is on.
+///
+/// A child is given the console of whoever starts it, and what a run is
+/// supposed to inherit is *this* process's console (D-035). Another thread can
+/// have this process attached to somebody else's console for the length of a
+/// window lookup (D-037), so the spawn is made while the console is claimed:
+/// otherwise a run started at that moment is handed a console of its own —
+/// a window on the desktop, which is the very thing the run's creation flags
+/// exist to avoid (measured: a window per run started during a lookup).
+pub fn spawn(command: &mut Command, prepare: impl FnOnce(&mut Command)) -> std::io::Result<Child> {
+    let _console = crate::console::Console::claim();
+    // D-035 chooses flags by reading this process's console. That reading and
+    // CreateProcess must see the same console, not two sides of a borrow.
+    prepare(command);
+    command.spawn()
+}
+
 /// Create the run's job object, assign the suspended process, then let its
 /// initial thread execute.
 ///
@@ -302,30 +318,28 @@ pub fn wait_for_handle(handle: usize) -> Result<(), String> {
 ///
 /// A `CTRL_BREAK` only reaches processes that share a console with the caller, so
 /// a run living on a console of its own is reached by attaching to that console
-/// briefly. A run only has one of its own when the Hub has no console to inherit
-/// (`creation_flags_for`), which is the case this second half exists for.
+/// briefly. Both attempts are made under one claim on this process's console
+/// (D-037): the event is raised in *whichever* console this process is attached
+/// to, so a window lookup attached to another run's console at this moment would
+/// take the request with it — and a `CTRL_BREAK` that reports success into the
+/// wrong console is a rung of the stop ladder signing for a delivery nobody
+/// received (D-007).
 ///
 /// Delivery stays best-effort by design: a process with no console at all has
-/// nothing to deliver to, and that is not an error, because the force path is
-/// what guarantees the stop (`docs/DECISIONS.md` D-007).
+/// nothing to deliver to, and a console this process cannot borrow is one it
+/// keeps — either way the force path is what guarantees the stop.
 pub fn request_graceful_stop(pid: u32) -> bool {
+    let console = crate::console::Console::claim();
     unsafe {
         if GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0 {
             return true;
         }
-        if GetConsoleWindow() as usize != 0 {
-            // The Hub has a console of its own and the run is not on it, so
-            // there is nothing left to deliver the request to.
-            return false;
-        }
-        // A windowless build shares no console with the run; attach to the
-        // run's own console just long enough to deliver the request.
-        FreeConsole();
-        if AttachConsole(pid) == 0 {
-            return false;
-        }
-        let delivered = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0;
-        FreeConsole();
+        // Delivery and restoration are independent facts. Keep the delivery
+        // answer even if the caller's console cannot be restored afterwards.
+        let mut delivered = false;
+        let _ = console.borrow(pid, || {
+            delivered = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0;
+        });
         delivered
     }
 }
@@ -677,6 +691,42 @@ fn last_error(call: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn run_preparation_waits_for_the_console_claim() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let console = crate::console::Console::claim();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (prepared_tx, prepared_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let mut command = Command::new("lch-nonexistent-console-spawn-fixture.exe");
+            started_tx.send(()).unwrap();
+            spawn(&mut command, |command| {
+                prepare(command);
+                prepared_tx.send(()).unwrap();
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let prepared_while_borrowed = prepared_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        drop(console);
+        let prepared_after_release =
+            prepared_while_borrowed || prepared_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let result = waiter.join().unwrap();
+        assert!(
+            !prepared_while_borrowed,
+            "flag observation must wait for restoration"
+        );
+        assert!(
+            prepared_after_release,
+            "preparation must run after the claim is released"
+        );
+        assert!(
+            result.is_err(),
+            "the nonexistent fixture must not start a process"
+        );
+    }
+
     /// The rule the flags encode: a run is always its own process group and
     /// always starts suspended, and it is denied a console *window* only when
     /// the Hub has no console for it to inherit.
@@ -710,6 +760,7 @@ mod tests {
     /// for a process that has one.
     #[test]
     fn having_a_console_is_read_from_the_consoles_membership() {
+        let _console = crate::console::Console::claim();
         // Whichever way the test runner was started, the two readings have to
         // agree with each other: `has_console` is true exactly when the console
         // reports members.
