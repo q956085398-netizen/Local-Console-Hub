@@ -1146,7 +1146,14 @@ WindowsTerminal 进程）：
 停止投递，事件会落在另一个控制台里），而在有控制台的开发态 Hub 里还会抛掉开发者自己的控制台。
 本片只记录现象与读数，不改这条路径。
 
-**合并 #66 时看到的一次抖动（如实记录，未归因）。** 5 次全量里有 1 次失败在
+**同一条断言位置在 CI 上也抖过（这条为 PR #83 的第一次失败补记）。** 本片第一次 CI 失败在
+`tests/mvp_matrix.rs:200` 的 `the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace`
+（`timed out waiting for the temporary shell to end`），与本片无关：**同一条位置、同一类消息在
+`main` 上已经失败过**——`#81` 那次 main 的 CI（run 36766198494）挂在
+`a_saved_terminal_joins_a_real_config_and_keeps_its_run` 的「`timed out waiting for the saved
+terminal to end`」，也是 `mvp_matrix.rs:200`。该位置等的是**PTY 会话**结束，本片不碰 PTY；同一
+版本在本机跑 `cargo test` 时 17 条集成用例全通过。因此按抖动处理（重跑），并把这条对应关系留在
+这里，供后来者判断这类失败时不必再从零查一遍。这个位置本身值得单独收口（超时窗口对负载敏感）。 5 次全量里有 1 次失败在
 `session::core::tests::terminal_tests::a_shell_that_exits_first_still_ends_its_tree_before_the_session_ends`
 与 `temporary_tests::an_ended_terminal_keeps_its_output_until_it_is_removed`（两条都是 ConPTY 进程树
 断言），单独跑这两条 3/3 通过。本片唯一的产物改动是受监督 run 的创建 flag，与 PTY 路径无关，但
