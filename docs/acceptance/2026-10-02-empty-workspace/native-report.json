@@ -1,0 +1,697 @@
+{
+  "startedAt": "2026-10-02T12:54:28.957Z",
+  "sourceCommit": "311714430f05f24a15fffbbefa7927390ff50f3f",
+  "sourceStatus": "M docs/USER_GUIDE.md\n M scripts/native-acceptance.mjs\n M src/app/App.css\n M src/app/App.tsx\n M src/components/config-diagnostics/ConfigDiagnostics.tsx\n M src/components/sidebar/Sidebar.tsx\n?? src/app/App.test.ts",
+  "binary": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\debug\\local-console-hub.exe",
+  "binarySha256": "c74b78755e3add8800a819962f567adea33cb2f6fcd225ea6c65c1a53692a7f9",
+  "platform": "win32",
+  "node": "v25.2.1",
+  "windowsRelease": "10.0.26300",
+  "architecture": "x64",
+  "scriptSha256": "bebb5b945bc3cf93b7416ee2105d461dd22824d31b2c581a684bc7792f556564",
+  "backendPathsSha256": "d90a080e298ded7d6c0e1eb0b64f9fcf618b32f62a0120127ce14c45beac1671",
+  "cargoManifestSha256": "9af80b8ccffcce87493ff86f66a546b2c5a84f6e82707470f079336152929057",
+  "execution": "signed-in Windows user; serial; real Tauri WebView2 and IPC",
+  "results": [
+    {
+      "name": "saved application removal: cancel, running refusal, persistence and restart",
+      "status": "passed",
+      "milliseconds": 4156,
+      "evidence": {
+        "cancellation": true,
+        "runningRemovalRefused": true,
+        "otherEntriesPreserved": true,
+        "absentAfterRestart": true
+      }
+    },
+    {
+      "name": "configured application shortcut: cold launch and running reuse",
+      "status": "passed",
+      "milliseconds": 5135,
+      "evidence": {
+        "entry": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\application-entry\\Application entry.lnk",
+        "target": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\debug\\local-console-hub.exe",
+        "arguments": "--open-app service",
+        "icon": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\debug\\local-console-hub.exe,0",
+        "hubs": [
+          {
+            "ProcessId": 71788,
+            "ExecutablePath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\debug\\local-console-hub.exe"
+          }
+        ],
+        "servicePid": 83996,
+        "configurationUnchanged": true,
+        "unknownIdResponse": {
+          "delivered": false,
+          "message": "no session is registered as `missing-saved-application`"
+        }
+      }
+    },
+    {
+      "name": "isolated real backend connection",
+      "status": "passed",
+      "milliseconds": 1440,
+      "evidence": {
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\roaming\\LocalConsoleHub\\config.yaml",
+        "binarySha256": "c74b78755e3add8800a819962f567adea33cb2f6fcd225ea6c65c1a53692a7f9"
+      }
+    },
+    {
+      "name": "T-11 terminal purpose and close impact",
+      "status": "passed",
+      "milliseconds": 600
+    },
+    {
+      "name": "manual recording starts and stops in the real window",
+      "status": "passed",
+      "milliseconds": 394,
+      "evidence": {
+        "sessionId": "manual",
+        "mode": "manual",
+        "source": "captured",
+        "state": "capturing",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-10\\2026-10-02_20-54-40__run-1a0fcae5bfd0001.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\manual\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real terminal keyboard input reaches ConPTY",
+      "status": "passed",
+      "milliseconds": 580,
+      "evidence": {
+        "sessionId": "manual",
+        "marker": "LCH_NATIVE_ROUNDTRIP_57",
+        "generation": 1
+      }
+    },
+    {
+      "name": "save reports an existing log and enables its file action",
+      "status": "passed",
+      "milliseconds": 547,
+      "evidence": {
+        "sessionId": "service",
+        "mode": "on_error",
+        "source": "captured",
+        "state": "on_error",
+        "logFile": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-10\\2026-10-02_20-54-41__run-1a0fcae60360002.log",
+        "logFilePresent": true,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\service\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 93,
+          "lines": 3,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": null
+      }
+    },
+    {
+      "name": "real log write failure remains visible and never says success",
+      "status": "passed",
+      "milliseconds": 363,
+      "evidence": {
+        "sessionId": "write-error",
+        "mode": "manual",
+        "source": "captured",
+        "state": "off",
+        "logFile": null,
+        "logFilePresent": false,
+        "externalLog": null,
+        "sessionLogDir": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-10",
+        "recordsInput": false,
+        "buffer": {
+          "bytes": 195,
+          "lines": 1,
+          "droppedBytes": 0
+        },
+        "truncated": false,
+        "lastError": {
+          "operation": "creating the log directory",
+          "message": "something is already in the way of that path — remove or rename it, or configure a different log location (当文件已存在时，无法创建该文件。 (os error 183))",
+          "path": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\valid\\local\\LocalConsoleHub\\logs\\write-error\\2026-10"
+        }
+      }
+    },
+    {
+      "name": "frontend reload preserves latest backend running sessions",
+      "status": "passed",
+      "milliseconds": 118
+    },
+    {
+      "name": "H03/H07: empty workspace creates distinct focused temporary terminals",
+      "status": "passed",
+      "milliseconds": 785,
+      "evidence": [
+        {
+          "sessionId": "terminal-1a0fcae6b6e0001",
+          "status": "running",
+          "pid": 86148,
+          "runId": "1a0fcae6b700000",
+          "startedAt": "2026-10-02T12:54:44Z",
+          "exitCode": null,
+          "ptyAttached": true,
+          "external": false,
+          "logging": {
+            "mode": "off",
+            "source": "none",
+            "external_path": null
+          },
+          "buffer": {
+            "bytes": 120,
+            "lines": 18,
+            "droppedBytes": 0
+          },
+          "health": null,
+          "lastError": null
+        },
+        {
+          "sessionId": "terminal-1a0fcae6cec0002",
+          "status": "running",
+          "pid": 112116,
+          "runId": "1a0fcae6ced0001",
+          "startedAt": "2026-10-02T12:54:44Z",
+          "exitCode": null,
+          "ptyAttached": true,
+          "external": false,
+          "logging": {
+            "mode": "off",
+            "source": "none",
+            "external_path": null
+          },
+          "buffer": {
+            "bytes": 16,
+            "lines": 0,
+            "droppedBytes": 0
+          },
+          "health": null,
+          "lastError": null
+        }
+      ]
+    },
+    {
+      "name": "H05: keyboard execution, Ctrl+C and subsequent execution",
+      "status": "passed",
+      "milliseconds": 1379
+    },
+    {
+      "name": "H15: OS window close hides Hub while terminal output continues and entry restores interaction",
+      "status": "passed",
+      "milliseconds": 6497,
+      "evidence": {
+        "hubPid": 97268,
+        "windowHandle": 1572958,
+        "producedWhileHidden": "HIDDEN69_6",
+        "restoredInteraction": true,
+        "boundary": "OS WM_CLOSE and executable entry; tray gesture remains manual"
+      }
+    },
+    {
+      "name": "H08: save terminal launch method without restarting or recording commands",
+      "status": "passed",
+      "milliseconds": 345,
+      "evidence": {
+        "sessionId": "terminal-1a0fcae6cec0002",
+        "pid": 112116,
+        "configSha256": "af9ff2d71ecda9563ae9a35fc60b8fc20ecad459d73d39636be65430017046c3"
+      }
+    },
+    {
+      "name": "H09/H10: add and activate an internal application through the real form",
+      "status": "passed",
+      "milliseconds": 515,
+      "evidence": {
+        "sessionId": "daily-internal-app",
+        "pid": 97164
+      }
+    },
+    {
+      "name": "H09: read-only config refuses real form save without changing file or registry",
+      "status": "passed",
+      "milliseconds": 360,
+      "evidence": {
+        "error": "`C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\daily\\roaming\\LocalConsoleHub\\config.yaml` could not be written: 拒绝访问。 (os error 5)",
+        "configurationUnchanged": true,
+        "registryUnchanged": true
+      }
+    },
+    {
+      "name": "H09: malformed external edit refuses save and preserves every byte",
+      "status": "passed",
+      "milliseconds": 290
+    },
+    {
+      "name": "H08/H14: closing a terminal reclaims its child and preserves other work",
+      "status": "passed",
+      "milliseconds": 1092,
+      "evidence": {
+        "shellPid": 86148,
+        "childPid": 113020,
+        "survivorPid": 112116,
+        "sentinelPid": 37576
+      }
+    },
+    {
+      "name": "H08/H09: restart restores saved configurations and discards unsaved terminals",
+      "status": "passed",
+      "milliseconds": 2804,
+      "evidence": {
+        "restored": [
+          {
+            "id": "daily-internal-app",
+            "name": "Daily Internal App",
+            "sessionType": "service",
+            "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub",
+            "command": "cmd.exe /c ping -n 120 127.0.0.1",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "on_error",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "terminal-1a0fcae6cec0002",
+            "name": "Daily Saved Shell",
+            "sessionType": "terminal",
+            "cwd": "C:\\Users\\q9560",
+            "shell": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "off",
+              "source": "none"
+            }
+          }
+        ],
+        "discardedUnsavedId": "terminal-1a0fcae970a0003",
+        "discardedUnsavedPid": 102424
+      }
+    },
+    {
+      "name": "H06: real shell executes in Unicode cwd and invalid cwd creates no session",
+      "status": "passed",
+      "milliseconds": 3320,
+      "evidence": {
+        "shell": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"",
+        "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\directory\\work space 工作目录",
+        "output": "\u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[H\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe\u0007\u001b[?25hPowerShell 7.6.6\r\n\u001b[?25l\u001b[HPowerShell 7.6.6\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[2;1H\u001b[?25hPS C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\directory\\work space 工作目录> \u001b[?25l\u001b[2;121H> \u001b[93mWrite-Output \u001b[37m(\u001b[36m'FALLBACK69_' \u001b[90m+ \u001b[36m'READY'\u001b[37m); (\u001b[93mGet-Location\u001b[37m).Path; \u001b[92m$PSVersionTable\u001b[37m.PSVersion.Major\r\n\u001b[?25h\u001b[mFALLBACK69_READY\r\nC:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\directory\\work space 工作目录\r\n7\r\nPS C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\directory\\work space 工作目录> ",
+        "missingDirectoryCreatedNoSession": true,
+        "invalidDirectoryResponse": {
+          "from": null,
+          "kind": "failed",
+          "message": "the working directory `C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\directory\\missing-directory` does not exist or is not a directory",
+          "operation": "create_terminal",
+          "sessionId": "terminal-1a0fcaeae4d0002"
+        },
+        "environmentBoundary": "Installed shell exercised; no-PowerShell-7 native acceptance remains not run"
+      }
+    },
+    {
+      "name": "H12: actual executable recommendation remains manually changeable in real form",
+      "status": "passed",
+      "milliseconds": 2697,
+      "evidence": {
+        "advice": {
+          "recommended": "window",
+          "reason": "`C:\\Windows\\system32\\cmd.exe` 自带控制台（控制台子系统程序），独立窗口模式下它会显示自己的窗口和控制台，Hub 不会重复内嵌。",
+          "program": "C:\\Windows\\system32\\cmd.exe"
+        },
+        "savedDisplay": "internal",
+        "unknownAdvice": {
+          "reason": "找不到 `unknown-launcher-69.exe`，无法确认它的启动方式；两种显示方式都可以，请按需要选择。"
+        }
+      }
+    },
+    {
+      "name": "H11: external identity association does not create or acquire ownership of another process",
+      "status": "passed",
+      "milliseconds": 2595,
+      "evidence": {
+        "externalPid": 106128,
+        "result": {
+          "runtime": {
+            "sessionId": "external69",
+            "status": "running",
+            "pid": 106128,
+            "runId": null,
+            "startedAt": "2026-10-02T12:55:04Z",
+            "exitCode": null,
+            "ptyAttached": false,
+            "external": true,
+            "logging": {
+              "mode": "off",
+              "source": "none",
+              "external_path": null
+            },
+            "buffer": {
+              "bytes": 0,
+              "lines": 0,
+              "droppedBytes": 0
+            },
+            "health": null,
+            "lastError": null
+          },
+          "started": false,
+          "window": {
+            "outcome": "no_window",
+            "notice": "应用已经在运行，但现在没有可以唤起的窗口。\n\n它使用的是独立窗口显示；如果窗口还没出现，稍后再点一次即可。Hub 不会为此再启动一份。"
+          }
+        },
+        "repeated": {
+          "runtime": {
+            "sessionId": "external69",
+            "status": "running",
+            "pid": 106128,
+            "runId": null,
+            "startedAt": "2026-10-02T12:55:04Z",
+            "exitCode": null,
+            "ptyAttached": false,
+            "external": true,
+            "logging": {
+              "mode": "off",
+              "source": "none",
+              "external_path": null
+            },
+            "buffer": {
+              "bytes": 0,
+              "lines": 0,
+              "droppedBytes": 0
+            },
+            "health": null,
+            "lastError": null
+          },
+          "started": false,
+          "window": {
+            "outcome": "no_window",
+            "notice": "应用已经在运行，但现在没有可以唤起的窗口。\n\n它使用的是独立窗口显示；如果窗口还没出现，稍后再点一次即可。Hub 不会为此再启动一份。"
+          }
+        },
+        "survivedHubCleanup": true,
+        "boundary": "No-window console fixture; actual launcher foreground switching remains manual"
+      }
+    },
+    {
+      "name": "application form: real directory scan, URL persistence and option colors",
+      "status": "passed",
+      "milliseconds": 2143,
+      "evidence": {
+        "nativePicker": "not run; directory scan checked over real IPC",
+        "saved": {
+          "id": "app",
+          "name": "示例应用 空格",
+          "sessionType": "service",
+          "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\form-discovery\\示例应用 空格",
+          "command": "\"C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\form-discovery\\示例应用 空格\\启动.cmd\"",
+          "url": "https://example.com/my-app",
+          "port": 8191,
+          "display": "internal",
+          "lifecycle": "managed",
+          "logging": {
+            "mode": "on_error",
+            "source": "captured"
+          }
+        },
+        "colors": {
+          "scheme": "dark",
+          "foreground": "rgb(236, 236, 232)",
+          "background": "rgb(18, 19, 24)"
+        },
+        "neverStarted": true,
+        "boundary": "Native folder/file selection, automatic candidate prefill and popup visual contrast remain manual"
+      }
+    },
+    {
+      "name": "native configuration diagnostics: mixed-config",
+      "status": "passed",
+      "milliseconds": 2030,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\mixed-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [
+          {
+            "id": "manual",
+            "name": "Manual Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "powershell",
+            "name": "PowerShell",
+            "sessionType": "terminal",
+            "cwd": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub",
+            "purpose": "日常交互终端，跑一次性命令与 REPL。",
+            "closeImpact": "仅结束本终端；不会停止其它受管服务。",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "off",
+              "source": "none"
+            }
+          },
+          {
+            "id": "service",
+            "name": "Save Service",
+            "sessionType": "service",
+            "cwd": ".",
+            "command": "cmd.exe /c ping -n 120 127.0.0.1",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "on_error",
+              "source": "captured"
+            }
+          },
+          {
+            "id": "write-error",
+            "name": "Write Error Terminal",
+            "sessionType": "terminal",
+            "cwd": ".",
+            "shell": "powershell",
+            "display": "internal",
+            "lifecycle": "managed",
+            "logging": {
+              "mode": "manual",
+              "source": "captured"
+            }
+          }
+        ],
+        "errors": [
+          {
+            "index": 5,
+            "sessionId": "invalid",
+            "field": "type",
+            "message": "unsupported type `nonsense` — use `service` (managed process) or `terminal` (interactive shell)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: bad-yaml",
+      "status": "passed",
+      "milliseconds": 1825,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\bad-yaml\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "message": "config file is not valid YAML: did not find expected node content at line 2 column 1, while parsing a flow node"
+          }
+        ]
+      }
+    },
+    {
+      "name": "native configuration diagnostics: missing-config",
+      "status": "passed",
+      "milliseconds": 2155,
+      "evidence": {
+        "fileStatus": "missing",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\missing-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: empty-config",
+      "status": "passed",
+      "milliseconds": 1989,
+      "evidence": {
+        "fileStatus": "loaded",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\empty-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "native configuration diagnostics: unreadable-config",
+      "status": "passed",
+      "milliseconds": 2030,
+      "evidence": {
+        "fileStatus": "unreadable",
+        "configPath": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml",
+        "sessions": [],
+        "errors": [
+          {
+            "index": 0,
+            "field": "configPath",
+            "message": "无法读取配置文件 `C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\.scratch\\native-acceptance\\run-hfJUIR\\unreadable-config\\roaming\\LocalConsoleHub\\config.yaml`：拒绝访问。 (os error 5)。请检查文件权限后重启应用。"
+          }
+        ]
+      }
+    }
+  ],
+  "exclusions": [
+    "Native tray menu clicks",
+    "Installation/MSI and installed-version acceptance",
+    "Whole-window decorations and taskbar/icon appearance"
+  ],
+  "cleanup": [
+    {
+      "scenario": "removal",
+      "launcherPid": 81784,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "removal",
+      "launcherPid": 21816,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "application-entry",
+      "launcherPid": 9284,
+      "hubPids": [
+        71788
+      ],
+      "sessionPids": [
+        83996
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "valid",
+      "launcherPid": 37788,
+      "hubPids": [],
+      "sessionPids": [
+        69280,
+        109600,
+        15124,
+        78236
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "daily",
+      "launcherPid": 97268,
+      "hubPids": [],
+      "sessionPids": [
+        97164,
+        112116,
+        102424
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "daily",
+      "launcherPid": 56504,
+      "hubPids": [],
+      "sessionPids": [
+        107924
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "directory",
+      "launcherPid": 54788,
+      "hubPids": [],
+      "sessionPids": [
+        68144
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "recommendation",
+      "launcherPid": 36056,
+      "hubPids": [],
+      "sessionPids": [
+        98852
+      ],
+      "status": "passed"
+    },
+    {
+      "scenario": "external-association",
+      "launcherPid": 55052,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "form-discovery",
+      "launcherPid": 92068,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "mixed-config",
+      "launcherPid": 99188,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "bad-yaml",
+      "launcherPid": 80268,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "missing-config",
+      "launcherPid": 88140,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "empty-config",
+      "launcherPid": 62392,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "unreadable-config",
+      "launcherPid": 82140,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    }
+  ],
+  "userConfigurationUnchanged": true,
+  "finishedAt": "2026-10-02T12:55:19.352Z"
+}

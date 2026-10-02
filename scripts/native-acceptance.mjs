@@ -572,11 +572,8 @@ async function verifyExistingFlows() {
       return info;
     });
     await check("real terminal keyboard input reaches ConPTY", async () => {
-      await page.getByRole("tab", { name: "终端", exact: true }).click();
-      await page.locator(".xterm-helper-textarea").focus();
       // Assemble the output marker so its appearance cannot be just input echo.
-      await page.keyboard.type("Write-Output ('LCH_NATIVE_' + 'ROUNDTRIP_57')");
-      await page.keyboard.press("Enter");
+      await typeCommand(page, "Write-Output ('LCH_NATIVE_' + 'ROUNDTRIP_57')");
       const marker = "LCH_NATIVE_ROUNDTRIP_57";
       const attachment = await until(
         () => ipc(page, "attach_terminal", { sessionId: "manual" }),
@@ -1263,15 +1260,39 @@ async function verifyExistingFlows() {
       4,
     ],
     ["bad-yaml", "sessions: [\n", /YAML|yaml/, 0],
-    ["missing-config", null, /首次运行/, 0],
-    ["empty-config", "", /配置文件中还没有定义会话/, 0],
+    ["missing-config", null, null, 0],
+    ["empty-config", "", null, 0],
     ["unreadable-config", { directory: true }, /无法读取配置文件/, 0],
   ];
   for (const [name, config, expected, sessionCount] of scenarios) {
     await check(`native configuration diagnostics: ${name}`, async () => {
       const app = await launch(name, config);
       try {
-        assert.match(await app.page.locator('[aria-label="配置诊断"]').innerText(), expected);
+        if (expected) {
+          assert.match(await app.page.locator('[aria-label="配置诊断"]').innerText(), expected);
+        } else {
+          // First launch is the normal workspace, with no prerequisite session
+          // or config warning. Merely opening it must not create config data.
+          const before = await optionalHash(app.configPath);
+          assert.equal(await app.page.locator('[aria-label="配置诊断"]').count(), 0);
+          assert.ok(await app.page.locator(".app-main__rail").isVisible());
+          assert.ok(await app.page.getByRole("searchbox", { name: "搜索会话" }).isVisible());
+          assert.ok(
+            await app.page
+              .locator(".sidebar__foot")
+              .getByRole("button", { name: "新建 PowerShell" })
+              .isVisible(),
+          );
+          assert.ok(
+            await app.page.getByRole("button", { name: "添加应用", exact: true }).isVisible(),
+          );
+          assert.equal(await app.page.locator(".session-row").count(), 0);
+          assert.equal(await app.page.locator(".xterm").count(), 0);
+          assert.equal(await app.page.getByRole("tab").count(), 0);
+          assert.match(await app.page.locator(".workspace__empty-hint").innerText(), /左下方/);
+          assert.equal(await optionalHash(app.configPath), before);
+          if (name === "missing-config") assert.equal(before, null);
+        }
         assert.equal((await ipc(app.page, "list_sessions")).length, sessionCount);
         await screenshot(app.page, name);
         return app.configReport;

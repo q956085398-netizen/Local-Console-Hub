@@ -48,7 +48,7 @@ export default function ConfigDiagnostics({
         ? `其余 ${sessionCount} 个有效会话仍可使用。修复配置后重启应用以重新加载。`
         : "没有有效会话可显示；请修复下面的问题并重启应用。"
       : firstRun
-        ? "配置文件尚未创建，属于首次运行。添加会话配置后重启应用。"
+        ? "首次使用，请点击下方“添加应用”保存常用应用，或点击“新建 PowerShell”直接打开终端。"
         : validEmpty
           ? "配置文件可正常读取，但当前没有会话条目。"
           : pending
