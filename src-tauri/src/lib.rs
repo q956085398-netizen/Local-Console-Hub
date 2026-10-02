@@ -151,6 +151,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ipc::discovery::pick_application_path,
+            ipc::discovery::scan_application_directory,
             ipc::ping,
             ipc::launch::take_launch_focus,
             ipc::session::get_config_report,
@@ -158,6 +160,7 @@ pub fn run() {
             ipc::session::list_session_configs,
             ipc::session::create_temporary_terminal,
             ipc::session::remove_session,
+            ipc::session::remove_application,
             ipc::session::add_application,
             ipc::session::recommend_display,
             ipc::session::save_terminal_config,

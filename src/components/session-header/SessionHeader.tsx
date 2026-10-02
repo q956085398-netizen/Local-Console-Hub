@@ -231,6 +231,19 @@ export default function SessionHeader({
                   </MenuItem>
                 )}
                 <div className="more-menu__separator" role="separator" />
+                {config.temporary !== true && (
+                  <MenuItem
+                    destructive
+                    disabled={busy}
+                    title="移除已保存的启动配置，不删除应用文件"
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      onAction("remove-application");
+                    }}
+                  >
+                    从受管名单移除
+                  </MenuItem>
+                )}
                 {config.temporary === true && (
                   <MenuItem
                     destructive

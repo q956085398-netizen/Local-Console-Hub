@@ -45,7 +45,7 @@ CI 也不产出安装包。后果是第一次运行时 Windows SmartScreen 会�
 
 | 内容 | 位置 | 谁写 |
 | --- | --- | --- |
-| 配置 | `%APPDATA%\LocalConsoleHub\config.yaml` | 用户（Hub 只读） |
+| 配置 | `%APPDATA%\LocalConsoleHub\config.yaml` | 用户及 Hub 添加/保存/移除配置流程 |
 | 日志 | `%LOCALAPPDATA%\LocalConsoleHub\logs\<session_id>\<YYYY-MM>\` | Session Core |
 | 运行元数据 | `%LOCALAPPDATA%\LocalConsoleHub\metadata\<session_id>\<YYYY-MM>\` | Session Core |
 | 缓存 | `%LOCALAPPDATA%\LocalConsoleHub\cache\` | Hub |
@@ -310,3 +310,7 @@ WiX 3.14 与 NSIS 用既有缓存。这一轮只验一件事：确认页上那�
 
 **没跑 / 归人眼。** 复选框文字会不会在高 DPI 下被裁掉是**外观**问题：`GetWindowTextW`
 拿到的永远是完整句子，量不出裁没裁。本机 100% DPI、浅色主题下截图看过一次，其余归人眼。
+
+## 2026-10-02 — v0.1.0 初版交付
+
+完整回归、27 项真实窗口检查、无 acceptance 的正式安装包、清理与同步范围见 [交付记录](acceptance/2026-10-02-v0.1.0/DELIVERY.md)。安装构建成功与历史用户确认分别记录，不把它们等同于本轮安装/升级/MSI 视觉检查通过。

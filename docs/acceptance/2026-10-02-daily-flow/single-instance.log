@@ -1,0 +1,126 @@
+
+== #60 single-instance entry: Windows measurements ==
+
+Entry under test
+  path      : C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe
+  size      : 11780608 bytes
+  sha256    : 5F466EF75E1809352A13B867591A4B35B6267B0A38214E15D6F9511A646D3BDC
+  subsystem : WINDOWS_GUI
+  Start menu shortcut points at: E:\Local Console Hub\local-console-hub.exe
+
+== H01 opening the daily entry ==
+  [PASS] H01 exactly one Hub process after opening
+         expected: 1
+         actual:   1
+  [PASS] H01 the Hub process is alive and responding
+         expected: HasExited=False, Responding=True
+         actual:   HasExited=False, Responding=True
+  [PASS] H01 the entry is not a console program
+         expected: WINDOWS_GUI
+         actual:   WINDOWS_GUI
+  [PASS] H01 a window exists
+         expected: at least one titled top-level window
+         actual:   hwnd=4261616 class=Tauri Window 1294x808
+  [PASS] H01 the Hub process owns no console (no extra terminal on the taskbar)
+         expected: False
+         actual:   False
+  [PASS] H01 no conhost or shell in the Hub process tree
+         expected: 0
+         actual:   0
+  (process identity: pid=32708 parent=17684 path=C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe)
+  (entry used: the script started "C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe"; the Start menu shortcut points at "E:\Local Console Hub\local-console-hub.exe")
+
+== H02 opening the same entry again ==
+  [PASS] H02 the second launch ends within the bound
+         expected: exit code 0 (handed to the running Hub)
+         actual:   exit code 0
+  [PASS] H02 still exactly one Hub process
+         expected: 1
+         actual:   1
+  [PASS] H02 the normal open restored the same Hub window
+         expected: a window of the same pid, visible
+         actual:   hwnd=4261616 visible=True
+  [PASS] H02 the normal open started no terminal
+         expected: 0 terminal processes
+         actual:   0
+
+== The normal restore path: minimized and hidden ==
+  [PASS] minimized takes the window off the desktop, the Hub keeps running
+         expected: iconic=True, Hub still running
+         actual:   visible=True iconic=True, Hub processes=1
+  (minimized: ShowWindow(SW_MINIMIZE))
+  [PASS] minimized then open again restores the window
+         expected: visible and not minimized, delivered with exit code 0
+         actual:   visible=True iconic=False exit code=0
+  [PASS] minimized leaves exactly one Hub process
+         expected: 1
+         actual:   1
+  [PASS] closed (hidden to the tray) takes the window off the desktop, the Hub keeps running
+         expected: visible=False, Hub still running
+         actual:   visible=False iconic=False, Hub processes=1
+  (closed (hidden to the tray): PostMessage(WM_CLOSE))
+  [PASS] closed (hidden to the tray) then open again restores the window
+         expected: visible and not minimized, delivered with exit code 0
+         actual:   visible=True iconic=False exit code=0
+  [PASS] closed (hidden to the tray) leaves exactly one Hub process
+         expected: 1
+         actual:   1
+
+== H02 cold-start race: two processes started almost together ==
+  [PASS] cleared before the race
+         expected: 0
+         actual:   0
+  [PASS] exactly one Hub survives the race
+         expected: 1
+         actual:   1 (pid 96492)
+  [PASS] one side handed over and ended
+         expected: one exits 0, the other keeps running
+         actual:   first exit=still running, second exit=0
+  [PASS] the winner has a window
+         expected: at least one titled top-level window
+         actual:   pid=96492 hwnd=920416
+  [PASS] the winner owns no console
+         expected: False
+         actual:   False
+
+Cleanup: ending the Hub processes this script started.
+  [PASS] no Hub process left behind
+         expected: 0
+         actual:   0
+
+== Summary ==
+
+Check                                                                               Expected                                              Actual                                      Result
+-----                                                                               --------                                              ------                                      ------
+H01 exactly one Hub process after opening                                           1                                                     1                                           PASS  
+H01 the Hub process is alive and responding                                         HasExited=False, Responding=True                      HasExited=False, Responding=True            PASS  
+H01 the entry is not a console program                                              WINDOWS_GUI                                           WINDOWS_GUI                                 PASS  
+H01 a window exists                                                                 at least one titled top-level window                  hwnd=4261616 class=Tauri Window 1294x808    PASS  
+H01 the Hub process owns no console (no extra terminal on the taskbar)              False                                                 False                                       PASS  
+H01 no conhost or shell in the Hub process tree                                     0                                                     0                                           PASS  
+H02 the second launch ends within the bound                                         exit code 0 (handed to the running Hub)               exit code 0                                 PASS  
+H02 still exactly one Hub process                                                   1                                                     1                                           PASS  
+H02 the normal open restored the same Hub window                                    a window of the same pid, visible                     hwnd=4261616 visible=True                   PASS  
+H02 the normal open started no terminal                                             0 terminal processes                                  0                                           PASS  
+minimized takes the window off the desktop, the Hub keeps running                   iconic=True, Hub still running                        visible=True iconic=True, Hub processes=1   PASS  
+minimized then open again restores the window                                       visible and not minimized, delivered with exit code 0 visible=True iconic=False exit code=0       PASS  
+minimized leaves exactly one Hub process                                            1                                                     1                                           PASS  
+closed (hidden to the tray) takes the window off the desktop, the Hub keeps running visible=False, Hub still running                      visible=False iconic=False, Hub processes=1 PASS  
+closed (hidden to the tray) then open again restores the window                     visible and not minimized, delivered with exit code 0 visible=True iconic=False exit code=0       PASS  
+closed (hidden to the tray) leaves exactly one Hub process                          1                                                     1                                           PASS  
+cleared before the race                                                             0                                                     0                                           PASS  
+exactly one Hub survives the race                                                   1                                                     1 (pid 96492)                               PASS  
+one side handed over and ended                                                      one exits 0, the other keeps running                  first exit=still running, second exit=0     PASS  
+the winner has a window                                                             at least one titled top-level window                  pid=96492 hwnd=920416                       PASS  
+the winner owns no console                                                          False                                                 False                                       PASS  
+no Hub process left behind                                                          0                                                     0                                           PASS  
+
+
+
+22 checks: 22 PASS / 0 FAIL
+
+What this proves: process counts, exit codes, window visibility, whether a terminal
+came with it, and the entry PE subsystem and console.
+What it cannot prove: the tray gesture itself, whether managed sessions stay
+interactive after a restore, and icon appearance.
+Those are the manual steps in docs/SINGLE_INSTANCE_ACCEPTANCE.md.

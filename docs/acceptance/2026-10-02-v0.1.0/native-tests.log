@@ -1,0 +1,32 @@
+PASS cancel preserves configuration
+PASS running removal refused without changes
+PASS real UI removal and preserved other configuration
+PASS removed entry stays absent after native restart
+PASS saved application removal: cancel, running refusal, persistence and restart
+PASS configured application shortcut: cold launch and running reuse
+PASS isolated real backend connection
+PASS T-11 terminal purpose and close impact
+PASS manual recording starts and stops in the real window
+PASS real terminal keyboard input reaches ConPTY
+PASS save reports an existing log and enables its file action
+PASS real log write failure remains visible and never says success
+PASS frontend reload preserves latest backend running sessions
+PASS H03/H07: empty workspace creates distinct focused temporary terminals
+PASS H05: keyboard execution, Ctrl+C and subsequent execution
+PASS H15: OS window close hides Hub while terminal output continues and entry restores interaction
+PASS H08: save terminal launch method without restarting or recording commands
+PASS H09/H10: add and activate an internal application through the real form
+PASS H09: read-only config refuses real form save without changing file or registry
+PASS H09: malformed external edit refuses save and preserves every byte
+PASS H08/H14: closing a terminal reclaims its child and preserves other work
+PASS H08/H09: restart restores saved configurations and discards unsaved terminals
+PASS H06: real shell executes in Unicode cwd and invalid cwd creates no session
+PASS H12: actual executable recommendation remains manually changeable in real form
+PASS H11: external identity association does not create or acquire ownership of another process
+PASS application form: real directory scan, URL persistence and option colors
+PASS native configuration diagnostics: mixed-config
+PASS native configuration diagnostics: bad-yaml
+PASS native configuration diagnostics: missing-config
+PASS native configuration diagnostics: empty-config
+PASS native configuration diagnostics: unreadable-config
+Report: C:\Users\q9560\Documents\GitHub\Local-Console-Hub\.scratch\native-acceptance\run-hlKNx2\report.json

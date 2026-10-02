@@ -14,6 +14,7 @@
 // `generate_handler!` resolves each command through hidden items the macro
 // emits beside the function, so commands are registered by their own module
 // path (`ipc::session::start_session`) rather than re-exported here.
+pub mod discovery;
 pub mod launch;
 pub mod logs;
 pub mod session;

@@ -346,6 +346,58 @@ mod tests {
         assert_eq!(loaded.sessions[0].command.as_deref(), Some("Run-Server"));
     }
 
+    #[test]
+    fn removed_application_is_absent_after_reload_and_disk_logs_are_retained() {
+        let config = TempConfig::with(None);
+        let core = SessionCore::without_listener();
+        let first = add_application(&core, Some(config.path()), form("First")).unwrap();
+        add_application(&core, Some(config.path()), form("Second")).unwrap();
+        let log = config.path().with_file_name("retained.log");
+        fs::write(&log, "keep").unwrap();
+        core.remove_application(&first.config.id, config.path())
+            .unwrap();
+        assert!(core.snapshot(&first.config.id).is_none());
+        let loaded = load_from_file(config.path()).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].id, "second");
+        assert_eq!(fs::read_to_string(log).unwrap(), "keep");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removal_refuses_a_live_run_but_accepts_its_retained_ended_handle() {
+        let config = TempConfig::with(None);
+        let core = SessionCore::without_listener();
+        let mut application = form("App");
+        application.command = "cmd.exe /c ping -n 120 127.0.0.1".to_owned();
+        let added = add_application(&core, Some(config.path()), application).unwrap();
+        core.start(&added.config.id).unwrap();
+        let before = fs::read_to_string(config.path()).unwrap();
+        assert!(core
+            .remove_application(&added.config.id, config.path())
+            .is_err());
+        assert_eq!(fs::read_to_string(config.path()).unwrap(), before);
+        core.force_stop(&added.config.id).unwrap();
+        core.remove_application(&added.config.id, config.path())
+            .unwrap();
+        assert!(core.snapshot(&added.config.id).is_none());
+        assert!(load_from_file(config.path()).unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn failed_removal_keeps_registry_and_config_unchanged() {
+        let config = TempConfig::with(None);
+        let core = SessionCore::without_listener();
+        let added = add_application(&core, Some(config.path()), form("App")).unwrap();
+        let unsafe_text = "sessions: [{id: app}]";
+        fs::write(config.path(), unsafe_text).unwrap();
+        assert!(core
+            .remove_application(&added.config.id, config.path())
+            .is_err());
+        assert!(core.snapshot(&added.config.id).is_some());
+        assert_eq!(fs::read_to_string(config.path()).unwrap(), unsafe_text);
+    }
+
     /// The optional half of the form reaches the file, and keeps the config
     /// layer's own vocabulary.
     #[test]

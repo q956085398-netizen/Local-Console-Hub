@@ -1123,8 +1123,10 @@ impl SessionCore {
     /// was; a spawn that fails moves it to `Error` with the reason recorded,
     /// because by then the session really is no longer stopped.
     pub fn start(&self, session_id: &str) -> Result<SessionRuntime, SessionError> {
-        let handle = self
-            .handle(session_id)
+        let sessions = lock(&self.sessions);
+        let handle = sessions
+            .get(session_id)
+            .cloned()
             .ok_or_else(|| SessionError::unknown_session(session_id, "start"))?;
 
         // Claim the transition under the lock, then let go of it: a spawn is
@@ -1162,6 +1164,7 @@ impl SessionCore {
             state.runtime.last_error = None;
             (spec, planned)
         };
+        drop(sessions);
         // The listener sees the start in flight, which is what a UI needs to
         // keep the action buttons from lying about what is happening.
         self.publish_state_and_summary(session_id);
@@ -1639,8 +1642,10 @@ impl SessionCore {
         process: ExternalProcess,
     ) -> Result<SessionRuntime, SessionError> {
         const OPERATION: &str = "adopt";
-        let handle = self
-            .handle(session_id)
+        let sessions = lock(&self.sessions);
+        let handle = sessions
+            .get(session_id)
+            .cloned()
             .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
 
         let generation = {
@@ -1698,6 +1703,7 @@ impl SessionCore {
             generation
         };
 
+        drop(sessions);
         self.publish_state_and_summary(session_id);
         self.watch_adopted(session_id, &handle, generation);
         let runtime = lock(&handle).runtime.clone();
@@ -2334,6 +2340,46 @@ impl SessionCore {
         sessions.remove(session_id);
         drop(sessions);
 
+        self.publish_removed(session_id);
+        Ok(())
+    }
+
+    /// Persist removal while holding both locks: a concurrent start cannot
+    /// claim this entry while its saved configuration is being removed.
+    pub fn remove_application(
+        &self,
+        session_id: &str,
+        path: &std::path::Path,
+    ) -> Result<(), SessionError> {
+        const OPERATION: &str = "remove_application";
+        let mut sessions = lock(&self.sessions);
+        let handle = sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| SessionError::unknown_session(session_id, OPERATION))?;
+        let state = lock(&handle);
+        if state.temporary
+            || state.adopted.is_some()
+            || !removable(true, state.runtime.status, state.run.is_some())
+        {
+            return Err(SessionError::failed(
+                session_id,
+                OPERATION,
+                "请先停止应用；独立窗口应用请先在自己的窗口中退出。".to_owned(),
+                Some(state.runtime.status),
+            ));
+        }
+        crate::config::remove_saved_session(path, session_id).map_err(|error| {
+            SessionError::failed(
+                session_id,
+                OPERATION,
+                error.message(path),
+                Some(state.runtime.status),
+            )
+        })?;
+        sessions.remove(session_id);
+        drop(state);
+        drop(sessions);
         self.publish_removed(session_id);
         Ok(())
     }

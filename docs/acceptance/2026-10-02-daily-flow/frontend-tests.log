@@ -1,0 +1,18 @@
+
+> local-console-hub@0.1.0 test
+> vitest run --reporter=dot
+
+
+ RUN  v5.0.2 C:/Users/q9560/Documents/GitHub/Local-Console-Hub
+
+································································································································································································································································································
+
+ Test Files  20 passed (20)
+      Tests  288 passed (288)
+   Start at  13:39:26
+   Duration  1.47s (transform 49%, import 36%, worker 9%, tests 6%)
+
+  Transform  transforming modules took 3.17s · 49% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+

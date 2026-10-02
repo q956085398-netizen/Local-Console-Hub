@@ -1,0 +1,15 @@
+
+> local-console-hub@0.1.0 tauri
+> tauri bundle
+
+        Info Patching C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe with bundle type information: msi
+        Info Target: x64
+     Running candle for "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\release\\wix\\x64\\main.wxs"
+     Running light to produce C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\msi\Local Console Hub_0.1.0_x64_en-US.msi
+        Info Patching C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe with bundle type information: nsis
+        Info Target: x64
+     Running makensis to produce C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe
+    Finished 2 bundles at:
+        C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\msi\Local Console Hub_0.1.0_x64_en-US.msi (4.72 MiB)
+        C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\bundle\nsis\Local Console Hub_0.1.0_x64-setup.exe (3.53 MiB)
+
