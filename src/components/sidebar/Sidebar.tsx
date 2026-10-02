@@ -85,7 +85,9 @@ export default function Sidebar({
             </ul>
           </section>
         ))}
-        {groups.length === 0 && <p className="sidebar__empty">没有匹配的受管会话。</p>}
+        {groups.length === 0 && (
+          <p className="sidebar__empty">{query.trim() ? "没有匹配的受管会话。" : "还没有会话"}</p>
+        )}
       </div>
       <div className="sidebar__foot">
         {/* Spec #59 decision 7 keeps the two entries apart, and this is where

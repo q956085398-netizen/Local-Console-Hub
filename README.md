@@ -2,19 +2,19 @@
 
 面向 Windows 的本地应用、服务与交互终端统一控制台。保存常用启动入口，查看输出、启停受管进程，关闭主窗口后留在托盘继续工作。
 
-**初版：v0.1.0，Windows x64。** 日常流程已获用户验收确认；本次安装包验证范围见 [交付记录](docs/acceptance/2026-10-02-v0.1.0/DELIVERY.md)。
+**当前版本：v0.1.1，Windows x64。** 修正首次使用界面：没有会话也直接显示完整侧栏和空工作区，无需先添加应用。验证范围见 [修正版说明](docs/RELEASE_NOTES_v0.1.1.md)；初版交付记录保留历史身份。
 
 ## 下载和开始使用
 
 从 [GitHub Releases](https://github.com/q956085398-netizen/Local-Console-Hub/releases) 下载 EXE（当前用户安装）或 MSI（需要管理员权限）。两个包是同一版本，选择其中一个即可。
 
 1. 安装后从开始菜单打开 **Local Console Hub**。
-2. 点 **新建 PowerShell**，输入 `Get-Date`，确认终端可以使用。
-3. 点 **添加应用**，选择应用目录与启动文件，确认命令和展示方式后保存。
+2. 主界面默认没有会话，可以保持为空；需要临时终端时点左下方 **新建 PowerShell**，输入 `Get-Date`。
+3. 需要保存常用入口时点左下方 **添加应用**，选择应用目录与启动文件，确认命令和展示方式后保存；下次启动仍会保留。
 4. 选中应用并启动；有网页地址时可直接打开网页。
 5. 关闭主窗口会隐藏到托盘。真正结束 Hub 请使用托盘菜单的 **退出**。
 
-[安装与使用教程](docs/USER_GUIDE.md) · [发布说明](docs/RELEASE_NOTES_v0.1.0.md) · [下一版：端口监视](docs/NEXT_VERSION.md)
+[安装与使用教程](docs/USER_GUIDE.md) · [发布说明](docs/RELEASE_NOTES_v0.1.1.md) · [下一版：端口监视](docs/NEXT_VERSION.md)
 
 ## 初版功能
 
