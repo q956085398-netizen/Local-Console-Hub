@@ -540,3 +540,20 @@ pub fn open_session_cwd(
     shell::open_path(&path)
         .map_err(|error| hand_over_failed(&session_id, "open_session_cwd", error))
 }
+
+/// Remove a saved launch entry; application files and disk logs are retained.
+#[tauri::command]
+pub fn remove_application(
+    core: State<'_, SessionCore>,
+    report: State<'_, ConfigReportDto>,
+    session_id: String,
+) -> Result<(), SessionError> {
+    let path = report.config_path.as_deref().ok_or_else(|| SessionError {
+        kind: crate::session::core::SessionErrorKind::Failed,
+        session_id: session_id.clone(),
+        operation: "remove_application".to_owned(),
+        message: "无法确定配置文件位置".to_owned(),
+        from: None,
+    })?;
+    core.remove_application(&session_id, std::path::Path::new(path))
+}

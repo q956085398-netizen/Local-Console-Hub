@@ -893,11 +893,13 @@ fn the_quick_entry_adds_a_terminal_on_top_of_a_loaded_workspace() {
         "the configured sessions did not become temporary"
     );
 
-    // And it is a terminal the user can actually work in (story 18).
-    fixture.send(&id, &marker("LCH-T62", "LIVE"));
+    // Prove input executes and the shell exits naturally in one command. A
+    // marker can reach ConPTY before PowerShell is ready for its next input;
+    // sending `exit` from the test at that point races the next prompt on CI.
+    // Shell sequencing preserves both assertions without a timing assumption.
+    fixture.send(&id, &format!("{}; exit", marker("LCH-T62", "LIVE")));
     fixture.expect_in_scrollback(&id, "LCH-T62-LIVE");
 
-    fixture.send(&id, "exit");
     fixture.wait_until("the temporary shell to end", || {
         fixture.status(&id) == SessionStatus::Exited
     });

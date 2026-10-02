@@ -120,6 +120,7 @@ export interface SessionRegistry {
   saveTerminal(sessionId: string, form: SaveTerminalFormDto): Promise<FormSaveOutcome>;
   /** Remove a temporary session that has ended (#62). */
   removeSession(sessionId: string): void;
+  removeApplication(sessionId: string): Promise<FormSaveOutcome>;
 }
 
 /** Where the rendered sessions came from. */
@@ -313,6 +314,16 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     [],
   );
 
+  const removeApplication = useCallback(async (sessionId: string): Promise<FormSaveOutcome> => {
+    try {
+      await invoke("remove_application", { sessionId });
+      controller.current?.forget(sessionId);
+      return { ok: true, sessionId };
+    } catch (cause) {
+      return { ok: false, message: sessionErrorMessage(cause) };
+    }
+  }, []);
+
   const removeSession = useCallback((sessionId: string) => {
     invoke("remove_session", { sessionId })
       .then(() => controller.current?.forget(sessionId))
@@ -391,6 +402,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       addApplication,
       saveTerminal,
       removeSession,
+      removeApplication,
     }),
     [
       sessions,
@@ -408,6 +420,7 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       addApplication,
       saveTerminal,
       removeSession,
+      removeApplication,
     ],
   );
 }

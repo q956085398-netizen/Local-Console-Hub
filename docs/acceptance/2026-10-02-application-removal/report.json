@@ -1,0 +1,51 @@
+{
+  "startedAt": "2026-10-02T11:01:46.991Z",
+  "sourceCommit": "52df2ab084e0f632c5d73d9266e7dabdd8db6a4d",
+  "sourceStatus": "M docs/VERIFICATION.md\n M scripts/native-acceptance.mjs\n M src-tauri/Cargo.lock\n M src-tauri/Cargo.toml\n M src-tauri/src/app/applications.rs\n M src-tauri/src/app/mod.rs\n M src-tauri/src/config/mod.rs\n M src-tauri/src/config/save.rs\n M src-tauri/src/ipc/mod.rs\n M src-tauri/src/ipc/session.rs\n M src-tauri/src/lib.rs\n M src-tauri/src/session/core.rs\n M src/app/App.tsx\n M src/app/useSessionRegistry.ts\n M src/components/add-application/AddApplicationDialog.tsx\n M src/components/dialog/dialog.css\n M src/components/session-header/SessionHeader.tsx\n M src/state/actions.ts\n?? docs/ADDING_APPLICATION_ACCEPTANCE.md\n?? docs/APPLICATION_REMOVAL_ACCEPTANCE.md\n?? docs/DAILY_FLOW_ACCEPTANCE.md\n?? docs/acceptance/2026-10-02-application-form/\n?? docs/acceptance/2026-10-02-application-removal/\n?? docs/acceptance/2026-10-02-daily-flow/\n?? src-tauri/src/app/discovery.rs\n?? src-tauri/src/ipc/discovery.rs\n?? src/app/useApplicationDiscovery.ts\n?? src/components/remove-application/\n?? src/types/discovery.test.ts\n?? src/types/discovery.ts",
+  "binary": "C:\\Users\\q9560\\Documents\\GitHub\\Local-Console-Hub\\src-tauri\\target\\debug\\local-console-hub.exe",
+  "binarySha256": "ddb1fd7ab0ecbb1f7b8bacbe9e234506ca8c576f48dc6f43912a7bcbe4acd2c8",
+  "platform": "win32",
+  "node": "v25.2.1",
+  "windowsRelease": "10.0.26300",
+  "architecture": "x64",
+  "scriptSha256": "8966cac0a80312d6a387a84ff7e7f27583c5d8617b9ac058bb7a403df5e2557a",
+  "backendPathsSha256": "d90a080e298ded7d6c0e1eb0b64f9fcf618b32f62a0120127ce14c45beac1671",
+  "cargoManifestSha256": "9af80b8ccffcce87493ff86f66a546b2c5a84f6e82707470f079336152929057",
+  "execution": "signed-in Windows user; serial; real Tauri WebView2 and IPC",
+  "results": [
+    {
+      "name": "saved application removal: cancel, running refusal, persistence and restart",
+      "status": "passed",
+      "milliseconds": 4164,
+      "evidence": {
+        "cancellation": true,
+        "runningRemovalRefused": true,
+        "otherEntriesPreserved": true,
+        "absentAfterRestart": true
+      }
+    }
+  ],
+  "exclusions": [
+    "Native tray menu clicks",
+    "Installation/MSI and installed-version acceptance",
+    "Whole-window decorations and taskbar/icon appearance"
+  ],
+  "cleanup": [
+    {
+      "scenario": "removal",
+      "launcherPid": 89392,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    },
+    {
+      "scenario": "removal",
+      "launcherPid": 108984,
+      "hubPids": [],
+      "sessionPids": [],
+      "status": "passed"
+    }
+  ],
+  "userConfigurationUnchanged": true,
+  "finishedAt": "2026-10-02T11:01:51.301Z"
+}

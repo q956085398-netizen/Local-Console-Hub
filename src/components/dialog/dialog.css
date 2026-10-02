@@ -158,6 +158,45 @@
   outline-offset: 1px;
 }
 
+/* Windows/WebView2 native popups must use the same dark palette as their input. */
+select.dialog__input {
+  color-scheme: dark;
+}
+.dialog__input option {
+  color: var(--fg);
+  background-color: var(--card);
+}
+.dialog__path {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.dialog__path .dialog__input {
+  flex: 1;
+  width: 0;
+}
+.dialog__path .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.dialog__address {
+  display: flex;
+  gap: 6px;
+}
+.dialog__address select {
+  width: 86px;
+  flex-shrink: 0;
+}
+.dialog__address input {
+  width: 0;
+  flex: 1;
+}
+.dialog__discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .dialog__hint {
   color: var(--idle-fg);
   font-size: 11px;

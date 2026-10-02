@@ -5,6 +5,12 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 
+# Local agent settings, disposable verification workspaces and release copies
+.claude/settings.local.json
+.claude/worktrees/
+.scratch/
+releases/
+
 # OS noise
 .DS_Store
 Thumbs.db

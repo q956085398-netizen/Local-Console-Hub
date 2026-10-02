@@ -1,5 +1,12 @@
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { FolderOpen, FileSearch, X } from "lucide-react";
+import {
+  applicationUrl,
+  selectedProgram,
+  type DirectoryScan,
+  type LaunchCandidate,
+  type PathKind,
+} from "../../types/discovery";
 import type {
   DisplayAdviceDto,
   DisplayModeValue,
@@ -35,6 +42,8 @@ export interface AddApplicationDialogProps {
    * form offers both modes without a recommendation.
    */
   onRecommendDisplay?: (command: string, cwd: string) => Promise<DisplayAdviceDto | null>;
+  onPickPath?: (kind: PathKind, cwd: string) => Promise<string | null>;
+  onScanDirectory?: (cwd: string) => Promise<DirectoryScan>;
   onClose: () => void;
 }
 
@@ -210,6 +219,8 @@ export function legalPolicyFor(mode: DisplayModeValue, policy: string): string {
 export default function AddApplicationDialog({
   onSubmit,
   onRecommendDisplay,
+  onPickPath,
+  onScanDirectory,
   onClose,
 }: AddApplicationDialogProps) {
   const [name, setName] = useState("");
@@ -219,6 +230,18 @@ export default function AddApplicationDialog({
   const [closeImpact, setCloseImpact] = useState("");
   const [port, setPort] = useState("");
   const [url, setUrl] = useState("");
+  const [protocol, setProtocol] = useState("http://");
+  const [scan, setScan] = useState<DirectoryScan | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const dirty = useRef(new Set<string>());
+  const request = useRef(0);
+  useEffect(
+    () => () => {
+      request.current += 1;
+    },
+    [],
+  );
   const [policy, setPolicy] = useState(LOG_POLICIES[0].value);
   const [logPath, setLogPath] = useState("");
   const [display, setDisplay] = useState<DisplayModeValue>("internal");
@@ -237,6 +260,69 @@ export default function AddApplicationDialog({
   const [advisedFor, setAdvisedFor] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<FormErrorDto | null>(null);
+
+  useEffect(() => {
+    if (!dirty.current.has("url")) {
+      const number = Number(port);
+      setUrl(
+        Number.isInteger(number) && number > 0 && number <= 65535 ? `127.0.0.1:${number}` : "",
+      );
+    }
+  }, [port]);
+
+  const applyCandidate = (candidate: LaunchCandidate, explicit = false) => {
+    if (explicit || !dirty.current.has("command")) {
+      setCommand(candidate.command);
+      setCwd(candidate.cwd);
+    }
+    if (!dirty.current.has("port")) setPort(candidate.port === null ? "" : String(candidate.port));
+  };
+
+  const discover = async (directory: string, generation: number) => {
+    if (onScanDirectory === undefined) return;
+    const result = await onScanDirectory(directory);
+    if (generation !== request.current) return;
+    setScan(result);
+    if (!dirty.current.has("name")) setName(result.name);
+    if (result.candidates.length === 1) applyCandidate(result.candidates[0]);
+    if (!dirty.current.has("log") && result.logs.length === 1) setLogPath(result.logs[0]);
+  };
+
+  const choosePath = async (kind: PathKind) => {
+    if (!onPickPath || picking) return;
+    const generation = ++request.current;
+    setPicking(true);
+    setScanError(null);
+    try {
+      const path = await onPickPath(kind, cwd);
+      if (generation !== request.current || path === null) return;
+      if (kind === "log") {
+        setLogPath(path);
+        dirty.current.add("log");
+      } else if (kind === "program") {
+        const candidate = selectedProgram(path);
+        applyCandidate(candidate, true);
+        dirty.current.add("command");
+        if (!dirty.current.has("name"))
+          setName(
+            path
+              .split(/[\\/]/)
+              .at(-1)
+              ?.replace(/\.[^.]+$/, "") ?? "",
+          );
+        setScan(null);
+      } else {
+        setCwd(path);
+        setScan(null);
+        await discover(path, generation);
+      }
+    } catch (error) {
+      if (generation === request.current)
+        setScanError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === request.current) setPicking(false);
+    }
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -297,7 +383,7 @@ export default function AddApplicationDialog({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || picking) return;
 
     const form: NewApplicationFormDto = {
       name: name.trim(),
@@ -307,12 +393,13 @@ export default function AddApplicationDialog({
     const optional = [
       ["purpose", purpose],
       ["closeImpact", closeImpact],
-      ["url", url],
     ] as const;
     for (const [key, value] of optional) {
       const trimmed = value.trim();
       if (trimmed !== "") form[key] = trimmed;
     }
+    const fullUrl = applicationUrl(protocol, url);
+    if (fullUrl !== undefined) form.url = fullUrl;
     if (port.trim() !== "") {
       const value = Number(port.trim());
       // Checked here rather than sent: the wire type is a 16-bit integer, so a
@@ -382,39 +469,127 @@ export default function AddApplicationDialog({
               className="dialog__input"
               value={name}
               autoFocus
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                dirty.current.add("name");
+                setName(event.target.value);
+              }}
               placeholder="ComfyUI"
             />
             {errorFor("name") && <span className="dialog__field-error">{errorFor("name")}</span>}
           </label>
 
-          <label className="dialog__field">
+          <label className="dialog__field" htmlFor="application-cwd">
             <span className="dialog__label">
               工作目录 <span className="dialog__required">必填</span>
             </span>
-            <input
-              className="dialog__input dialog__input--mono"
-              value={cwd}
-              onChange={(event) => setCwd(event.target.value)}
-              placeholder="D:\Tools\ComfyUI_windows_portable"
-            />
+            <div className="dialog__path">
+              <input
+                className="dialog__input dialog__input--mono"
+                id="application-cwd"
+                value={cwd}
+                onChange={(event) => {
+                  request.current += 1;
+                  setPicking(false);
+                  setScan(null);
+                  setCwd(event.target.value);
+                }}
+                placeholder="D:\Tools\ComfyUI_windows_portable"
+              />
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                aria-label="选择应用目录"
+                disabled={picking || !onPickPath}
+                onClick={() => void choosePath("directory")}
+              >
+                <FolderOpen size={14} />
+                选择目录
+              </button>
+            </div>
+            <span className="dialog__hint">
+              {picking ? "正在选择或扫描…" : "选择目录后查找启动文件；不会执行程序。"}
+            </span>
             {errorFor("cwd") && <span className="dialog__field-error">{errorFor("cwd")}</span>}
           </label>
 
-          <label className="dialog__field">
+          <label className="dialog__field" htmlFor="application-command">
             <span className="dialog__label">
               启动命令 <span className="dialog__required">必填</span>
             </span>
-            <input
-              className="dialog__input dialog__input--mono"
-              value={command}
-              onChange={(event) => setCommand(event.target.value)}
-              placeholder="python main.py"
-            />
+            <div className="dialog__path">
+              <input
+                className="dialog__input dialog__input--mono"
+                id="application-command"
+                value={command}
+                onChange={(event) => {
+                  dirty.current.add("command");
+                  setCommand(event.target.value);
+                }}
+                placeholder="python main.py"
+              />
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                aria-label="选择启动文件"
+                disabled={picking || !onPickPath}
+                onClick={() => void choosePath("program")}
+              >
+                <FileSearch size={14} />
+                选择文件
+              </button>
+            </div>
             {errorFor("command") && (
               <span className="dialog__field-error">{errorFor("command")}</span>
             )}
           </label>
+
+          {scan !== null && (
+            <div className="dialog__discovery">
+              {scan.candidates.length > 1 && (
+                <label className="dialog__field">
+                  <span className="dialog__label">找到多个启动文件，请选择</span>
+                  <select
+                    className="dialog__input"
+                    aria-label="启动文件候选"
+                    value=""
+                    onChange={(event) => {
+                      const candidate = scan.candidates.find(
+                        (item) => item.path === event.target.value,
+                      );
+                      if (candidate) {
+                        applyCandidate(candidate, true);
+                        dirty.current.add("command");
+                      }
+                    }}
+                  >
+                    <option value="">选择要启动的程序或脚本</option>
+                    {scan.candidates.map((candidate) => (
+                      <option key={candidate.path} value={candidate.path}>
+                        {candidate.path}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <span className="dialog__hint">
+                {scan.candidates.length === 0
+                  ? "未找到可确认的启动文件，可使用“选择文件”或手动填写。"
+                  : scan.candidates.length === 1
+                    ? "已找到启动文件，请确认预填内容后保存。"
+                    : "候选仅按文件类型列出；请确认它是实际日常入口。"}
+              </span>
+              {scan.warnings.map((warning) => (
+                <span key={warning} className="dialog__hint">
+                  {warning}
+                </span>
+              ))}
+            </div>
+          )}
+          {scanError !== null && (
+            <p role="alert" className="dialog__error">
+              {scanError}
+            </p>
+          )}
 
           <div className="dialog__row">
             <label className="dialog__field">
@@ -423,19 +598,43 @@ export default function AddApplicationDialog({
                 className="dialog__input dialog__input--mono"
                 value={port}
                 inputMode="numeric"
-                onChange={(event) => setPort(event.target.value)}
+                onChange={(event) => {
+                  dirty.current.add("port");
+                  setPort(event.target.value);
+                }}
                 placeholder="8188"
               />
               {errorFor("port") && <span className="dialog__field-error">{errorFor("port")}</span>}
             </label>
-            <label className="dialog__field">
+            <label className="dialog__field" htmlFor="application-url">
               <span className="dialog__label">网页地址</span>
-              <input
-                className="dialog__input dialog__input--mono"
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="http://127.0.0.1:8188"
-              />
+              <div className="dialog__address">
+                <select
+                  className="dialog__input"
+                  aria-label="地址协议"
+                  value={protocol}
+                  onChange={(event) => setProtocol(event.target.value)}
+                >
+                  <option value="http://">http://</option>
+                  <option value="https://">https://</option>
+                </select>
+                <input
+                  className="dialog__input dialog__input--mono"
+                  id="application-url"
+                  aria-label="网页地址"
+                  value={url}
+                  onChange={(event) => {
+                    dirty.current.add("url");
+                    const value = event.target.value;
+                    const match = value.match(/^(https?:\/\/)(.*)$/i);
+                    if (match) {
+                      setProtocol(match[1].toLowerCase());
+                      setUrl(match[2]);
+                    } else setUrl(value);
+                  }}
+                  placeholder="127.0.0.1:8188（可选）"
+                />
+              </div>
               {errorFor("url") && <span className="dialog__field-error">{errorFor("url")}</span>}
             </label>
           </div>
@@ -488,14 +687,26 @@ export default function AddApplicationDialog({
           </label>
 
           {policy === "external" && (
-            <label className="dialog__field">
+            <label className="dialog__field" htmlFor="application-log">
               <span className="dialog__label">应用日志文件</span>
               <input
                 className="dialog__input dialog__input--mono"
+                id="application-log"
                 value={logPath}
-                onChange={(event) => setLogPath(event.target.value)}
+                onChange={(event) => {
+                  dirty.current.add("log");
+                  setLogPath(event.target.value);
+                }}
                 placeholder="D:\Tools\ComfyUI\logs\app.log"
               />
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                disabled={picking || !onPickPath}
+                onClick={() => void choosePath("log")}
+              >
+                选择日志文件
+              </button>
               {errorFor("logging.path") && (
                 <span className="dialog__field-error">{errorFor("logging.path")}</span>
               )}
@@ -554,7 +765,11 @@ export default function AddApplicationDialog({
           <button type="button" className="btn btn--secondary btn--sm" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="btn btn--primary btn--sm" disabled={submitting}>
+          <button
+            type="submit"
+            className="btn btn--primary btn--sm"
+            disabled={submitting || picking}
+          >
             {submitting ? "正在保存…" : "保存应用"}
           </button>
         </footer>

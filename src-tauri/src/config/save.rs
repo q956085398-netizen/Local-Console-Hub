@@ -206,6 +206,91 @@ pub fn save_session(path: &Path, entry: &RawSessionConfig) -> Result<(), SaveErr
     replace(path, original, &updated)
 }
 
+/// Remove exactly one block entry without rewriting unrelated YAML.
+pub fn remove_saved_session(path: &Path, id: &str) -> Result<(), SaveError> {
+    let original = read_optional(path)?;
+    let updated = remove_session_text(original.as_deref().unwrap_or(""), id)?;
+    replace(path, original, &updated)
+}
+
+pub fn remove_session_text(text: &str, id: &str) -> Result<String, SaveError> {
+    let Shape::Sessions { item_indent } = scan(text)? else {
+        return Err(SaveError::Unsafe("没有可移除的配置项".to_owned()));
+    };
+    let document: Value =
+        serde_yaml::from_str(text).map_err(|error| SaveError::Unparsable(error.to_string()))?;
+    let entries = document
+        .get("sessions")
+        .and_then(Value::as_sequence)
+        .ok_or_else(|| SaveError::Unsafe("没有可移除的配置项".to_owned()))?;
+    let matches: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.get("id").and_then(Value::as_str) == Some(id))
+        .map(|(index, _)| index)
+        .collect();
+    if matches.len() != 1 {
+        return Err(SaveError::Unsafe(
+            "配置项不存在或 ID 重复；未做任何修改".to_owned(),
+        ));
+    }
+    let starts: Vec<_> = significant_lines(text)
+        .into_iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim_start();
+            line.len() - trimmed.len() == item_indent
+                && (trimmed == "-" || trimmed.starts_with("- "))
+        })
+        .map(|(offset, _)| offset)
+        .collect();
+    if starts.len() != entries.len() {
+        return Err(SaveError::Unsafe(
+            "无法安全定位配置项；请手动检查配置文件".to_owned(),
+        ));
+    }
+    let index = matches[0];
+    let start = starts[index];
+    let end = starts.get(index + 1).copied().unwrap_or(text.len());
+    // Preserve comment and blank lines, including notes before the next entry.
+    let retained: String = text[start..end]
+        .split_inclusive('\n')
+        .filter(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+        .collect();
+    let updated = format!("{}{}{}", &text[..start], retained, &text[end..]);
+    let mut expected = document;
+    expected
+        .get_mut("sessions")
+        .and_then(Value::as_sequence_mut)
+        .unwrap()
+        .remove(index);
+    // A now-empty block list is YAML null; make the empty list explicit.
+    let updated = if entries_count(&expected) == 0 {
+        let header = significant_lines(&updated)
+            .into_iter()
+            .find(|(_, line)| line.starts_with("sessions"))
+            .unwrap();
+        let colon = header.0 + header.1.find(':').unwrap() + 1;
+        format!("{} []{}", &updated[..colon], &updated[colon..])
+    } else {
+        updated
+    };
+    let actual: Value =
+        serde_yaml::from_str(&updated).map_err(|error| SaveError::Unparsable(error.to_string()))?;
+    if actual != expected {
+        return Err(SaveError::Unsafe(
+            "移除会影响其他配置内容；未做任何修改".to_owned(),
+        ));
+    }
+    Ok(updated)
+}
+
+fn entries_count(document: &Value) -> usize {
+    document
+        .get("sessions")
+        .and_then(Value::as_sequence)
+        .map_or(0, Vec::len)
+}
+
 /// Write `updated` over `path`, but only while the file is still `original`.
 ///
 /// The check is the whole difference between an edit and an overwrite: a save
@@ -1027,5 +1112,36 @@ sessions:
         let text = "sessions:\n  - id: broken\n    name: Broken\n    type: nonsense\n";
 
         assert_eq!(session_ids(text), ["broken"]);
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    #[test]
+    fn removal_preserves_other_entries_comments_and_crlf() {
+        let text = "# header\r\nsessions: # list\r\n  - id: a\r\n    name: A\r\n  # keep note\r\n  - id: b\r\n    unknown: 'keep this'\r\n";
+        let result = remove_session_text(text, "a").unwrap();
+        assert_eq!(result, "# header\r\nsessions: # list\r\n  # keep note\r\n  - id: b\r\n    unknown: 'keep this'\r\n");
+    }
+
+    #[test]
+    fn last_removal_leaves_a_valid_empty_list() {
+        let result =
+            remove_session_text("sessions: # note\n  - id: a\n    name: A\n", "a").unwrap();
+        assert_eq!(result, "sessions: [] # note\n");
+    }
+
+    #[test]
+    fn ambiguous_or_unsupported_documents_are_refused() {
+        for text in [
+            "sessions:\n  - id: a\n  - id: a\n",
+            "sessions: [{id: a}]",
+            "sessions:\n  - id: b\n",
+            "sessions:\n  - id: a\nother: preserve",
+        ] {
+            assert!(remove_session_text(text, "a").is_err());
+        }
     }
 }

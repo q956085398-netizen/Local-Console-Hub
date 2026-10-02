@@ -13,6 +13,7 @@ import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
 import AddApplicationDialog from "../components/add-application/AddApplicationDialog";
+import RemoveApplicationDialog from "../components/remove-application/RemoveApplicationDialog";
 import SaveTerminalDialog from "../components/save-terminal/SaveTerminalDialog";
 import OpenChoiceDialog from "../components/open-choice/OpenChoiceDialog";
 import type { NewApplicationFormDto, SaveTerminalFormDto, SessionConfigDto } from "../types/config";
@@ -36,6 +37,7 @@ import { SESSION_OPENED, isSessionOpenedDto } from "../types/launch";
 import { copyPathToClipboard } from "./clipboard";
 import { useBackendPing } from "./useBackendPing";
 import { useDisplayAdvice } from "./useDisplayAdvice";
+import { useApplicationDiscovery } from "./useApplicationDiscovery";
 import { useSessionRegistry } from "./useSessionRegistry";
 import { useMediaQuery } from "./useMediaQuery";
 import "./App.css";
@@ -68,6 +70,7 @@ export default function App() {
   // The form's own read-only question (#66), kept apart from the session
   // registry because a launch method that has not been saved is not a session.
   const recommendDisplay = useDisplayAdvice();
+  const discovery = useApplicationDiscovery();
   const sessions = registry.sessions;
 
   // `#session=<id>` deep link (tray/restore surfaces can target a session).
@@ -89,6 +92,9 @@ export default function App() {
   /** Whether the "添加应用" form is open (#64). */
   const [addApplicationOpen, setAddApplicationOpen] = useState(false);
   /** The terminal whose launch configuration is being saved (#65). */
+  const [removeApplicationTarget, setRemoveApplicationTarget] = useState<SessionConfigDto | null>(
+    null,
+  );
   const [saveTerminalTarget, setSaveTerminalTarget] = useState<SessionConfigDto | null>(null);
   /**
    * The question an open raised, and the session it is about (#67).
@@ -398,6 +404,9 @@ export default function App() {
       case "save-config":
         onOpenSaveTerminal();
         break;
+      case "remove-application":
+        setRemoveApplicationTarget(selected.config);
+        break;
       case "remove-session":
         registry.removeSession(selected.config.id);
         break;
@@ -411,6 +420,8 @@ export default function App() {
     <AddApplicationDialog
       onSubmit={onAddApplication}
       onRecommendDisplay={recommendDisplay}
+      onPickPath={discovery.pick}
+      onScanDirectory={discovery.scan}
       onClose={() => setAddApplicationOpen(false)}
     />
   ) : null;
@@ -446,6 +457,23 @@ export default function App() {
           return result;
         }}
         onClose={() => setSaveTerminalTarget(null)}
+      />
+    );
+
+  const removeApplicationDialog =
+    removeApplicationTarget === null ? null : (
+      <RemoveApplicationDialog
+        key={removeApplicationTarget.id}
+        config={removeApplicationTarget}
+        onSubmit={async () => {
+          const result = await registry.removeApplication(removeApplicationTarget.id);
+          if (result.ok) {
+            setRemoveApplicationTarget(null);
+            setNotice(`已从受管名单移除「${removeApplicationTarget.name}」`);
+          }
+          return result;
+        }}
+        onClose={() => setRemoveApplicationTarget(null)}
       />
     );
 
@@ -533,6 +561,7 @@ export default function App() {
         <StatusBar counts={counts} connection={connection} notice={statusNotice} />
         {addApplicationDialog}
         {saveTerminalDialog}
+        {removeApplicationDialog}
         {openChoiceDialog}
       </div>
     );
@@ -627,6 +656,7 @@ export default function App() {
       <StatusBar counts={counts} connection={connection} notice={statusNotice} />
       {addApplicationDialog}
       {saveTerminalDialog}
+      {removeApplicationDialog}
       {openChoiceDialog}
     </div>
   );

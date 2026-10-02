@@ -1,0 +1,163 @@
+
+== #63 daily-PowerShell shortcut entry: Windows measurements ==
+
+Entry under test
+  path      : C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe
+  sha256    : 5F466EF75E1809352A13B867591A4B35B6267B0A38214E15D6F9511A646D3BDC
+  installer : C:\Users\q9560\Documents\GitHub\Local-Console-Hub\scripts\install-powershell-shortcut.ps1
+  the user's own Start menu shortcut points at: E:\Local Console Hub\local-console-hub.exe
+
+== The entry, built by scripts\install-powershell-shortcut.ps1 ==
+  (installer exit code: 0)
+  (installer said:   now      : "C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe" --new-terminal --directory "C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录" |   starts in: C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录 |   saved    : C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\Daily PowerShell.lch-original.lnk)
+  [PASS] the installer rewrites the chosen shortcut at the Hub
+         expected: C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe
+         actual:   C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe
+  [PASS] the request is a new-terminal request
+         expected: --new-terminal
+         actual:   --new-terminal --directory "C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录"
+  [PASS] the directory travels as one quoted argument (space and Unicode intact)
+         expected: C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录
+         actual:   --new-terminal --directory "C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录"
+  [PASS] the original shortcut was saved beside itself
+         expected: a .lch-original.lnk beside the entry
+         actual:   True
+  [PASS] the user's own Start menu shortcut is untouched
+         expected: E:\Local Console Hub\local-console-hub.exe
+         actual:   E:\Local Console Hub\local-console-hub.exe
+
+== The user's own PowerShell entry, copied and converted ==
+  [PASS] the user's entry keeps its meaning: its start directory is expanded
+         expected: an existing directory, not the variable text
+         actual:   was "%HOMEDRIVE%%HOMEPATH%", now directory="C:\Users\q9560"
+  [PASS] the user's own shortcut file is still theirs
+         expected: unchanged on disk
+         actual:   C:\Users\q9560\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Windows PowerShell\Windows PowerShell (x86).lnk still points at C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe
+
+== H04 cold start: the shortcut with no Hub running ==
+  [PASS] H04 the Hub starts, exactly one process
+         expected: 1
+         actual:   1
+  [PASS] H04 the window is on the desktop
+         expected: a visible, titled top-level window
+         actual:   hwnd=4916904 visible=True
+  [PASS] H04 the shortcut created one terminal inside it
+         expected: 1 shell
+         actual:   1: pwsh.exe(110212)
+
+== H04 with the Hub already running ==
+  [PASS] H04 the launch is handed to the running Hub and ends
+         expected: exit code 0
+         actual:   exit code 0
+  [PASS] H04 still exactly one Hub
+         expected: 1
+         actual:   1
+  [PASS] H04 the second click added exactly one more terminal
+         expected: 2 shells
+         actual:   2
+
+== H04 with the Hub hidden in the tray ==
+  [PASS] the Hub is off the desktop (closed to the tray)
+         expected: visible=False, still one Hub
+         actual:   visible=False, Hub processes=1
+  [PASS] H04 the shortcut restores the window and adds a terminal
+         expected: visible again, exit code 0, 3 shells
+         actual:   visible=True exit code=0 shells=3
+
+== H04 two independent clicks, almost together ==
+  [PASS] each independent click adds its own shell
+         expected: 5 shells, both launches exit 0
+         actual:   5 shells, exit codes 0/0
+  [PASS] the single-instance rule did not swallow the second request
+         expected: 1 Hub
+         actual:   1
+
+== H06 a directory that does not exist ==
+  [PASS] a directory that is not there is refused with the reason
+         expected: a message box naming that directory
+         actual:   shown: 确定 新建终端失败：the working directory `C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 no such directory` does not exist or is not a directory
+  [PASS] the refusal is reported to the process that asked
+         expected: exit code 1
+         actual:   exit code 1
+  [PASS] nothing was opened somewhere else instead
+         expected: no new shell
+         actual:   shells 5 -> 5
+
+== H06 the same entry with no Hub running ==
+  [PASS] cleared before the cold start
+         expected: 0 Hubs
+         actual:   0
+  [PASS] cold: the Hub opens, names the directory, and starts no terminal
+         expected: window on screen, a message box naming the directory, 0 shells
+         actual:   window=yes, dialog=确定 新建终端失败：the working directory `C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 no such directory` does not exist or is not a directory, shells=0
+  [PASS] cold: the Hub stays open after refusing
+         expected: 1 Hub, still running
+         actual:   1 (running)
+
+== The ordinary Hub entry still only restores the window ==
+  [PASS] opening the Hub itself starts no terminal
+         expected: no new shell
+         actual:   exit code=0, shells 0 -> 0
+  [PASS] opening the Hub itself leaves exactly one Hub
+         expected: 1
+         actual:   1
+
+== H17 PowerShell started by anything else is untouched ==
+  [PASS] the shell executable itself is unchanged
+         expected: the same file, same contents
+         actual:   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe sha256=8BB6FA8C283B...
+  [PASS] a PowerShell started outside the Hub behaves as it always did
+         expected: exit code 7, its own process
+         actual:   exit code 7
+  [PASS] the Hub is not its handler
+         expected: not a child of the Hub
+         actual:   parent pid=, Hub pid=88060
+
+Cleanup: ending the Hub processes this script started.
+  [PASS] no Hub process left behind
+         expected: 0
+         actual:   0
+
+== Summary ==
+
+Check                                                                   Expected                                                                                         Actual                                             
+-----                                                                   --------                                                                                         ------                                             
+the installer rewrites the chosen shortcut at the Hub                   C:\Users\q9560\Documents\GitHub\Local-Console-Hub\src-tauri\target\release\local-console-hub.exe C:\Users\q9560\Documents\GitHub\Local-Console-Hu...
+the request is a new-terminal request                                   --new-terminal                                                                                   --new-terminal --directory "C:\Users\q9560\AppDa...
+the directory travels as one quoted argument (space and Unicode intact) C:\Users\q9560\AppData\Local\Temp\lch-t63-shortcut-entry\lch-t63 工作 目录                           --new-terminal --directory "C:\Users\q9560\AppDa...
+the original shortcut was saved beside itself                           a .lch-original.lnk beside the entry                                                             True                                               
+the user's own Start menu shortcut is untouched                         E:\Local Console Hub\local-console-hub.exe                                                       E:\Local Console Hub\local-console-hub.exe         
+the user's entry keeps its meaning: its start directory is expanded     an existing directory, not the variable text                                                     was "%HOMEDRIVE%%HOMEPATH%", now directory="C:\U...
+the user's own shortcut file is still theirs                            unchanged on disk                                                                                C:\Users\q9560\AppData\Roaming\Microsoft\Windows...
+H04 the Hub starts, exactly one process                                 1                                                                                                1                                                  
+H04 the window is on the desktop                                        a visible, titled top-level window                                                               hwnd=4916904 visible=True                          
+H04 the shortcut created one terminal inside it                         1 shell                                                                                          1: pwsh.exe(110212)                                
+H04 the launch is handed to the running Hub and ends                    exit code 0                                                                                      exit code 0                                        
+H04 still exactly one Hub                                               1                                                                                                1                                                  
+H04 the second click added exactly one more terminal                    2 shells                                                                                         2                                                  
+the Hub is off the desktop (closed to the tray)                         visible=False, still one Hub                                                                     visible=False, Hub processes=1                     
+H04 the shortcut restores the window and adds a terminal                visible again, exit code 0, 3 shells                                                             visible=True exit code=0 shells=3                  
+each independent click adds its own shell                               5 shells, both launches exit 0                                                                   5 shells, exit codes 0/0                           
+the single-instance rule did not swallow the second request             1 Hub                                                                                            1                                                  
+a directory that is not there is refused with the reason                a message box naming that directory                                                              shown: 确定 新建终端失败：the working directory `C:\Users...
+the refusal is reported to the process that asked                       exit code 1                                                                                      exit code 1                                        
+nothing was opened somewhere else instead                               no new shell                                                                                     shells 5 -> 5                                      
+cleared before the cold start                                           0 Hubs                                                                                           0                                                  
+cold: the Hub opens, names the directory, and starts no terminal        window on screen, a message box naming the directory, 0 shells                                   window=yes, dialog=确定 新建终端失败：the working directo...
+cold: the Hub stays open after refusing                                 1 Hub, still running                                                                             1 (running)                                        
+opening the Hub itself starts no terminal                               no new shell                                                                                     exit code=0, shells 0 -> 0                         
+opening the Hub itself leaves exactly one Hub                           1                                                                                                1                                                  
+the shell executable itself is unchanged                                the same file, same contents                                                                     C:\Windows\System32\WindowsPowerShell\v1.0\power...
+a PowerShell started outside the Hub behaves as it always did           exit code 7, its own process                                                                     exit code 7                                        
+the Hub is not its handler                                              not a child of the Hub                                                                           parent pid=, Hub pid=88060                         
+no Hub process left behind                                              0                                                                                                0                                                  
+
+
+
+29 checks: 29 PASS / 0 FAIL
+
+What this proves: what the installed shortcut points at, how many Hubs and shells one
+click produces from cold, warm and hidden states, what an invalid directory does, and
+that a shell started outside the Hub is untouched.
+What it cannot prove: which session the window selected (needs the devtools protocol),
+and icon appearance. Those are the manual steps in docs/SHORTCUT_ENTRY_ACCEPTANCE.md.
