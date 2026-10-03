@@ -211,22 +211,34 @@ export function udpNote(protocol: ListedPort["protocol"]): string | null {
 }
 
 export interface PortGroup {
-  id: "managed" | "other";
+  id: "managed" | "external" | "unavailable";
   title: string;
   hint: string;
   rows: ListedPort[];
 }
 
-/** Managed rows first. Everything else is one group, still with its own label. */
+/**
+ * Three readings, never folded together. An unavailable row is not external,
+ * and a group with no rows is left out.
+ */
 export function groupListedPorts(rows: readonly ListedPort[]): PortGroup[] {
   const managed = rows.filter((row) => row.attribution === "session");
-  const other = rows.filter((row) => row.attribution !== "session");
+  const external = rows.filter((row) => row.attribution === "external");
+  const unavailable = rows.filter((row) => row.attribution === "unavailable");
   const groups: PortGroup[] = [];
   if (managed.length > 0) {
     groups.push({ id: "managed", title: "受管", hint: "对上了会话", rows: managed });
   }
-  if (other.length > 0) {
-    groups.push({ id: "other", title: "外部", hint: "不是受管会话", rows: other });
+  if (external.length > 0) {
+    groups.push({ id: "external", title: "外部", hint: "不是受管会话", rows: external });
+  }
+  if (unavailable.length > 0) {
+    groups.push({
+      id: "unavailable",
+      title: UNAVAILABLE_LABEL,
+      hint: "不猜测归属",
+      rows: unavailable,
+    });
   }
   return groups;
 }

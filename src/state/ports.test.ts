@@ -10,12 +10,14 @@ import {
   checkCaption,
   completeListenRefresh,
   filterPorts,
+  groupListedPorts,
   initialListenRefresh,
   nameListeners,
   openableSessionId,
   portListMessage,
   shouldPollPorts,
   UDP_SOCKET_NOTE,
+  UNAVAILABLE_LABEL,
   udpNote,
   type ListedPort,
 } from "./ports";
@@ -143,6 +145,26 @@ describe("checkCaption", () => {
   });
 });
 
+describe("groupListedPorts", () => {
+  it("keeps unavailable rows out of the external group", () => {
+    const groups = groupListedPorts([
+      listed({ port: 9, attribution: "session", sessionId: "comfy", processName: "alpha.exe" }),
+      listed({ port: 10, attribution: "external", processName: "beta.exe" }),
+      listed({ port: 11, attribution: "unavailable", pid: null, processName: null }),
+    ]);
+    expect(groups.map((group) => group.title)).toEqual(["受管", "外部", UNAVAILABLE_LABEL]);
+    expect(groups.find((group) => group.title === "外部")?.rows.map((row) => row.port)).toEqual([
+      10,
+    ]);
+    expect(groups.find((group) => group.id === "unavailable")?.rows.map((row) => row.port)).toEqual(
+      [11],
+    );
+    expect(
+      groupListedPorts([listed({ port: 10, attribution: "external" })]).map((g) => g.id),
+    ).toEqual(["external"]);
+  });
+});
+
 describe("openable sessions", () => {
   it("does not offer external or unavailable rows as sessions", () => {
     const managed = listed({
@@ -182,5 +204,7 @@ describe("sample rows", () => {
     for (const token of banned) {
       expect(source).not.toContain(token);
     }
+    expect(workspaceSource).not.toContain("pip--run");
+    expect(workspaceSource).not.toContain("pip--err");
   });
 });

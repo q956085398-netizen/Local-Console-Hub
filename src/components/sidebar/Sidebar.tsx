@@ -124,10 +124,7 @@ export default function Sidebar({
                       aria-current={row.key === selectedPortKey ? "true" : undefined}
                       onClick={() => onSelectPort?.(row.key)}
                     >
-                      <span
-                        className={`pip ${row.attribution === "session" ? "pip--run" : "pip--idle"}`}
-                        aria-hidden="true"
-                      />
+                      <span className="pip pip--idle" aria-hidden="true" />
                       <span className="session-row__main">
                         <span className="session-row__top">
                           <span className="session-row__name">{row.port}</span>

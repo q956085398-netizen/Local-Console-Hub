@@ -841,16 +841,15 @@ fn listening_process(id: String, hold: ListeningHold) -> Option<crate::listen::S
             // cannot tell a failed table from an empty one, so a walk that
             // comes back empty is recorded as an empty list — the same answer
             // the window lookup uses — and the session's own process is still
-            // recognized from `identity`.
-            let tree = Some(recorded_members(crate::process::descendants(
-                identity.pid(),
-            )));
+            // recognized from `identity`. A member whose creation time cannot
+            // be read makes the whole tree `None`, not a shorter list.
+            let tree = recorded_members(crate::process::descendants(identity.pid()));
             Some(crate::listen::SessionProcess { id, identity, tree })
         }
         ListeningHold::Run(Run::Standalone(process)) => {
             let identity = process.identity();
             let tree = match process.tree_pids() {
-                Ok(pids) => Some(recorded_members(pids)),
+                Ok(pids) => recorded_members(pids),
                 Err(_) => None,
             };
             Some(crate::listen::SessionProcess { id, identity, tree })
@@ -862,7 +861,8 @@ fn listening_process(id: String, hold: ListeningHold) -> Option<crate::listen::S
     }
 }
 
-/// `listed` is `None` when the tree could not be read, and `Some` when it was.
+/// `listed` is `None` when the tree could not be read. A listed tree whose
+/// members cannot all be recorded is `None` as well, not a shorter `Some`.
 fn from_pid(
     id: String,
     pid: u32,
@@ -872,17 +872,32 @@ fn from_pid(
     Some(crate::listen::SessionProcess {
         id,
         identity: ProcessIdentity::recorded(pid, created),
-        tree: listed.map(recorded_members),
+        tree: listed.and_then(recorded_members),
     })
 }
 
-fn recorded_members(pids: Vec<u32>) -> Vec<ProcessIdentity> {
-    pids.into_iter()
-        .filter_map(|pid| {
-            crate::process::creation_time_of(pid)
-                .map(|created| ProcessIdentity::recorded(pid, created))
-        })
-        .collect()
+/// `None` when any listed pid cannot be recorded.
+///
+/// Dropping that pid and returning the rest would let attribution call a
+/// listener on the dropped pid external. An empty input is a listed tree with
+/// no members, which is `Some([])`, not an unread tree.
+fn recorded_members(pids: Vec<u32>) -> Option<Vec<ProcessIdentity>> {
+    record_known(
+        pids.into_iter()
+            .map(|pid| crate::process::creation_time_of(pid).map(|created| (pid, created))),
+    )
+}
+
+/// The same rule as [`recorded_members`], with the OS read already done.
+fn record_known(
+    members: impl IntoIterator<Item = Option<(u32, u64)>>,
+) -> Option<Vec<ProcessIdentity>> {
+    let mut recorded = Vec::new();
+    for member in members {
+        let (pid, created) = member?;
+        recorded.push(ProcessIdentity::recorded(pid, created));
+    }
+    Some(recorded)
 }
 
 impl SessionCore {
@@ -3984,6 +3999,23 @@ mod tests {
         assert_eq!(summary.error, 0);
 
         core.force_stop("svc").expect("cleanup");
+    }
+
+    #[test]
+    fn a_member_without_a_creation_time_leaves_the_tree_unread() {
+        assert!(super::record_known([Some((1, 10)), None, Some((3, 30))]).is_none());
+        let complete = super::record_known([Some((1, 10)), Some((2, 20))]).expect("both recorded");
+        assert_eq!(
+            complete,
+            vec![
+                ProcessIdentity::for_test(1, 10),
+                ProcessIdentity::for_test(2, 20),
+            ]
+        );
+        assert_eq!(
+            super::record_known(std::iter::empty::<Option<(u32, u64)>>()),
+            Some(vec![])
+        );
     }
 
     /// The port page reads running sessions and nothing else (#98).

@@ -60,7 +60,7 @@ export default function PortsWorkspace({
         <section className="ports-card">
           <p className="ports-card__eyebrow">只查看</p>
           <p className="ports-card__text">
-            正在监听的端口，以及是谁占用的。对得上受管会话的写会话名，其余写外部。不会结束任何进程。
+            正在监听的端口，以及是谁占用的。对得上受管会话的写会话名，对得上进程的写外部，读不到的保持信息不可用。不会结束任何进程。
           </p>
         </section>
         {!connected ? (
@@ -124,12 +124,7 @@ export default function PortsWorkspace({
 function Owner({ row }: { row: ListedPort }) {
   const label = ownerLabel(row);
   if (row.attribution === "session") {
-    return (
-      <span className="ports-owner">
-        <span className="pip pip--run" aria-hidden="true" />
-        {label}
-      </span>
-    );
+    return <span className="ports-owner">{label}</span>;
   }
   return <span className="ports-owner ports-owner--neutral">{label}</span>;
 }
@@ -158,7 +153,6 @@ function OwnerCard({
       <div className="ports-card__who-row">
         {sessionId !== null ? (
           <>
-            <span className="pip pip--run" aria-hidden="true" />
             <span>受管会话 {who}</span>
             <button
               type="button"
