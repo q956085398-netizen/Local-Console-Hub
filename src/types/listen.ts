@@ -30,7 +30,7 @@ export interface ListenerListDto {
   rows: ListenerRowDto[];
 }
 
-function isRow(value: unknown): value is ListenerRowDto {
+export function isListenerRowDto(value: unknown): value is ListenerRowDto {
   if (typeof value !== "object" || value === null) return false;
   const row = value as Record<string, unknown>;
   const protocol = row.protocol === "TCP" || row.protocol === "UDP";
@@ -70,6 +70,6 @@ export function isListenerListDto(value: unknown): value is ListenerListDto {
     typeof candidate.inProgress === "boolean" &&
     failure &&
     Array.isArray(candidate.rows) &&
-    candidate.rows.every(isRow)
+    candidate.rows.every(isListenerRowDto)
   );
 }

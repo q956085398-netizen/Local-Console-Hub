@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import TitleBar from "../components/title-bar/TitleBar";
@@ -18,6 +18,7 @@ import AddApplicationDialog from "../components/add-application/AddApplicationDi
 import RemoveApplicationDialog from "../components/remove-application/RemoveApplicationDialog";
 import SaveTerminalDialog from "../components/save-terminal/SaveTerminalDialog";
 import OpenChoiceDialog from "../components/open-choice/OpenChoiceDialog";
+import PortOccupancyDialog from "../components/port-occupancy/PortOccupancyDialog";
 import type { NewApplicationFormDto, SaveTerminalFormDto, SessionConfigDto } from "../types/config";
 import {
   filterSessions,
@@ -30,9 +31,17 @@ import {
   titlebarSummaryText,
 } from "../state/derivations";
 import { SESSION_ACTION_LABELS, type SessionAction } from "../state/actions";
+import {
+  afterOccupancyCheck,
+  afterPromptChoice,
+  beforeOccupancyCheck,
+  describeOccupants,
+} from "../state/port-occupancy";
 import { DEFAULT_SELECTED_SESSION_ID, FIXTURE_GROUPS, FIXTURE_SESSIONS } from "../state/fixtures";
 import { LIVE_GROUPS } from "../state/session-view";
 import type { WorkspaceTab } from "../state/view";
+import type { ListenerRowDto } from "../types/listen";
+import { isPortOccupancyDto, PORT_OCCUPANCY_COMMAND } from "../types/port-occupancy";
 import type { OpenChoiceDto, OpenResolutionDto } from "../types/runtime";
 import { SESSION_FOCUS_REQUESTED, isSessionFocusRequestedDto } from "../types/tray";
 import { SESSION_OPENED, isSessionOpenedDto } from "../types/launch";
@@ -117,6 +126,20 @@ export default function App() {
     sessionName: string;
     choice: OpenChoiceDto;
   } | null>(null);
+  /**
+   * Who holds the configured port, asked before a start (#99).
+   *
+   * Held with the id rather than read from the selection when the user
+   * answers: the workspace can move under an open dialog.
+   */
+  const [occupancyPrompt, setOccupancyPrompt] = useState<{
+    sessionId: string;
+    sessionName: string;
+    port: number;
+    mode: "occupied" | "unreadable";
+    rows: ListenerRowDto[];
+  } | null>(null);
+  const occupancyChecks = useRef(new Set<string>());
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
@@ -360,6 +383,72 @@ export default function App() {
   };
 
   /**
+   * Start, after saying who already holds the configured port (#99).
+   *
+   * The check is a read. It runs only when this click would start a stopped,
+   * exited, or error session that has a port. Cancel never reaches `activate`.
+   * A session with no port, one that is already running, and the preview path
+   * stay on the path they had before.
+   */
+  const requestStart = (sessionId: string, previewLabel: string) => {
+    const session = sessions.find((item) => item.config.id === sessionId);
+    const step = beforeOccupancyCheck({
+      live: registry.live,
+      port: session?.config.port,
+      status: session?.runtime.status ?? "stopped",
+    });
+    if (step.kind === "preview") {
+      onPreviewAction(previewLabel);
+      return;
+    }
+    if (step.kind === "activate") {
+      activate(sessionId);
+      return;
+    }
+    const port = session?.config.port;
+    if (typeof port !== "number" || occupancyChecks.current.has(sessionId)) return;
+    occupancyChecks.current.add(sessionId);
+    const sessionName = configNameOf(sessionId);
+    const showUnreadable = () => {
+      setOccupancyPrompt({ sessionId, sessionName, port, mode: "unreadable", rows: [] });
+    };
+    void invoke<unknown>(PORT_OCCUPANCY_COMMAND, { sessionId })
+      .then((raw) => {
+        if (!isPortOccupancyDto(raw)) {
+          showUnreadable();
+          return;
+        }
+        const follow = afterOccupancyCheck(raw);
+        if (follow.kind === "activate") {
+          activate(sessionId);
+          return;
+        }
+        setOccupancyPrompt({
+          sessionId,
+          sessionName,
+          port: raw.port ?? port,
+          mode: follow.mode,
+          rows: follow.mode === "occupied" ? follow.rows : [],
+        });
+      })
+      .catch(showUnreadable)
+      .finally(() => {
+        occupancyChecks.current.delete(sessionId);
+      });
+  };
+
+  const cancelOccupancy = () => {
+    if (afterPromptChoice("cancel") === "stay") setOccupancyPrompt(null);
+  };
+
+  const continueOccupancy = () => {
+    if (occupancyPrompt === null) return;
+    const sessionId = occupancyPrompt.sessionId;
+    setOccupancyPrompt(null);
+    if (afterPromptChoice("continue") === "activate") activate(sessionId);
+  };
+
+  /**
    * Answer the question (#67).
    *
    * Three answers carry three different truths, and the user is owed the one
@@ -399,7 +488,7 @@ export default function App() {
       // Opening, not starting (#64): the activation semantics are what keep a
       // second click from creating a second run of the same application.
       case "start":
-        activate(selected.config.id);
+        requestStart(selected.config.id, label);
         break;
       case "stop":
         registry.stop(selected.config.id);
@@ -456,6 +545,23 @@ export default function App() {
         choice={openChoice.choice}
         onResolve={resolveOpen}
         onClose={() => setOpenChoice(null)}
+      />
+    );
+
+  const occupancyDialog =
+    occupancyPrompt === null ? null : (
+      <PortOccupancyDialog
+        key={occupancyPrompt.sessionId}
+        sessionName={occupancyPrompt.sessionName}
+        port={occupancyPrompt.port}
+        mode={occupancyPrompt.mode}
+        lines={describeOccupants(
+          occupancyPrompt.rows,
+          sessions.map((session) => ({ id: session.config.id, name: session.config.name })),
+          occupancyPrompt.sessionId,
+        )}
+        onContinue={continueOccupancy}
+        onClose={cancelOccupancy}
       />
     );
 
@@ -608,9 +714,7 @@ export default function App() {
                       <StandalonePanel
                         session={selected}
                         onActivate={() =>
-                          registry.live
-                            ? activate(selected.config.id)
-                            : onPreviewAction(`打开 ${selected.config.name}`)
+                          requestStart(selected.config.id, `打开 ${selected.config.name}`)
                         }
                       />
                     ) : (
@@ -619,9 +723,7 @@ export default function App() {
                         live={registry.live}
                         focusRequest={focusRequest}
                         onStart={() =>
-                          registry.live
-                            ? activate(selected.config.id)
-                            : onPreviewAction(`启动 ${selected.config.name}`)
+                          requestStart(selected.config.id, `启动 ${selected.config.name}`)
                         }
                       />
                     ))}
@@ -661,6 +763,7 @@ export default function App() {
       {saveTerminalDialog}
       {removeApplicationDialog}
       {openChoiceDialog}
+      {occupancyDialog}
     </div>
   );
 }

@@ -1,0 +1,42 @@
+/* Who holds the configured port (#99). Only what the shared dialog skin does
+   not already give: one block per listener, with the fields the read actually
+   returned. External and 信息不可用 stay on the muted text color. */
+
+.port-occupancy__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.port-occupancy__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.port-occupancy__process {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.port-occupancy__meta,
+.port-occupancy__neutral {
+  font-size: 12px;
+  color: var(--muted-fg);
+  overflow-wrap: anywhere;
+}
+
+.port-occupancy__meta {
+  font-family: var(--font-mono);
+}
+
+.port-occupancy__owner {
+  font-size: 12px;
+  color: var(--fg);
+}
