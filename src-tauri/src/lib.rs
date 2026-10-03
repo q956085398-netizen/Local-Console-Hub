@@ -34,6 +34,10 @@ mod dialog;
 mod health;
 mod instance;
 mod ipc;
+/// Listening ports on this machine and the process that owns each one (#96).
+/// A read of the OS tables, not the configured-port TCP reachability probe
+/// (`health`).
+pub mod listen;
 pub mod logging;
 pub mod process;
 pub mod pty;
