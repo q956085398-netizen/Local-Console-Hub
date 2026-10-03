@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Console Hub — 端口视图原型</title>
+  <style>
+    /*
+     * Desktop-only layout prototype. Not wired to the app.
+     *
+     * Seam: the rail is painted #121318 for its entire width, and the 1px
+     * divider is the rail's own right border. The workspace #0b0c0f starts
+     * on the other side of that line. The window black does not continue
+     * into the rail.
+     */
+    :root {
+      color-scheme: dark;
+      --bg: #0b0c0f;
+      --card: #121318;
+      --popover: #181a21;
+      --secondary: #1c1e26;
+      --accent-surface: #22242d;
+      --terminal: #090a0d;
+      --fg: #ecece8;
+      --fg-dim: #c5ccd6;
+      --muted-fg: #8f929c;
+      --primary: #c5ccd6;
+      --primary-fg: #0b0c0f;
+      --border: rgba(236, 236, 232, 0.1);
+      --border-soft: rgba(255, 255, 255, 0.05);
+      --input-bg: rgba(236, 236, 232, 0.12);
+      --status-run: #6fba8a;
+      --status-busy: #c9b07a;
+      --status-err: #d27878;
+      --status-idle: #6d717b;
+      --impact-bg: rgba(201, 176, 122, 0.14);
+      --impact-border: rgba(201, 176, 122, 0.2);
+      --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
+      --font: "Segoe UI", "Microsoft YaHei", "WenQuanYi Micro Hei", system-ui, sans-serif;
+      --mono: "Cascadia Mono", "WenQuanYi Micro Hei Mono", ui-monospace, Consolas, monospace;
+      --rail: 360px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    :focus-visible { outline: 1px solid var(--fg-dim); outline-offset: 1px; }
+    * { scrollbar-width: thin; scrollbar-color: #2a2d36 transparent; }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-width: 1100px;
+      background: var(--bg);
+    }
+
+    .title-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 44px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--border);
+      flex: none;
+      user-select: none;
+    }
+    .mark { width: 30px; height: 30px; margin-left: 4px; flex: none; display: block; }
+    .title-bar h1 {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: -0.025em;
+    }
+    .title-summary {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted-fg);
+    }
+    .window-controls { display: flex; gap: 2px; margin-right: -2px; }
+    .window-controls button {
+      width: 38px;
+      height: 30px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted-fg);
+    }
+    .window-controls button:hover { background: var(--secondary); color: var(--fg); }
+    .window-controls svg { width: 10px; height: 10px; stroke: currentColor; fill: none; stroke-width: 1; }
+
+    .main {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      background: var(--bg);
+    }
+
+    /* Gray fills the rail up to the divider. Black stays in the workspace. */
+    .rail {
+      width: var(--rail);
+      flex: none;
+      display: flex;
+      min-height: 0;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      background: var(--card);
+    }
+
+    .side-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 12px 8px;
+    }
+    .side-tabs { display: flex; align-items: center; gap: 16px; }
+    .side-tab {
+      position: relative;
+      height: 28px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--muted-fg);
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: -0.025em;
+    }
+    .side-tab:hover { color: var(--fg); }
+    .side-tab[aria-selected="true"] { color: var(--fg); }
+    .side-tab[aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 2px;
+      height: 1px;
+      background: var(--primary);
+    }
+    .side-count {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted-fg);
+      font-variant-numeric: tabular-nums;
+    }
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 8px;
+      background: var(--secondary);
+      box-shadow: var(--shadow-border);
+      color: var(--fg);
+      flex: none;
+    }
+    .icon-btn:hover { background: var(--accent-surface); }
+    .icon-btn svg, .btn svg, .side-add svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    .search-wrap { position: relative; padding: 0 12px 8px; }
+    .search-wrap svg {
+      position: absolute;
+      left: 22px;
+      top: 10px;
+      width: 14px;
+      height: 14px;
+      stroke: var(--muted-fg);
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+    }
+    .search-wrap input {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px 0 32px;
+      font-size: 12px;
+      background: rgba(11, 12, 15, 0.6);
+      border: 1px solid var(--input-bg);
+      border-radius: 8px;
+    }
+    .search-wrap input::placeholder { color: var(--muted-fg); }
+
+    .side-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 8px 12px;
+    }
+    .group-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 8px 4px;
+    }
+    .group-title {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted-fg);
+    }
+    .group-hint {
+      font-size: 11px;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+    .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      width: 100%;
+      padding: 8px;
+      text-align: left;
+      background: transparent;
+      border: none;
+      border-radius: 12px;
+      color: inherit;
+    }
+    .row:hover { background: rgba(28, 30, 38, 0.7); }
+    .row[aria-current="true"] { background: var(--secondary); }
+    .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+    .row-top, .row-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    .row-top { justify-content: space-between; }
+    .row-name {
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.375;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .row-tail, .row-meta {
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+      color: var(--muted-fg);
+    }
+    .row-tail { flex: none; font-size: 10px; }
+    .row-meta { margin-top: 2px; font-size: 11px; white-space: nowrap; overflow: hidden; }
+    .dot::before { content: "·"; margin: 0 6px; color: var(--border); }
+    .empty {
+      margin: 32px 8px;
+      font-size: 12px;
+      text-align: center;
+      color: var(--muted-fg);
+    }
+
+    .pip {
+      width: 8px;
+      height: 8px;
+      margin-top: 6px;
+      border-radius: 50%;
+      flex: none;
+      background: var(--status-idle);
+    }
+    .pip--run { background: var(--status-run); }
+    .pip--idle { background: var(--status-idle); }
+
+    .side-foot {
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid var(--border);
+      padding: 8px;
+    }
+    .side-add {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      height: 40px;
+      padding: 0 8px;
+      font-size: 12px;
+      color: var(--muted-fg);
+      background: transparent;
+      border: none;
+      border-radius: 8px;
+      text-align: left;
+    }
+    .side-add--quiet { height: 32px; }
+    .side-add:hover { background: var(--secondary); color: var(--fg); }
+    .side-foot__note {
+      margin: 0;
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted-fg);
+    }
+
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      background: var(--bg);
+    }
+    .session-header, .port-header {
+      flex: none;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .session-name, .port-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: -0.025em;
+    }
+    .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+    .subline {
+      margin: 4px 0 0;
+      font-size: 12px;
+      color: var(--muted-fg);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 1px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.025em;
+      flex: none;
+    }
+    .badge--outline { border: 1px solid var(--border); color: var(--muted-fg); }
+    .badge--run { background: rgba(111, 186, 138, 0.15); color: var(--status-run); }
+    .badge--run .pip { width: 6px; height: 6px; margin: 0 6px 0 0; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      height: 32px;
+      padding: 0 10px;
+      border: none;
+      border-radius: 8px;
+      background: var(--secondary);
+      box-shadow: var(--shadow-border);
+      color: var(--fg);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--accent-surface); }
+    .btn--icon { width: 32px; padding: 0; }
+
+    .callout {
+      margin-top: 12px;
+      border-radius: 12px;
+      border-left: 2px solid var(--status-busy);
+      background: var(--impact-bg);
+      padding: 8px 12px;
+    }
+    .callout__title {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--status-busy);
+    }
+    .callout__text { margin: 2px 0 0; font-size: 14px; }
+    .meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      margin: 12px 0 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+    }
+    .meta-line b {
+      font-weight: 400;
+      color: rgba(143, 146, 156, 0.7);
+      margin-right: 6px;
+    }
+    .meta-line span { color: rgba(236, 236, 232, 0.8); }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      flex: none;
+    }
+    .tab {
+      position: relative;
+      height: 40px;
+      padding: 0 12px;
+      border: none;
+      background: transparent;
+      color: var(--muted-fg);
+      font-size: 14px;
+    }
+    .tab:hover { color: var(--fg); }
+    .tab[aria-selected="true"] { color: var(--fg); }
+    .tab[aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 0;
+      height: 1px;
+      background: var(--primary);
+    }
+
+    .content {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+    }
+    .stack { display: flex; flex-direction: column; gap: 12px; padding: 4px; }
+    .card {
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: var(--shadow-border);
+      padding: 16px;
+    }
+    .eyebrow {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted-fg);
+    }
+    .eyebrow--busy { color: var(--status-busy); }
+    .card h3, .who-name {
+      margin: 4px 0 0;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: -0.025em;
+    }
+    .purpose { margin: 8px 0 0; font-size: 14px; }
+    .identity {
+      margin: 6px 0 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+      overflow-wrap: anywhere;
+    }
+    .impact {
+      border: 1px solid var(--impact-border);
+      border-radius: 12px;
+      background: var(--impact-bg);
+      padding: 16px;
+    }
+    .impact p { margin: 6px 0 0; font-size: 14px; line-height: 1.625; }
+    .impact .fine { margin-top: 8px; font-size: 12px; color: var(--muted-fg); }
+    .kv {
+      margin: 0;
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: var(--shadow-border);
+      overflow: hidden;
+    }
+    .kv div {
+      display: grid;
+      grid-template-columns: 7.5rem 1fr;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .kv div:last-child { border-bottom: none; }
+    .kv dt { font-size: 12px; color: var(--muted-fg); }
+    .kv dd {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .terminal {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 280px;
+      border-radius: 12px;
+      background: var(--terminal);
+      box-shadow: var(--shadow-border);
+      overflow: hidden;
+    }
+    .terminal__chrome {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+    }
+    .terminal__body {
+      padding: 8px 12px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--muted-fg);
+    }
+    .policy {
+      border-radius: 12px;
+      background: rgba(28, 30, 38, 0.6);
+      box-shadow: var(--shadow-border);
+      padding: 12px;
+    }
+    .policy p { margin: 8px 0 0; font-size: 14px; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .quiet {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted-fg);
+      line-height: 1.625;
+    }
+    .who-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .who-row .pip { margin-top: 0; }
+    .who-row span { font-size: 14px; }
+    .who-row .btn { margin-left: auto; }
+
+    .table-card {
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: var(--shadow-border);
+      overflow: hidden;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted-fg);
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: rgba(28, 30, 38, 0.7); }
+    tbody tr[aria-selected="true"] { background: var(--secondary); }
+    td.mono, th.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    .owner {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .owner .pip { margin-top: 0; width: 6px; height: 6px; }
+    .muted { color: var(--muted-fg); }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      height: 32px;
+      padding: 0 12px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+      flex: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="title-bar">
+      <svg class="mark" viewBox="0 0 16 16" aria-hidden="true">
+        <rect width="16" height="16" rx="3" fill="#0b0c0f" />
+        <rect x="1" y="1" width="14" height="14" rx="2.25" fill="#181a21" />
+        <circle cx="4" cy="4.5" r="1.2" fill="#6fba8a" />
+        <rect x="6.2" y="3.7" width="6.5" height="1.6" rx="0.8" fill="#c5ccd6" />
+        <rect x="2.8" y="7.5" width="10.4" height="1.5" rx="0.75" fill="#8f929c" />
+        <rect x="2.8" y="10.7" width="7.2" height="1.5" rx="0.75" fill="#8f929c" />
+      </svg>
+      <h1>Local Console Hub</h1>
+      <p class="title-summary">2 运行</p>
+      <div class="window-controls" aria-hidden="true">
+        <button type="button" tabindex="-1"><svg viewBox="0 0 12 12"><path d="M2 6h8" /></svg></button>
+        <button type="button" tabindex="-1"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" /></svg></button>
+        <button type="button" tabindex="-1"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3L3 9" /></svg></button>
+      </div>
+    </header>
+
+    <div class="main">
+      <aside class="rail">
+        <div class="sidebar">
+          <div class="side-head">
+            <div>
+              <div class="side-tabs" role="tablist" aria-label="侧栏">
+                <button type="button" class="side-tab" id="tab-sessions" role="tab" aria-controls="pane-sessions" aria-selected="true">受管会话</button>
+                <button type="button" class="side-tab" id="tab-ports" role="tab" aria-controls="pane-ports" aria-selected="false">端口</button>
+              </div>
+              <p class="side-count" id="side-count">2 运行 · 2 会话</p>
+            </div>
+            <button type="button" class="icon-btn" id="add-btn" title="新建 PowerShell" aria-label="新建 PowerShell">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+          </div>
+
+          <div class="search-wrap">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            <input id="search" type="search" placeholder="搜索名称、端口、用途" aria-label="搜索" autocomplete="off" />
+          </div>
+
+          <div class="side-scroll" id="pane-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+            <div class="group-head">
+              <h2 class="group-title">Configured</h2>
+              <span class="group-hint">config.yaml</span>
+            </div>
+            <ul class="rows" id="session-rows"></ul>
+            <p class="empty" id="session-empty" hidden>没有匹配的受管会话。</p>
+          </div>
+
+          <div class="side-scroll" id="pane-ports" role="tabpanel" aria-labelledby="tab-ports" hidden>
+            <div id="port-groups"></div>
+            <p class="empty" id="port-empty" hidden>没有匹配的端口。</p>
+          </div>
+
+          <div class="side-foot" id="side-foot"></div>
+        </div>
+      </aside>
+
+      <section class="workspace" id="workspace"></section>
+    </div>
+
+    <footer class="status-bar">
+      <span>Hub 常驻 · 2/2 运行 · 输入默认不记录</span>
+      <span id="status-right">关闭窗口 ≠ 停止服务</span>
+    </footer>
+  </div>
+
+  <script>
+    const sessions = [
+      {
+        id: "sillytavern",
+        name: "SillyTavern",
+        type: "Service",
+        status: "Running",
+        up: "5h 56m",
+        meta: ["service", "svc", "On error"],
+        pid: "64728",
+        cwd: "E:\\SillyTavern",
+        log: "on error",
+        command: "\"E:\\SillyTavern\\Start.bat\"",
+        run: "run-1a1007226f70001",
+        purpose: "—",
+        closeImpact: "—",
+      },
+      {
+        id: "vertex-proxy",
+        name: "vertex-proxy",
+        type: "Service",
+        status: "Running",
+        up: "5h 55m",
+        meta: ["service", "svc", "On error"],
+        pid: null,
+        cwd: null,
+        log: "on error",
+        command: "—",
+        run: "—",
+        purpose: "—",
+        closeImpact: "—",
+      },
+    ];
+
+    /* Layout samples. Only SillyTavern's PID and path come from the current
+     * screen; every port number is a placeholder. */
+    const ports = [
+      {
+        id: "p8000",
+        port: "8000",
+        proto: "TCP",
+        addr: "127.0.0.1",
+        process: "SillyTavern.exe",
+        pid: "64728",
+        path: "E:\\SillyTavern\\Start.bat",
+        sessionId: "sillytavern",
+        kind: "managed",
+        note: "按进程树对上了受管会话 SillyTavern，不是只因为端口号相同。",
+      },
+      {
+        id: "p5100",
+        port: "5100",
+        proto: "TCP",
+        addr: "127.0.0.1",
+        process: "vertex-proxy",
+        pid: "—",
+        path: "—",
+        sessionId: "vertex-proxy",
+        kind: "managed",
+        note: "这个会话正在运行。端口号和 PID 在原型里是占位，正式版要查到真实监听后再关联。",
+      },
+      {
+        id: "p135",
+        port: "135",
+        proto: "TCP",
+        addr: "0.0.0.0",
+        process: "svchost.exe",
+        pid: "1248",
+        path: "C:\\Windows\\System32\\svchost.exe",
+        sessionId: null,
+        kind: "external",
+        note: "没有对上受管会话。外部进程只展示，不会被结束。",
+      },
+      {
+        id: "p445",
+        port: "445",
+        proto: "TCP",
+        addr: "0.0.0.0",
+        process: "System",
+        pid: "4",
+        path: "—",
+        sessionId: null,
+        kind: "external",
+        note: "没有对上受管会话。外部进程只展示，不会被结束。",
+      },
+      {
+        id: "p5353",
+        port: "5353",
+        proto: "UDP",
+        addr: "0.0.0.0",
+        process: "svchost.exe",
+        pid: "2104",
+        path: "—",
+        sessionId: null,
+        kind: "external",
+        note: "UDP 只说明有这个套接字，不说明正在收发数据。没有对上受管会话。",
+      },
+      {
+        id: "p49670",
+        port: "49670",
+        proto: "TCP",
+        addr: "[::1]",
+        process: null,
+        pid: "—",
+        path: "—",
+        sessionId: null,
+        kind: "unknown",
+        note: "基础查看不需要管理员。这一行是额外字段读不到，端口本身仍在监听。",
+      },
+    ];
+
+    const state = {
+      mode: location.hash === "#ports" ? "ports" : "sessions",
+      sessionId: "sillytavern",
+      tab: "details",
+      portId: "p8000",
+      query: "",
+      checkedAt: "12:30:04",
+    };
+
+    const $ = (id) => document.getElementById(id);
+    let noticeTimer = 0;
+
+    function sessionById(id) {
+      return sessions.find((item) => item.id === id);
+    }
+
+    function portById(id) {
+      return ports.find((item) => item.id === id);
+    }
+
+    function ownerText(port) {
+      if (port.kind === "managed") return sessionById(port.sessionId).name;
+      if (port.kind === "unknown") return "信息不可用";
+      return "外部";
+    }
+
+    function matches(port, query) {
+      if (!query) return true;
+      const hay = [port.port, port.proto, port.addr, port.process || "", port.pid, ownerText(port)]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(query.trim().toLowerCase());
+    }
+
+    function notice(text) {
+      $("status-right").textContent = text;
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => {
+        $("status-right").textContent = "关闭窗口 ≠ 停止服务";
+      }, 4000);
+    }
+
+    function icon(name) {
+      const paths = {
+        plus: '<path d="M12 5v14M5 12h14"/>',
+        terminal: '<path d="M4 17l6-6-6-6M12 19h8"/>',
+        folderPlus: '<path d="M12 11v6M9 14h6"/><path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"/>',
+        square: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
+        restart: '<path d="M21 12a9 9 0 1 1-2.2-5.8L21 8"/><path d="M21 3v5h-5"/>',
+        folder: '<path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"/>',
+        more: '<circle cx="6" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1" fill="currentColor" stroke="none"/>',
+        refresh: '<path d="M21 12a9 9 0 1 1-2.2-5.8L21 8"/><path d="M21 3v5h-5"/>',
+      };
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      state.query = "";
+      $("search").value = "";
+      history.replaceState(null, "", mode === "ports" ? "#ports" : "#sessions");
+      render();
+      $("search").focus();
+    }
+
+    function render() {
+      const portsMode = state.mode === "ports";
+      $("tab-sessions").setAttribute("aria-selected", String(!portsMode));
+      $("tab-ports").setAttribute("aria-selected", String(portsMode));
+      $("pane-sessions").hidden = portsMode;
+      $("pane-ports").hidden = !portsMode;
+      $("side-count").textContent = portsMode ? "6 监听 · 2 受管" : "2 运行 · 2 会话";
+      $("search").placeholder = portsMode ? "搜索端口、进程、会话" : "搜索名称、端口、用途";
+      $("search").setAttribute("aria-label", portsMode ? "搜索端口" : "搜索会话");
+      renderFoot();
+      renderSessions();
+      renderPortList();
+      renderWorkspace();
+    }
+
+    function renderFoot() {
+      const foot = $("side-foot");
+      foot.replaceChildren();
+      if (state.mode === "ports") {
+        const note = document.createElement("p");
+        note.className = "side-foot__note";
+        note.textContent = "只查看占用，不结束进程。";
+        foot.appendChild(note);
+        return;
+      }
+      const add = (label, glyph, quiet) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = quiet ? "side-add side-add--quiet" : "side-add";
+        button.innerHTML = icon(glyph);
+        button.append(document.createTextNode(label));
+        button.addEventListener("click", () => notice("原型不改会话。正式版这个入口仍在。"));
+        foot.appendChild(button);
+      };
+      add("新建 PowerShell", "terminal", false);
+      add("添加应用", "folderPlus", true);
+    }
+
+    function renderSessions() {
+      const query = state.query.trim().toLowerCase();
+      const list = $("session-rows");
+      list.replaceChildren();
+      let shown = 0;
+      for (const session of sessions) {
+        if (query && !session.name.toLowerCase().includes(query)) continue;
+        shown += 1;
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "row";
+        button.setAttribute("aria-current", String(session.id === state.sessionId));
+        button.innerHTML = `<span class="pip pip--run" aria-hidden="true"></span>`;
+        const main = document.createElement("span");
+        main.className = "row-main";
+        const top = document.createElement("span");
+        top.className = "row-top";
+        const name = document.createElement("span");
+        name.className = "row-name";
+        name.textContent = session.name;
+        const tail = document.createElement("span");
+        tail.className = "row-tail";
+        tail.textContent = session.up;
+        top.append(name, tail);
+        const meta = document.createElement("span");
+        meta.className = "row-meta";
+        session.meta.forEach((part, index) => {
+          const span = document.createElement("span");
+          if (index > 0) span.className = "dot";
+          span.textContent = part;
+          meta.appendChild(span);
+        });
+        main.append(top, meta);
+        button.appendChild(main);
+        button.addEventListener("click", () => {
+          state.sessionId = session.id;
+          render();
+        });
+        item.appendChild(button);
+        list.appendChild(item);
+      }
+      $("session-empty").hidden = shown > 0;
+    }
+
+    function renderPortList() {
+      const host = $("port-groups");
+      host.replaceChildren();
+      const visible = ports.filter((port) => matches(port, state.query));
+      $("port-empty").hidden = visible.length > 0;
+      const groups = [
+        ["受管", "对上了会话", visible.filter((port) => port.kind === "managed")],
+        ["外部", "不是受管会话", visible.filter((port) => port.kind !== "managed")],
+      ];
+      for (const [title, hint, items] of groups) {
+        if (items.length === 0) continue;
+        const head = document.createElement("div");
+        head.className = "group-head";
+        const h = document.createElement("h2");
+        h.className = "group-title";
+        h.textContent = title;
+        const hintEl = document.createElement("span");
+        hintEl.className = "group-hint";
+        hintEl.textContent = hint;
+        head.append(h, hintEl);
+        const list = document.createElement("ul");
+        list.className = "rows";
+        for (const port of items) {
+          const item = document.createElement("li");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "row";
+          button.setAttribute("aria-current", String(port.id === state.portId));
+          const pip = document.createElement("span");
+          pip.className = port.kind === "managed" ? "pip pip--run" : "pip pip--idle";
+          pip.setAttribute("aria-hidden", "true");
+          const main = document.createElement("span");
+          main.className = "row-main";
+          const top = document.createElement("span");
+          top.className = "row-top";
+          const name = document.createElement("span");
+          name.className = "row-name";
+          name.textContent = port.port;
+          const tail = document.createElement("span");
+          tail.className = "row-tail";
+          tail.textContent = port.proto;
+          top.append(name, tail);
+          const meta = document.createElement("span");
+          meta.className = "row-meta";
+          const who = document.createElement("span");
+          who.textContent = port.process || "信息不可用";
+          const own = document.createElement("span");
+          own.className = "dot";
+          own.textContent = ownerText(port);
+          meta.append(who, own);
+          main.append(top, meta);
+          button.append(pip, main);
+          button.addEventListener("click", () => {
+            state.portId = port.id;
+            render();
+          });
+          item.appendChild(button);
+          list.appendChild(item);
+        }
+        host.append(head, list);
+      }
+    }
+
+    function renderWorkspace() {
+      const host = $("workspace");
+      host.replaceChildren();
+      if (state.mode === "ports") renderPortsWorkspace(host);
+      else renderSessionWorkspace(host);
+    }
+
+    function renderSessionWorkspace(host) {
+      const session = sessionById(state.sessionId);
+      const header = document.createElement("header");
+      header.className = "session-header";
+      const meta = [];
+      if (session.pid) meta.push(["PID", session.pid]);
+      meta.push(["up", session.up]);
+      if (session.cwd) meta.push(["cwd", session.cwd]);
+      meta.push(["log", session.log]);
+      header.innerHTML = `
+        <div class="header-top">
+          <div>
+            <div class="title-row">
+              <h2 class="session-name"></h2>
+              <span class="badge badge--outline"></span>
+              <span class="badge badge--run"><span class="pip pip--run" aria-hidden="true"></span>${session.status}</span>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button type="button" class="btn" data-act="停止">${icon("square")}停止</button>
+            <button type="button" class="btn" data-act="重启">${icon("restart")}重启</button>
+            <button type="button" class="btn" data-act="目录">${icon("folder")}目录</button>
+            <button type="button" class="btn btn--icon" data-act="更多" aria-label="更多">${icon("more")}</button>
+          </div>
+        </div>
+        <div class="callout">
+          <p class="callout__title">关闭影响</p>
+          <p class="callout__text">${session.closeImpact}</p>
+        </div>
+        <div class="meta-line"></div>`;
+      header.querySelector(".session-name").textContent = session.name;
+      header.querySelector(".badge--outline").textContent = session.type;
+      const line = header.querySelector(".meta-line");
+      for (const [key, value] of meta) {
+        const pair = document.createElement("span");
+        const k = document.createElement("b");
+        k.textContent = key;
+        pair.append(k, document.createTextNode(value));
+        line.appendChild(pair);
+      }
+      header.querySelectorAll("[data-act]").forEach((button) => {
+        button.addEventListener("click", () => notice("原型不操作会话。正式版这个按钮仍在。"));
+      });
+
+      const tabs = document.createElement("div");
+      tabs.className = "tabs";
+      tabs.setAttribute("role", "tablist");
+      for (const [id, label] of [["terminal", "终端"], ["logs", "日志"], ["details", "详情"]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "tab";
+        button.textContent = label;
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-selected", String(state.tab === id));
+        button.addEventListener("click", () => {
+          state.tab = id;
+          render();
+        });
+        tabs.appendChild(button);
+      }
+
+      const content = document.createElement("div");
+      content.className = "content";
+      if (state.tab === "terminal") {
+        content.innerHTML = `
+          <div class="terminal">
+            <div class="terminal__chrome"><span>PTY</span><span>运行中</span></div>
+            <div class="terminal__body">原型不接入这个会话的终端。正式版这里仍是它自己的 PTY。</div>
+          </div>`;
+      } else if (state.tab === "logs") {
+        content.innerHTML = `
+          <div class="stack">
+            <div class="policy">
+              <div class="badges">
+                <span class="badge badge--outline">On error</span>
+                <span class="badge badge--outline">stdin 不记录</span>
+              </div>
+              <p>出错时才落盘。原型没有读取日志文件，正式版这一页仍是当前的日志。</p>
+            </div>
+          </div>`;
+      } else {
+        const stack = document.createElement("div");
+        stack.className = "stack";
+        const who = document.createElement("div");
+        who.className = "card";
+        who.innerHTML = `<p class="eyebrow">它是谁</p><h3></h3><p class="purpose"></p><p class="identity"></p>`;
+        who.querySelector("h3").textContent = session.name;
+        who.querySelector(".purpose").textContent = session.purpose;
+        who.querySelector(".identity").textContent = session.cwd || "—";
+        const impact = document.createElement("div");
+        impact.className = "impact";
+        impact.innerHTML = `<p class="eyebrow eyebrow--busy">能不能关</p><p></p><p class="fine">停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。</p>`;
+        impact.querySelector("p:nth-child(2)").textContent = session.closeImpact;
+        const kv = document.createElement("dl");
+        kv.className = "kv";
+        const rows = [
+          ["类型", session.type],
+          ["状态", session.status],
+          ["启动命令", session.command],
+          ["Run", session.run],
+          ["退出码", "—"],
+          ["PTY", "—"],
+          ["日志模式", "On error"],
+        ];
+        for (const [label, value] of rows) {
+          const row = document.createElement("div");
+          const dt = document.createElement("dt");
+          dt.textContent = label;
+          const dd = document.createElement("dd");
+          dd.textContent = value;
+          row.append(dt, dd);
+          kv.appendChild(row);
+        }
+        stack.append(who, impact, kv);
+        content.appendChild(stack);
+      }
+
+      host.append(header, tabs, content);
+    }
+
+    function renderPortsWorkspace(host) {
+      const visible = ports.filter((port) => matches(port, state.query));
+      const selected = visible.find((port) => port.id === state.portId) || visible[0] || null;
+      if (selected) state.portId = selected.id;
+
+      const header = document.createElement("header");
+      header.className = "port-header";
+      header.innerHTML = `
+        <div class="header-top">
+          <div>
+            <h2 class="port-title">正在监听</h2>
+            <p class="subline"></p>
+          </div>
+          <div class="header-actions">
+            <button type="button" class="btn" id="refresh">${icon("refresh")}刷新</button>
+          </div>
+        </div>`;
+      header.querySelector(".subline").textContent =
+        `本机监听 · 示意数据 · 最近检查 ${state.checkedAt}`;
+      header.querySelector("#refresh").addEventListener("click", () => {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        state.checkedAt = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+        notice("原型没有查询本机，只更新了检查时间。");
+        render();
+      });
+
+      const content = document.createElement("div");
+      content.className = "content";
+      const stack = document.createElement("div");
+      stack.className = "stack";
+
+      const intro = document.createElement("div");
+      intro.className = "card";
+      intro.innerHTML = `<p class="eyebrow">只查看</p>`;
+      const introText = document.createElement("p");
+      introText.className = "purpose";
+      introText.textContent = "正在监听的端口，以及是谁占用的。对得上受管会话的写会话名，其余写外部。不会结束任何进程。";
+      const introFine = document.createElement("p");
+      introFine.className = "quiet";
+      introFine.style.marginTop = "8px";
+      introFine.textContent = "版式原型。除了左侧已经在跑的会话，端口和占用者是样例，没有查询这台电脑。";
+      intro.append(introText, introFine);
+
+      const tableCard = document.createElement("div");
+      tableCard.className = "table-card";
+      if (visible.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "没有匹配的端口。";
+        tableCard.appendChild(empty);
+      } else {
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        for (const label of ["端口", "协议", "地址", "占用者", "PID", "归属"]) {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        const tbody = document.createElement("tbody");
+        for (const port of visible) {
+          const tr = document.createElement("tr");
+          tr.setAttribute("aria-selected", String(port.id === state.portId));
+          const cells = [
+            port.port,
+            port.proto,
+            port.addr,
+            port.process || "信息不可用",
+            port.pid,
+          ];
+          cells.forEach((value, index) => {
+            const td = document.createElement("td");
+            td.className = "mono";
+            td.textContent = value;
+            if (index === 3 && !port.process) td.classList.add("muted");
+            tr.appendChild(td);
+          });
+          const owner = document.createElement("td");
+          const wrap = document.createElement("span");
+          wrap.className = "owner";
+          if (port.kind === "managed") {
+            const pip = document.createElement("span");
+            pip.className = "pip pip--run";
+            wrap.appendChild(pip);
+          }
+          const label = document.createElement("span");
+          label.textContent = ownerText(port);
+          if (port.kind !== "managed") label.className = "muted";
+          wrap.appendChild(label);
+          owner.appendChild(wrap);
+          tr.appendChild(owner);
+          tr.addEventListener("click", () => {
+            state.portId = port.id;
+            render();
+          });
+          tbody.appendChild(tr);
+        }
+        table.append(thead, tbody);
+        tableCard.appendChild(table);
+      }
+
+      stack.append(intro, tableCard);
+      if (selected) stack.appendChild(renderWho(selected));
+      content.appendChild(stack);
+      host.append(header, content);
+    }
+
+    function renderWho(port) {
+      const card = document.createElement("article");
+      card.className = "card";
+      const eye = document.createElement("p");
+      eye.className = "eyebrow";
+      eye.textContent = "占用者";
+      const name = document.createElement("h3");
+      name.className = "who-name";
+      name.textContent = port.process || "信息不可用";
+      const listen = document.createElement("p");
+      listen.className = "identity";
+      listen.textContent = `${port.addr}:${port.port} · ${port.proto} · PID ${port.pid}`;
+      const path = document.createElement("p");
+      path.className = "identity";
+      path.textContent = port.path;
+      const row = document.createElement("div");
+      row.className = "who-row";
+      if (port.kind === "managed") {
+        const pip = document.createElement("span");
+        pip.className = "pip pip--run";
+        const label = document.createElement("span");
+        label.textContent = `受管会话 ${ownerText(port)}`;
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "btn";
+        open.textContent = "打开会话";
+        open.addEventListener("click", () => {
+          state.mode = "sessions";
+          state.sessionId = port.sessionId;
+          state.tab = "details";
+          state.query = "";
+          history.replaceState(null, "", "#sessions");
+          render();
+        });
+        row.append(pip, label, open);
+      } else {
+        const label = document.createElement("span");
+        label.className = "muted";
+        label.textContent = ownerText(port);
+        row.appendChild(label);
+      }
+      const note = document.createElement("p");
+      note.className = "quiet";
+      note.style.marginTop = "8px";
+      note.textContent = port.note;
+      card.append(eye, name, listen, path, row, note);
+      return card;
+    }
+
+    $("tab-sessions").addEventListener("click", () => setMode("sessions"));
+    $("tab-ports").addEventListener("click", () => setMode("ports"));
+    $("add-btn").addEventListener("click", () => {
+      if (state.mode !== "sessions") setMode("sessions");
+      notice("原型不新建会话。正式版这个按钮仍是新建 PowerShell。");
+    });
+    $("search").addEventListener("input", (event) => {
+      state.query = event.target.value;
+      render();
+      $("search").focus();
+    });
+
+    render();
+  </script>
+</body>
+</html>
