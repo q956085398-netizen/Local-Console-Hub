@@ -342,6 +342,17 @@ pub fn descendants(pid: u32) -> Vec<u32> {
     backend::descendants(pid)
 }
 
+/// When the process currently reported under `pid` was created.
+///
+/// The same clock [`ProcessIdentity::matches`] compares against, read for a
+/// pid this layer did not start. `None` means the process could not be opened
+/// or its creation time could not be read — the identity cannot be confirmed.
+/// It does not mean the pid is free, and it is not a reason to signal or
+/// terminate anything: this only queries the process.
+pub fn creation_time_of(pid: u32) -> Option<u64> {
+    backend::creation_time_of(pid)
+}
+
 /// A handle on a process the Hub did not start (#67).
 ///
 /// An application the user ran outside the Hub is not one the Hub may end, but

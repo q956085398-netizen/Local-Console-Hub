@@ -9,6 +9,10 @@
 //! [`Readable::Unavailable`]. The row stays. Unavailable is not an empty list,
 //! and an empty list is not a failed check. A failed check leaves the previous
 //! successful snapshot, and the time it was taken, where they were.
+//!
+//! Which managed session owns a row is a second reading, [`attribute`]. It does
+//! not change what [`collect`] returns, and it does not turn a health reading
+//! into proof of ownership.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -23,6 +27,10 @@ mod win;
 use unsupported as backend;
 #[cfg(windows)]
 use win as backend;
+
+mod attribute;
+
+pub use attribute::{attribute, AttributedRecord, Attribution, SessionProcess, EXTERNAL_LABEL};
 
 /// Words a later view shows for [`Readable::Unavailable`].
 ///
