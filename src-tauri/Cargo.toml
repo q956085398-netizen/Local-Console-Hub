@@ -76,10 +76,16 @@ base64 = "0.22"
 # `CreateNamedPipeW` needs the file-system flags, `ConnectNamedPipe` and the
 # `OVERLAPPED` parameter of `ReadFile`/`WriteFile` need the IO module. Enabling
 # them downloads nothing, like every other feature here.
+#
+# Win32_NetworkManagement_IpHelper carries the listening-port collector
+# (`listen/`): `GetExtendedTcpTable` and `GetExtendedUdpTable` with the
+# owner-PID classes. Those calls only read. Enabling the feature downloads
+# nothing — windows-sys gates modules, not packages.
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.16", default-features = false }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
