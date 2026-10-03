@@ -16,6 +16,7 @@
 // path (`ipc::session::start_session`) rather than re-exported here.
 pub mod discovery;
 pub mod launch;
+pub mod listen;
 pub mod logs;
 pub mod session;
 pub mod terminal;

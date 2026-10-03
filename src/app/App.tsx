@@ -10,6 +10,9 @@ import StandalonePanel from "../components/workspace/StandalonePanel";
 import LogsPanel from "../components/logs/LogsPanel";
 import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
+import PortsWorkspace from "../components/ports/PortsWorkspace";
+import { usePortList } from "../components/ports/usePortList";
+import { openableSessionId, type SidebarView } from "../state/ports";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
 import AddApplicationDialog from "../components/add-application/AddApplicationDialog";
 import RemoveApplicationDialog from "../components/remove-application/RemoveApplicationDialog";
@@ -82,10 +85,16 @@ export default function App() {
   );
   const [tab, setTab] = useState<WorkspaceTab>("terminal");
   const [query, setQuery] = useState("");
+  const [railView, setRailView] = useState<SidebarView>("sessions");
   const [notice, setNotice] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
   const narrow = useMediaQuery("(max-width: 767px)");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const ports = usePortList(
+    railView,
+    connection.state === "connected",
+    sessions.map((session) => ({ id: session.config.id, name: session.config.name })),
+  );
   /** Bumped for each "新建 PowerShell" the workspace carried out (#62). */
   const [focusRequest, setFocusRequest] = useState(0);
   /** Whether the "添加应用" form is open (#64). */
@@ -131,9 +140,16 @@ export default function App() {
    * that costs a second click.
    */
   const showSession = useCallback((sessionId: string) => {
+    setRailView("sessions");
     setSelectedId(sessionId);
     setTab("terminal");
     setFocusRequest((request) => request + 1);
+    setDrawerOpen(false);
+  }, []);
+
+  const openPortSession = useCallback((sessionId: string) => {
+    setRailView("sessions");
+    setSelectedId(sessionId);
     setDrawerOpen(false);
   }, []);
 
@@ -508,102 +524,135 @@ export default function App() {
             }}
             onAdd={onCreateTerminal}
             onAddApplication={onOpenAddApplication}
+            view={railView}
+            onViewChange={setRailView}
+            portSummary={ports.summary}
+            portQuery={ports.query}
+            onPortQueryChange={ports.setQuery}
+            portGroups={ports.groups}
+            selectedPortKey={ports.selected?.key ?? ""}
+            onSelectPort={ports.select}
+            portEmpty={ports.empty}
           />
         </div>
-        <section className={`workspace${selected === undefined ? " workspace--empty" : ""}`}>
-          {selected === undefined ? (
-            <>
-              {registry.loading && (
-                <div
-                  className={`workspace__registry-status${registry.initializationError ? " workspace__registry-status--error" : ""}`}
-                  role={registry.initializationError ? "alert" : "status"}
-                  aria-label="会话同步状态"
-                >
-                  <div className="workspace__registry-status-heading">
-                    <span
-                      className={`pip ${registry.initializationError ? "pip--err" : "pip--warn"}`}
-                      aria-hidden="true"
-                    />
-                    <strong>
-                      {registry.initializationError ? "暂时无法读取会话状态" : "正在同步会话…"}
-                    </strong>
+        <section className="workspace">
+          <div
+            className={`workspace__session${selected === undefined ? " workspace__session--empty" : ""}`}
+            hidden={railView === "ports"}
+          >
+            {selected === undefined ? (
+              <>
+                {registry.loading && (
+                  <div
+                    className={`workspace__registry-status${registry.initializationError ? " workspace__registry-status--error" : ""}`}
+                    role={registry.initializationError ? "alert" : "status"}
+                    aria-label="会话同步状态"
+                  >
+                    <div className="workspace__registry-status-heading">
+                      <span
+                        className={`pip ${registry.initializationError ? "pip--err" : "pip--warn"}`}
+                        aria-hidden="true"
+                      />
+                      <strong>
+                        {registry.initializationError ? "暂时无法读取会话状态" : "正在同步会话…"}
+                      </strong>
+                    </div>
+                    <p>
+                      {registry.initializationError
+                        ? `${registry.initializationError} · 正在自动重试。`
+                        : "正在连接到后台并读取已配置会话。"}
+                    </p>
                   </div>
-                  <p>
-                    {registry.initializationError
-                      ? `${registry.initializationError} · 正在自动重试。`
-                      : "正在连接到后台并读取已配置会话。"}
-                  </p>
-                </div>
-              )}
-              <ConfigDiagnostics
-                report={registry.configReport}
-                error={registry.configReportError}
-                sessionCount={diagnosticSessionCount}
-              />
-              {!registry.loading && (
-                <div className="workspace__empty-hint">
-                  <p className="workspace__empty-title">还没有会话</p>
-                  <p>
-                    {narrow
-                      ? "请打开左上角会话列表，点击“添加应用”保存常用应用，或点击“新建 PowerShell”直接打开终端。"
-                      : "首次使用，请点击左下方“添加应用”保存常用应用，或点击“新建 PowerShell”直接打开终端。"}
-                  </p>
-                  <p>添加的应用下次打开仍在；临时终端只在主动保存启动配置后保留。</p>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <SessionHeader
-                config={selected.config}
-                runtime={selected.runtime}
-                busy={selected.busy ?? false}
-                ready={isReady(selected.runtime)}
-                now={now}
-                onAction={onSessionAction}
-                onFocusTerminal={() => setTab("terminal")}
-                onOpenLogs={() => setTab("logs")}
-              />
-              <ConfigDiagnostics
-                report={registry.configReport}
-                error={registry.configReportError}
-                sessionCount={diagnosticSessionCount}
-              />
-              <WorkspaceTabs active={tab} onChange={setTab} />
-              <div className="workspace__content">
-                {tab === "terminal" &&
-                  // A standalone-window application has no Hub-side stream to
-                  // render (#66): the pane says where its console is instead of
-                  // drawing an empty terminal for a console the Hub does not own.
-                  (isStandalone(selected.config) ? (
-                    <StandalonePanel
-                      session={selected}
-                      onActivate={() =>
-                        registry.live
-                          ? activate(selected.config.id)
-                          : onPreviewAction(`打开 ${selected.config.name}`)
-                      }
-                    />
-                  ) : (
-                    <TerminalHost
-                      session={selected}
-                      live={registry.live}
-                      focusRequest={focusRequest}
-                      onStart={() =>
-                        registry.live
-                          ? activate(selected.config.id)
-                          : onPreviewAction(`启动 ${selected.config.name}`)
-                      }
-                    />
-                  ))}
-                {/* Keyed by session so the Logs tab's own state — the pending
-                retention question above all — belongs to one session. */}
-                {tab === "logs" && (
-                  <LogsPanel key={selected.config.id} session={selected} onNotice={setNotice} />
                 )}
-                {tab === "details" && <DetailsPanel session={selected} sessions={sessions} />}
-              </div>
-            </>
+                <ConfigDiagnostics
+                  report={registry.configReport}
+                  error={registry.configReportError}
+                  sessionCount={diagnosticSessionCount}
+                />
+                {!registry.loading && (
+                  <div className="workspace__empty-hint">
+                    <p className="workspace__empty-title">还没有会话</p>
+                    <p>
+                      {narrow
+                        ? "请打开左上角会话列表，点击“添加应用”保存常用应用，或点击“新建 PowerShell”直接打开终端。"
+                        : "首次使用，请点击左下方“添加应用”保存常用应用，或点击“新建 PowerShell”直接打开终端。"}
+                    </p>
+                    <p>添加的应用下次打开仍在；临时终端只在主动保存启动配置后保留。</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <SessionHeader
+                  config={selected.config}
+                  runtime={selected.runtime}
+                  busy={selected.busy ?? false}
+                  ready={isReady(selected.runtime)}
+                  now={now}
+                  onAction={onSessionAction}
+                  onFocusTerminal={() => setTab("terminal")}
+                  onOpenLogs={() => setTab("logs")}
+                />
+                <ConfigDiagnostics
+                  report={registry.configReport}
+                  error={registry.configReportError}
+                  sessionCount={diagnosticSessionCount}
+                />
+                <WorkspaceTabs active={tab} onChange={setTab} />
+                <div className="workspace__content">
+                  {tab === "terminal" &&
+                    // A standalone-window application has no Hub-side stream to
+                    // render (#66): the pane says where its console is instead of
+                    // drawing an empty terminal for a console the Hub does not own.
+                    (isStandalone(selected.config) ? (
+                      <StandalonePanel
+                        session={selected}
+                        onActivate={() =>
+                          registry.live
+                            ? activate(selected.config.id)
+                            : onPreviewAction(`打开 ${selected.config.name}`)
+                        }
+                      />
+                    ) : (
+                      <TerminalHost
+                        session={selected}
+                        live={registry.live}
+                        focusRequest={focusRequest}
+                        onStart={() =>
+                          registry.live
+                            ? activate(selected.config.id)
+                            : onPreviewAction(`启动 ${selected.config.name}`)
+                        }
+                      />
+                    ))}
+                  {/* Keyed by session so the Logs tab's own state — the pending
+                retention question above all — belongs to one session. */}
+                  {tab === "logs" && (
+                    <LogsPanel key={selected.config.id} session={selected} onNotice={setNotice} />
+                  )}
+                  {tab === "details" && <DetailsPanel session={selected} sessions={sessions} />}
+                </div>
+              </>
+            )}
+          </div>
+          {railView === "ports" && (
+            <PortsWorkspace
+              connected={connection.state === "connected"}
+              rows={ports.filtered}
+              selected={ports.selected}
+              caption={ports.caption}
+              empty={ports.empty}
+              inProgress={ports.inProgress}
+              onSelect={ports.select}
+              onRefresh={ports.refresh}
+              onOpenSession={openPortSession}
+              openableSessionId={(row) =>
+                openableSessionId(
+                  row,
+                  sessions.map((session) => ({ id: session.config.id, name: session.config.name })),
+                )
+              }
+            />
           )}
         </section>
       </div>

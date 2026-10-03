@@ -188,6 +188,7 @@ pub fn run() {
             ipc::logs::open_log_folder,
             ipc::logs::preview_log_cleanup,
             ipc::logs::cleanup_logs,
+            ipc::listen::list_listeners,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Local Console Hub");
