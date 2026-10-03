@@ -230,6 +230,17 @@ impl ProcessIdentity {
         }
     }
 
+    /// Record a pid and the creation time just observed for it.
+    ///
+    /// This does not ask Windows whether the pair is still current.
+    /// [`Self::matches`] is that question for the process this identity names.
+    /// A tree member is remembered this way so a later reading can require the
+    /// same creation time, instead of trusting the pid after Windows has
+    /// reused it.
+    pub(crate) fn recorded(pid: u32, created_at: u64) -> Self {
+        ProcessIdentity { pid, created_at }
+    }
+
     /// The process id, as Windows reported it when this identity was taken.
     pub fn pid(&self) -> u32 {
         self.pid

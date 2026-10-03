@@ -55,20 +55,23 @@ impl Attribution {
 
 /// One managed session, as the caller observed it.
 ///
-/// `identity` is that session's own process. `tree` is the pids in its
-/// process tree at the same moment: a job's membership when the Hub hosts
-/// one, which is the stronger list, or the parent-pid walk otherwise. `None`
-/// means the tree could not be listed. A configured port is deliberately not
-/// a field — a port is not ownership.
+/// `identity` is that session's own process. `tree` is the process tree at
+/// the same moment: a job's membership when the Hub hosts one, which is the
+/// stronger list, or the parent-pid walk otherwise. Each member is the pid
+/// and the creation time observed when the tree was listed, not a bare pid.
+/// `None` means the tree could not be listed. A configured port is
+/// deliberately not a field — a port is not ownership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionProcess {
     pub id: String,
     pub identity: ProcessIdentity,
     /// `None` when the tree could not be listed. An empty list means it was
     /// listed and had no members beyond the session's own process. The
-    /// session's own pid is recognized from [`ProcessIdentity`] whether or
-    /// not it appears here: a job lists it, and a parent-pid walk does not.
-    pub tree: Option<Vec<u32>>,
+    /// session's own process is recognized from [`ProcessIdentity`] whether
+    /// or not it appears here: a job lists it, and a parent-pid walk does not.
+    /// A member counts only while its stored creation time is still the one
+    /// Windows reports for that pid.
+    pub tree: Option<Vec<ProcessIdentity>>,
 }
 
 /// A listening row plus the attribution decided for it.
@@ -88,13 +91,17 @@ pub struct AttributedRecord {
 /// - the listener pid's creation time can be read, and
 /// - that pid is the session's own process and this creation time is the one
 ///   [`ProcessIdentity`] stores — [`ProcessIdentity::matches`] is how a later
-///   reading is checked — or the pid is in the session's listed tree while
-///   that identity still matches.
+///   reading is checked — or the pid and this creation time are a member of
+///   the session's listed tree while that session's own identity still matches.
 ///
 /// A confirmed process that no such session owns is [`Attribution::External`].
-/// A pid that more than one live session owns is [`Attribution::Unavailable`]:
-/// the reading does not pick one. A tree whose session identity does not match
-/// does not count, so a pid Windows has reused is not still that session.
+/// A creation time that differs from the member stored at listing time is not
+/// that member: the listener was confirmed, and it is external when no session
+/// matches. A pid that more than one live session owns is
+/// [`Attribution::Unavailable`]: the reading does not pick one. A tree whose
+/// session identity does not match does not count, so a pid Windows has reused
+/// is not still that session — neither the session's own process nor a member
+/// of its tree.
 ///
 /// The result has one entry per input row, in the same order.
 pub fn attribute(records: &[ListenRecord], sessions: &[SessionProcess]) -> Vec<AttributedRecord> {
@@ -142,7 +149,16 @@ fn attribute_one(record: &ListenRecord, sessions: &[SessionProcess]) -> Attribut
         }
 
         match &session.tree {
-            Some(members) if members.contains(&pid) => remember(&mut owners, &session.id),
+            // The member's creation time is the one captured when the tree was
+            // listed. The listener's creation time was just read. A reused pid
+            // fails this even while the session root still matches.
+            Some(members)
+                if members
+                    .iter()
+                    .any(|member| member.pid() == pid && member.created_at() == created) =>
+            {
+                remember(&mut owners, &session.id);
+            }
             Some(_) => {}
             None => unchecked = true,
         }
@@ -190,7 +206,10 @@ mod tests {
         let session = SessionProcess {
             id: "svc".to_owned(),
             identity: ProcessIdentity::for_test(7, 11),
-            tree: Some(vec![7, u32::MAX]),
+            tree: Some(vec![
+                ProcessIdentity::for_test(7, 11),
+                ProcessIdentity::for_test(u32::MAX, 1),
+            ]),
         };
         let rows = [
             row(Readable::Unavailable, 8080, "svc.exe"),
@@ -269,8 +288,8 @@ mod tests {
             }
         }
 
-        /// A process `cmd` has actually started, so the tree is not a list the
-        /// test invented. `ping` is that child; a console host may appear too.
+        /// A process `cmd` has actually started. `ping` is that child; a console
+        /// host may appear too. The returned pid is not the parent.
         fn tree_member(parent: u32) -> u32 {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -288,7 +307,27 @@ mod tests {
             }
         }
 
-        fn session(id: &str, process: &KillOnDrop, tree: Option<Vec<u32>>) -> SessionProcess {
+        /// The identity of `pid` as creation time reads it now.
+        fn observed(pid: u32) -> ProcessIdentity {
+            let created = creation_time_of(pid).unwrap_or_else(|| panic!("creation time of {pid}"));
+            ProcessIdentity::recorded(pid, created)
+        }
+
+        /// Tree members as they were observed at listing time, dropping a pid
+        /// whose creation time could not be read.
+        fn listed(pids: impl IntoIterator<Item = u32>) -> Vec<ProcessIdentity> {
+            pids.into_iter()
+                .filter_map(|pid| {
+                    creation_time_of(pid).map(|created| ProcessIdentity::recorded(pid, created))
+                })
+                .collect()
+        }
+
+        fn session(
+            id: &str,
+            process: &KillOnDrop,
+            tree: Option<Vec<ProcessIdentity>>,
+        ) -> SessionProcess {
             SessionProcess {
                 id: id.to_owned(),
                 identity: process.identity(),
@@ -300,15 +339,16 @@ mod tests {
         fn own_process_and_a_tree_member_name_that_session() {
             let mut owner = KillOnDrop::spawn();
             let child = tree_member(owner.pid());
-            let tree = descendants(owner.pid());
+            let tree = listed(descendants(owner.pid()));
             assert!(
-                tree.contains(&child),
+                tree.iter().any(|member| member.pid() == child),
                 "the child is in the process tree that attribution is given"
             );
             let other = KillOnDrop::spawn();
-            let other_tree = descendants(other.pid());
+            let other_tree = listed(descendants(other.pid()));
             assert!(
-                !other_tree.contains(&child) && !other_tree.contains(&owner.pid()),
+                !other_tree.iter().any(|member| member.pid() == child)
+                    && !other_tree.iter().any(|member| member.pid() == owner.pid()),
                 "the other session's tree does not contain this one"
             );
 
@@ -348,8 +388,8 @@ mod tests {
             let second = KillOnDrop::spawn();
             let second_child = tree_member(second.pid());
             let sessions = [
-                session("first", &first, Some(descendants(first.pid()))),
-                session("second", &second, Some(descendants(second.pid()))),
+                session("first", &first, Some(listed(descendants(first.pid())))),
+                session("second", &second, Some(listed(descendants(second.pid())))),
             ];
             let rows = [
                 row(Readable::Known(second.pid()), 8080, "cmd.exe"),
@@ -374,7 +414,11 @@ mod tests {
         fn a_confirmed_process_outside_every_managed_tree_is_external() {
             let mut managed = KillOnDrop::spawn();
             let mut outside = KillOnDrop::spawn();
-            let sessions = [session("svc", &managed, Some(descendants(managed.pid())))];
+            let sessions = [session(
+                "svc",
+                &managed,
+                Some(listed(descendants(managed.pid()))),
+            )];
             // Same executable name as the managed process, and a port the
             // caller might have configured. The snapshot has no port to match.
             let rows = [row(Readable::Known(outside.pid()), 3000, "cmd.exe")];
@@ -402,12 +446,15 @@ mod tests {
                 "a different creation time is not this process"
             );
             let bystander = KillOnDrop::spawn();
-            // Both the reused pid and an unrelated pid are listed in the old
-            // tree. The identity does not match, so the list does not count.
+            // Both processes are listed with the creation times they have now.
+            // The session root does not match, so that list does not count.
             let stale = SessionProcess {
                 id: "old".to_owned(),
                 identity: reused,
-                tree: Some(vec![live.pid(), bystander.pid()]),
+                tree: Some(vec![
+                    ProcessIdentity::recorded(live.pid(), created),
+                    observed(bystander.pid()),
+                ]),
             };
             let rows = [
                 row(Readable::Known(live.pid()), 8080, "cmd.exe"),
@@ -424,12 +471,70 @@ mod tests {
         }
 
         #[test]
+        fn a_reused_tree_pid_does_not_keep_a_session_whose_root_still_matches() {
+            let mut root = KillOnDrop::spawn();
+            let child = tree_member(root.pid());
+            let mut members = listed(descendants(root.pid()));
+            let child_listed = members
+                .iter()
+                .find(|member| member.pid() == child)
+                .copied()
+                .expect("the live child was listed with its creation time");
+            assert_eq!(
+                child_listed.created_at(),
+                creation_time_of(child).expect("the child is still that process"),
+                "the member stores the creation time captured at listing"
+            );
+
+            // The tree lists this process's current pid with a different
+            // creation time: the identity captured before a reuse. The process
+            // is not a member of the root's real tree, and the root itself
+            // still matches.
+            let mut outsider = KillOnDrop::spawn();
+            let outsider_now =
+                creation_time_of(outsider.pid()).expect("the outsider's creation time can be read");
+            let stale_member =
+                ProcessIdentity::recorded(outsider.pid(), outsider_now.wrapping_add(1));
+            assert!(
+                members.iter().all(|member| member.pid() != outsider.pid()),
+                "the outsider is not actually in this process tree"
+            );
+            members.push(stale_member);
+
+            let identity = root.identity();
+            assert!(identity.matches(), "the session root is still that process");
+            let sessions = [SessionProcess {
+                id: "svc".to_owned(),
+                identity,
+                tree: Some(members),
+            }];
+            let rows = [
+                row(Readable::Known(child), 8080, "ping.exe"),
+                row(Readable::Known(outsider.pid()), 8080, "cmd.exe"),
+            ];
+
+            let got = attribute(&rows, &sessions);
+
+            assert!(identity.matches(), "attribution does not replace the root");
+            assert_eq!(got[0].attribution, Attribution::Session("svc".to_owned()));
+            assert_eq!(got[1].attribution, Attribution::External);
+            assert_ne!(got[1].attribution, Attribution::Session("svc".to_owned()));
+            assert_ne!(got[1].attribution, Attribution::Unavailable);
+            assert!(root.alive(), "attribution does not stop the session root");
+            assert!(
+                creation_time_of(child).is_some(),
+                "attribution does not stop the real tree member"
+            );
+            assert!(outsider.alive(), "a reused tree pid is not terminated");
+        }
+
+        #[test]
         fn a_pid_claimed_by_two_live_sessions_is_unavailable() {
             let first = KillOnDrop::spawn();
             let second = KillOnDrop::spawn();
             let sessions = [
-                session("first", &first, Some(vec![second.pid()])),
-                session("second", &second, Some(descendants(second.pid()))),
+                session("first", &first, Some(vec![observed(second.pid())])),
+                session("second", &second, Some(listed(descendants(second.pid())))),
             ];
             let rows = [row(Readable::Known(second.pid()), 8080, "cmd.exe")];
 
@@ -475,7 +580,7 @@ mod tests {
             let first = KillOnDrop::spawn();
             let second = KillOnDrop::spawn();
             let sessions = [
-                session("first", &first, Some(descendants(first.pid()))),
+                session("first", &first, Some(listed(descendants(first.pid())))),
                 session("second", &second, None),
             ];
             let rows = [row(Readable::Known(first.pid()), 8080, "cmd.exe")];
