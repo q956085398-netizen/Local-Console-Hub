@@ -129,7 +129,12 @@ mod tests {
                 // pid would then be free for the next spawn, and a later
                 // creation-time read would describe that new process.
                 let child = std::process::Command::new("powershell.exe")
-                    .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 120"])
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Start-Sleep -Seconds 120",
+                    ])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .creation_flags(0x0800_0000)
@@ -151,7 +156,10 @@ mod tests {
                         .expect("the process is waitable")
                         .is_none();
                     if !still_ours {
-                        panic!("pid {} exited before its creation time was read", self.pid());
+                        panic!(
+                            "pid {} exited before its creation time was read",
+                            self.pid()
+                        );
                     }
                     if let Some(created) = creation_time_of(self.pid()) {
                         let identity = ProcessIdentity::recorded(self.pid(), created);
