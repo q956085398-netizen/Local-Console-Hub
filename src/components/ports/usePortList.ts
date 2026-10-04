@@ -10,6 +10,7 @@ import {
   groupListedPorts,
   initialListenRefresh,
   nameListeners,
+  noteWindowHidden,
   portListMessage,
   portSummary,
   selectedPort,
@@ -77,7 +78,15 @@ export function usePortList(
 
   useEffect(() => {
     return watchMainWindowVisible((visible) => {
+      if (visibleRef.current === visible) return;
       visibleRef.current = visible;
+      if (!visible) {
+        // Drop an attempt that started while the window was up. Its result
+        // belongs to the hidden period and must not become the current check
+        // when the window is shown again.
+        ticketRef.current += 1;
+        setState(noteWindowHidden);
+      }
       setWindowVisible(visible);
     });
   }, []);

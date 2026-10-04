@@ -100,6 +100,18 @@ export function completeListenRefresh(
 }
 
 /**
+ * The window went away. The list and its time stay the last accepted check.
+ *
+ * An attempt still in flight is not a check that finished while the window
+ * was hidden, so it must not remain "in progress" either. The next accepted
+ * success is what clears `stale`.
+ */
+export function noteWindowHidden(state: ListenRefreshState): ListenRefreshState {
+  if (state.stale && !state.inProgress) return state;
+  return { ...state, inProgress: false, stale: true };
+}
+
+/**
  * Automatic polling runs only while the ports page is showing, the window is
  * visible, and a backend is answering. A manual refresh is a separate call.
  */

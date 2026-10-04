@@ -13,6 +13,7 @@ import {
   groupListedPorts,
   initialListenRefresh,
   nameListeners,
+  noteWindowHidden,
   openableSessionId,
   portListMessage,
   shouldPollPorts,
@@ -142,6 +143,25 @@ describe("checkCaption", () => {
     expect(
       acceptListenResult({ manual: true, portsView: true, visibleAtStart: true, visibleNow: true }),
     ).toBe(true);
+  });
+
+  it("keeps the previous check when the window hides, and does not call it current", () => {
+    const held = completeListenRefresh(
+      initialListenRefresh(),
+      { ok: true, checkedAtMs: now - 60_000, rows: [previous] },
+      true,
+    );
+    const hidden = noteWindowHidden(beginListenRefresh(held));
+    expect(hidden.rows).toEqual([previous]);
+    expect(hidden.checkedAtMs).toBe(now - 60_000);
+    expect(hidden.inProgress).toBe(false);
+    expect(hidden.stale).toBe(true);
+    const caption = checkCaption(hidden, now);
+    expect(caption.justChecked).toBe(false);
+    expect(caption.text).not.toContain("最近检查");
+    expect(caption.text).toContain("上次检查");
+    const again = noteWindowHidden(hidden);
+    expect(again).toBe(hidden);
   });
 });
 
