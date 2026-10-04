@@ -38,13 +38,13 @@ mod ipc;
 /// A read of the OS tables, not the configured-port TCP reachability probe
 /// (`health`).
 pub mod listen;
+pub mod logging;
+pub mod process;
+pub mod pty;
 /// CPU and memory of one managed session's own process, and of processes in
 /// its tree whose identity still matches (#108). A reading only: it does not
 /// look at arbitrary processes, and it does not end one.
 pub mod resources;
-pub mod logging;
-pub mod process;
-pub mod pty;
 // Release-manifest guards (T12, #13). Test-only: they pin facts about the
 // packaging that no production code reads, and they need `ipc::APP_NAME` and
 // `config::APP_DIR_NAME`, which are not public API.
