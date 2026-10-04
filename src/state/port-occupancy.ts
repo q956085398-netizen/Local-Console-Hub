@@ -20,10 +20,7 @@ import {
 
 const STARTABLE: readonly SessionStatusValue[] = ["stopped", "exited", "error"];
 
-export type BeforeOccupancyCheck =
-  | { kind: "preview" }
-  | { kind: "activate" }
-  | { kind: "check" };
+export type BeforeOccupancyCheck = { kind: "preview" } | { kind: "activate" } | { kind: "check" };
 
 export type OccupancyFollowUp =
   | { kind: "activate" }

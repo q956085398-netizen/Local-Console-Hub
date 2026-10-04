@@ -11,7 +11,7 @@
 //! path cannot be opened: that field is [`Readable::Unavailable`](super::Readable::Unavailable).
 
 use std::collections::HashMap;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
@@ -326,7 +326,7 @@ fn parse_rows<T: Copy>(buf: &[u32]) -> Result<Vec<T>, ()> {
         .checked_mul(row)
         .and_then(|rows| rows.checked_add(header))
         .ok_or(())?;
-    if buf.len() * size_of::<u32>() < need {
+    if size_of_val(buf) < need {
         return Err(());
     }
     if count == 0 {

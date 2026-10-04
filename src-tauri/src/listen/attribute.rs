@@ -10,7 +10,7 @@
 
 use crate::process::{creation_time_of, ProcessIdentity};
 
-use super::{ListenRecord, Readable, UNAVAILABLE_LABEL};
+use super::{ListenRecord, UNAVAILABLE_LABEL};
 
 /// Words a later view shows for [`Attribution::External`].
 ///
@@ -182,7 +182,7 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use crate::listen::{ListenAddress, Protocol};
+    use crate::listen::{ListenAddress, Protocol, Readable};
     use crate::process::ProcessIdentity;
 
     fn row(pid: Readable<u32>, port: u16, name: &str) -> ListenRecord {
