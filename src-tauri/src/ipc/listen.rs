@@ -980,11 +980,11 @@ fn main() {
             }
         }
 
-        fn ours<'a>(
-            records: &'a [crate::listen::AttributedRecord],
+        fn ours(
+            records: &[crate::listen::AttributedRecord],
             pid: u32,
             port: u16,
-        ) -> Vec<&'a crate::listen::AttributedRecord> {
+        ) -> Vec<&crate::listen::AttributedRecord> {
             records
                 .iter()
                 .filter(|row| {

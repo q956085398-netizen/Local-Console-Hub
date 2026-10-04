@@ -290,7 +290,7 @@ pub fn collect() -> Result<Vec<ListenRecord>, CollectError> {
 
 #[cfg(test)]
 thread_local! {
-    static FORCE_LISTEN_FAIL: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static FORCE_LISTEN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Whether this check should fail before the owner tables are read.
