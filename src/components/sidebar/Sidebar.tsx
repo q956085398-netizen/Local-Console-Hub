@@ -59,9 +59,21 @@ export function sessionGroupAfterTitleToggle(
   return next;
 }
 
-/** Accessible name for a session-group title: the group, and whether it is open. */
+/** Accessible name for a group title: the group, and whether it is open. */
 export function sessionGroupToggleName(label: string, expanded: boolean): string {
   return `${label}，${expanded ? "已展开" : "已折叠"}`;
+}
+
+/**
+ * Port groups folded the first time this rail shows the ports view (#114).
+ *
+ * External is the long list, so it starts folded. Managed and unavailable
+ * start open. The same disclosure helpers as session groups decide a search
+ * and a title click; this set is only the starting choice, kept apart from
+ * the session set.
+ */
+export function initialCollapsedPortGroups(): ReadonlySet<string> {
+  return new Set(["external"]);
 }
 
 export interface SidebarProps {
@@ -110,7 +122,11 @@ export default function Sidebar({
   portEmpty = null,
 }: SidebarProps) {
   const ports = view === "ports";
+  // Two sets on purpose: a port title must not rewrite a session group's choice.
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedPortGroups, setCollapsedPortGroups] = useState<ReadonlySet<string>>(() =>
+    initialCollapsedPortGroups(),
+  );
   return (
     <div className="sidebar">
       <div className="sidebar__head">
@@ -162,65 +178,101 @@ export default function Sidebar({
       </div>
       {ports ? (
         <div className="sidebar__groups">
-          {portGroups.map((group) => (
-            <section key={group.id} className="sidebar__group">
-              <header className="sidebar__group-head">
-                <h2 className="sidebar__group-title">{group.title}</h2>
-                <span className="sidebar__group-hint">{group.hint}</span>
-              </header>
-              <ul className="sidebar__rows">
-                {group.rows.map((row) => {
-                  const process = processLabel(row.processName);
-                  const pid = pidLabel(row.pid);
-                  const path = pathLabel(row.programPath);
-                  const owner = ownerLabel(row);
-                  return (
-                    <li key={row.key}>
-                      <button
-                        type="button"
-                        className={`session-row port-row${row.key === selectedPortKey ? " session-row--selected" : ""}`}
-                        aria-current={row.key === selectedPortKey ? "true" : undefined}
-                        onClick={() => onSelectPort?.(row.key)}
-                      >
-                        <span className="session-row__main">
-                          <span className="session-row__top">
-                            <span className="session-row__name">{row.port}</span>
-                            <span className="session-row__tail">{row.protocol}</span>
-                          </span>
-                          <span className="session-row__meta">
-                            <span
-                              className={
-                                process === UNAVAILABLE_LABEL ? "port-row__muted" : undefined
-                              }
-                            >
-                              {process}
+          {portGroups.map((group) => {
+            const expanded = sessionGroupExpanded(
+              collapsedPortGroups,
+              group.id,
+              portQuery,
+              group.rows.length,
+            );
+            return (
+              <section key={group.id} className="sidebar__group">
+                <header className="sidebar__group-head">
+                  <h2 className="sidebar__group-title">
+                    <button
+                      type="button"
+                      className="sidebar__group-toggle"
+                      aria-expanded={expanded}
+                      aria-label={sessionGroupToggleName(group.title, expanded)}
+                      onClick={() =>
+                        setCollapsedPortGroups((current) =>
+                          sessionGroupAfterTitleToggle(
+                            current,
+                            group.id,
+                            portQuery,
+                            group.rows.length,
+                          ),
+                        )
+                      }
+                    >
+                      <ChevronRight
+                        size={12}
+                        className={`sidebar__group-chevron${
+                          expanded ? " sidebar__group-chevron--open" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                      {group.title}
+                    </button>
+                  </h2>
+                  <span className="sidebar__group-hint">{group.hint}</span>
+                </header>
+                {expanded && (
+                  <ul className="sidebar__rows">
+                    {group.rows.map((row) => {
+                      const process = processLabel(row.processName);
+                      const pid = pidLabel(row.pid);
+                      const path = pathLabel(row.programPath);
+                      const owner = ownerLabel(row);
+                      return (
+                        <li key={row.key}>
+                          <button
+                            type="button"
+                            className={`session-row port-row${row.key === selectedPortKey ? " session-row--selected" : ""}`}
+                            aria-current={row.key === selectedPortKey ? "true" : undefined}
+                            onClick={() => onSelectPort?.(row.key)}
+                          >
+                            <span className="session-row__main">
+                              <span className="session-row__top">
+                                <span className="session-row__name">{row.port}</span>
+                                <span className="session-row__tail">{row.protocol}</span>
+                              </span>
+                              <span className="session-row__meta">
+                                <span
+                                  className={
+                                    process === UNAVAILABLE_LABEL ? "port-row__muted" : undefined
+                                  }
+                                >
+                                  {process}
+                                </span>
+                                <span
+                                  className={`session-row__meta-part${
+                                    pid === UNAVAILABLE_LABEL ? " port-row__muted" : ""
+                                  }`}
+                                >
+                                  PID {pid}
+                                </span>
+                                <span
+                                  className={`session-row__meta-part ${
+                                    row.attribution === "session"
+                                      ? "port-row__session"
+                                      : "port-row__muted"
+                                  }`}
+                                >
+                                  {owner}
+                                </span>
+                              </span>
+                              <span className="port-row__path">{path}</span>
                             </span>
-                            <span
-                              className={`session-row__meta-part${
-                                pid === UNAVAILABLE_LABEL ? " port-row__muted" : ""
-                              }`}
-                            >
-                              PID {pid}
-                            </span>
-                            <span
-                              className={`session-row__meta-part ${
-                                row.attribution === "session"
-                                  ? "port-row__session"
-                                  : "port-row__muted"
-                              }`}
-                            >
-                              {owner}
-                            </span>
-                          </span>
-                          <span className="port-row__path">{path}</span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          ))}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            );
+          })}
           {portEmpty && <p className="sidebar__empty">{portEmpty}</p>}
         </div>
       ) : (
