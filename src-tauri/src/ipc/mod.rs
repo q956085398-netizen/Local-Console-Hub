@@ -18,6 +18,7 @@ pub mod discovery;
 pub mod launch;
 pub mod listen;
 pub mod logs;
+pub mod resources;
 pub mod session;
 pub mod terminal;
 

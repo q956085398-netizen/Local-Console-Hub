@@ -38,6 +38,10 @@ mod ipc;
 /// A read of the OS tables, not the configured-port TCP reachability probe
 /// (`health`).
 pub mod listen;
+/// CPU and memory of one managed session's own process, and of processes in
+/// its tree whose identity still matches (#108). A reading only: it does not
+/// look at arbitrary processes, and it does not end one.
+pub mod resources;
 pub mod logging;
 pub mod process;
 pub mod pty;
@@ -190,6 +194,7 @@ pub fn run() {
             ipc::logs::cleanup_logs,
             ipc::listen::list_listeners,
             ipc::listen::port_occupancy,
+            ipc::resources::session_resources,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Local Console Hub");
