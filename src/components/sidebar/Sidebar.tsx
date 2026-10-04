@@ -7,7 +7,15 @@ import {
   statusTone,
   type SessionGroup,
 } from "../../state/derivations";
-import { ownerLabel, processLabel, type PortGroup, type SidebarView } from "../../state/ports";
+import {
+  ownerLabel,
+  pathLabel,
+  pidLabel,
+  processLabel,
+  UNAVAILABLE_LABEL,
+  type PortGroup,
+  type SidebarView,
+} from "../../state/ports";
 import type { SessionView } from "../../state/session-view";
 import { isPresent } from "../../types/runtime";
 import "./Sidebar.css";
@@ -116,36 +124,55 @@ export default function Sidebar({
                 <span className="sidebar__group-hint">{group.hint}</span>
               </header>
               <ul className="sidebar__rows">
-                {group.rows.map((row) => (
-                  <li key={row.key}>
-                    <button
-                      type="button"
-                      className={`session-row${row.key === selectedPortKey ? " session-row--selected" : ""}`}
-                      aria-current={row.key === selectedPortKey ? "true" : undefined}
-                      onClick={() => onSelectPort?.(row.key)}
-                    >
-                      <span className="pip pip--idle" aria-hidden="true" />
-                      <span className="session-row__main">
-                        <span className="session-row__top">
-                          <span className="session-row__name">{row.port}</span>
-                          <span className="session-row__tail">{row.protocol}</span>
-                        </span>
-                        <span className="session-row__meta">
-                          <span className={row.processName ? undefined : "ports-owner--neutral"}>
-                            {processLabel(row.processName)}
+                {group.rows.map((row) => {
+                  const process = processLabel(row.processName);
+                  const pid = pidLabel(row.pid);
+                  const path = pathLabel(row.programPath);
+                  const owner = ownerLabel(row);
+                  return (
+                    <li key={row.key}>
+                      <button
+                        type="button"
+                        className={`session-row port-row${row.key === selectedPortKey ? " session-row--selected" : ""}`}
+                        aria-current={row.key === selectedPortKey ? "true" : undefined}
+                        onClick={() => onSelectPort?.(row.key)}
+                      >
+                        <span className="session-row__main">
+                          <span className="session-row__top">
+                            <span className="session-row__name">{row.port}</span>
+                            <span className="session-row__tail">{row.protocol}</span>
                           </span>
-                          <span
-                            className={`session-row__meta-part${
-                              row.attribution === "session" ? "" : " ports-owner--neutral"
-                            }`}
-                          >
-                            {ownerLabel(row)}
+                          <span className="session-row__meta">
+                            <span
+                              className={
+                                process === UNAVAILABLE_LABEL ? "port-row__muted" : undefined
+                              }
+                            >
+                              {process}
+                            </span>
+                            <span
+                              className={`session-row__meta-part${
+                                pid === UNAVAILABLE_LABEL ? " port-row__muted" : ""
+                              }`}
+                            >
+                              PID {pid}
+                            </span>
+                            <span
+                              className={`session-row__meta-part ${
+                                row.attribution === "session"
+                                  ? "port-row__session"
+                                  : "port-row__muted"
+                              }`}
+                            >
+                              {owner}
+                            </span>
                           </span>
+                          <span className="port-row__path">{path}</span>
                         </span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           ))}

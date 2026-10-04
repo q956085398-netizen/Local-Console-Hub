@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import PortsWorkspace from "../components/ports/PortsWorkspace";
 import workspaceSource from "../components/ports/PortsWorkspace.tsx?raw";
 import hookSource from "../components/ports/usePortList.ts?raw";
+import Sidebar from "../components/sidebar/Sidebar";
 import type { ListenerRowDto } from "../types/listen";
 import listenSource from "../types/listen.ts?raw";
 import portsSource from "./ports.ts?raw";
@@ -9,13 +13,18 @@ import {
   beginListenRefresh,
   checkCaption,
   completeListenRefresh,
+  EXTERNAL_LABEL,
   filterPorts,
   groupListedPorts,
   initialListenRefresh,
   nameListeners,
   noteWindowHidden,
   openableSessionId,
+  ownerLabel,
+  pathLabel,
+  pidLabel,
   portListMessage,
+  portSummary,
   shouldPollPorts,
   UDP_SOCKET_NOTE,
   UNAVAILABLE_LABEL,
@@ -214,6 +223,208 @@ describe("polling", () => {
     expect(shouldPollPorts("ports", false, true)).toBe(false);
     expect(shouldPollPorts("sessions", true, true)).toBe(false);
     expect(shouldPollPorts("ports", true, false)).toBe(false);
+  });
+});
+
+function buttonText(markup: string): string[] {
+  return [...markup.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map((match) =>
+    match[1]
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
+function detailCard(markup: string): string {
+  return markup.split('<article class="ports-card">')[1] ?? "";
+}
+
+function groupSection(markup: string, title: string): string {
+  const marker = `sidebar__group-title">${title}</h2>`;
+  const start = markup.indexOf(marker);
+  const rest = markup.slice(start + marker.length);
+  const next = rest.indexOf('sidebar__group-title">');
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+const END_CONTROL = /结束|停止|终止|kill|taskkill/i;
+
+describe("listeners outside the Hub", () => {
+  const other = listed({
+    port: 11,
+    attribution: "session",
+    sessionId: "shell",
+    processName: "pwsh.exe",
+    pid: 55,
+    programPath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  });
+  const namedLikeASession = listed({
+    port: 10,
+    attribution: "external",
+    processName: "PowerShell",
+    pid: 77,
+    programPath: "D:\\tools\\nginx.exe",
+  });
+  const external = listed({
+    port: 10,
+    attribution: "external",
+    processName: "nginx.exe",
+    pid: 77,
+    programPath: "D:\\tools\\nginx.exe",
+  });
+  const unavailable = listed({
+    port: 12,
+    attribution: "unavailable",
+    pid: null,
+    processName: null,
+    programPath: "   ",
+  });
+  const rows = [other, external, unavailable];
+
+  it("labels an external row 外部 and does not offer it as the current session", () => {
+    expect(ownerLabel(namedLikeASession)).toBe(EXTERNAL_LABEL);
+    expect(namedLikeASession.sessionId).toBeNull();
+    expect(namedLikeASession.sessionName).toBeNull();
+    expect(openableSessionId(namedLikeASession, sessions)).toBeNull();
+    expect(ownerLabel(external)).toBe(EXTERNAL_LABEL);
+    expect(pidLabel(external.pid)).toBe("77");
+    expect(pathLabel(external.programPath)).toBe("D:\\tools\\nginx.exe");
+
+    const markup = renderToStaticMarkup(
+      createElement(PortsWorkspace, {
+        connected: true,
+        rows,
+        selected: external,
+        caption: "最近检查 00:00:00",
+        empty: null,
+        inProgress: false,
+        onSelect: vi.fn(),
+        onRefresh: vi.fn(),
+        onOpenSession: vi.fn(),
+        openableSessionId: (row) => openableSessionId(row, sessions),
+      }),
+    );
+    const detail = detailCard(markup);
+    expect(detail).toContain("nginx.exe");
+    expect(detail).toContain("PID 77");
+    expect(detail).toContain("路径 D:\\tools\\nginx.exe");
+    expect(detail).toContain(EXTERNAL_LABEL);
+    expect(detail).toContain("不是当前会话");
+    expect(detail).not.toContain("打开会话");
+    expect(detail).not.toContain("PowerShell");
+    expect(detail).not.toContain("ComfyUI");
+    expect(buttonText(markup).join("\n")).not.toMatch(END_CONTROL);
+    expect(buttonText(markup)).toEqual(["刷新"]);
+    expect(markup).not.toContain("pip--run");
+    expect(markup).not.toContain("pip--err");
+    expect(markup).not.toContain("status-err");
+    expect(markup).not.toContain("destructive");
+  });
+
+  it("shows another session's name on that session's row", () => {
+    expect(other.sessionName).toBe("PowerShell");
+    expect(ownerLabel(other)).toBe("PowerShell");
+    expect(ownerLabel(other)).not.toBe(EXTERNAL_LABEL);
+    expect(openableSessionId(other, sessions)).toBe("shell");
+
+    const markup = renderToStaticMarkup(
+      createElement(PortsWorkspace, {
+        connected: true,
+        rows,
+        selected: other,
+        caption: "最近检查 00:00:00",
+        empty: null,
+        inProgress: false,
+        onSelect: vi.fn(),
+        onRefresh: vi.fn(),
+        onOpenSession: vi.fn(),
+        openableSessionId: (row) => openableSessionId(row, sessions),
+      }),
+    );
+    const detail = detailCard(markup);
+    expect(detail).toContain("受管会话 PowerShell");
+    expect(detail).toContain("pwsh.exe");
+    expect(detail).toContain("PID 55");
+    expect(detail).toContain("powershell.exe");
+    expect(detail).not.toContain(`>${EXTERNAL_LABEL}<`);
+    expect(buttonText(markup)).toEqual(["刷新", "打开会话"]);
+    expect(buttonText(markup).join("\n")).not.toMatch(END_CONTROL);
+  });
+
+  it("does not fold an unread row into 外部", () => {
+    expect(ownerLabel(unavailable)).toBe(UNAVAILABLE_LABEL);
+    expect(ownerLabel(unavailable)).not.toBe(EXTERNAL_LABEL);
+    expect(pidLabel(unavailable.pid)).toBe(UNAVAILABLE_LABEL);
+    expect(pathLabel(unavailable.programPath)).toBe(UNAVAILABLE_LABEL);
+    expect(pathLabel("   ")).toBe(UNAVAILABLE_LABEL);
+    const groups = groupListedPorts(rows);
+    expect(groups.map((group) => group.id)).toEqual(["managed", "external", "unavailable"]);
+    expect(groups.find((group) => group.id === "external")).toMatchObject({
+      title: EXTERNAL_LABEL,
+      hint: "Hub 以外",
+      rows: [external],
+    });
+    expect(groups.find((group) => group.id === "unavailable")?.rows).toEqual([unavailable]);
+    expect(portSummary(rows)).toBe("3 监听 · 1 受管 · 1 外部");
+    expect(portSummary([unavailable])).toBe("1 监听 · 0 受管 · 0 外部");
+
+    const markup = renderToStaticMarkup(
+      createElement(PortsWorkspace, {
+        connected: true,
+        rows,
+        selected: unavailable,
+        caption: "最近检查 00:00:00",
+        empty: null,
+        inProgress: false,
+        onSelect: vi.fn(),
+        onRefresh: vi.fn(),
+        onOpenSession: vi.fn(),
+        openableSessionId: (row) => openableSessionId(row, sessions),
+      }),
+    );
+    const detail = detailCard(markup);
+    expect(detail).toContain(UNAVAILABLE_LABEL);
+    expect(detail).toContain("不把它当成外部");
+    expect(detail).not.toContain("打开会话");
+    expect(detail).not.toMatch(/ports-owner--neutral">外部/);
+  });
+
+  it("does not offer to end a process from the ports view", () => {
+    const markup = renderToStaticMarkup(
+      createElement(Sidebar, {
+        groups: [],
+        selectedId: "comfy",
+        now: new Date(0),
+        summary: "1 运行",
+        query: "",
+        onQueryChange: vi.fn(),
+        onSelect: vi.fn(),
+        onAdd: vi.fn(),
+        onAddApplication: vi.fn(),
+        view: "ports",
+        portSummary: portSummary(rows),
+        portGroups: groupListedPorts(rows),
+        selectedPortKey: external.key,
+        onSelectPort: vi.fn(),
+      }),
+    );
+    expect(markup).toContain("Hub 以外");
+    expect(markup).toContain(EXTERNAL_LABEL);
+    expect(markup).toContain("PowerShell");
+    expect(markup).toContain(UNAVAILABLE_LABEL);
+    expect(markup).toContain("nginx.exe");
+    expect(markup).toContain("PID 77");
+    expect(markup).toContain("D:\\tools\\nginx.exe");
+    expect(markup).not.toContain("ComfyUI");
+    expect(markup).not.toContain("pip");
+    expect(groupSection(markup, EXTERNAL_LABEL)).not.toContain(">12<");
+    expect(groupSection(markup, UNAVAILABLE_LABEL)).not.toContain(">10<");
+    expect(groupSection(markup, UNAVAILABLE_LABEL)).not.toContain(EXTERNAL_LABEL);
+    expect(buttonText(markup).join("\n")).not.toMatch(END_CONTROL);
+    expect(workspaceSource).not.toMatch(
+      /结束进程|结束占用|强制结束|taskkill|force-stop|killProcess/,
+    );
+    expect(workspaceSource).not.toContain("pip--");
   });
 });
 

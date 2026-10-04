@@ -1,7 +1,8 @@
 import { RefreshCw } from "lucide-react";
 import {
-  EXTERNAL_LABEL,
   ownerLabel,
+  pathLabel,
+  pidLabel,
   processLabel,
   udpNote,
   UNAVAILABLE_LABEL,
@@ -60,7 +61,8 @@ export default function PortsWorkspace({
         <section className="ports-card">
           <p className="ports-card__eyebrow">只查看</p>
           <p className="ports-card__text">
-            正在监听的端口，以及是谁占用的。对得上受管会话的写会话名，对得上进程的写外部，读不到的保持信息不可用。不会结束任何进程。
+            正在监听的端口，包括 Hub
+            以外的进程。对上了另一个受管会话就写那个会话的名字，对上了进程但不是受管会话就写外部，读不到的字段保持信息不可用。不会结束任何进程，也不会把外部程序收成当前会话。
           </p>
         </section>
         {!connected ? (
@@ -79,6 +81,7 @@ export default function PortsWorkspace({
                       <th>地址</th>
                       <th>占用者</th>
                       <th>PID</th>
+                      <th>路径</th>
                       <th>归属</th>
                     </tr>
                   </thead>
@@ -92,12 +95,15 @@ export default function PortsWorkspace({
                         <td className="ports-table__mono">{row.port}</td>
                         <td className="ports-table__mono">{row.protocol}</td>
                         <td className="ports-table__mono">{row.address}</td>
-                        <td
-                          className={row.processName ? "ports-table__mono" : "ports-table__neutral"}
-                        >
+                        <td className={fieldClass(processLabel(row.processName))}>
                           {processLabel(row.processName)}
                         </td>
-                        <td className="ports-table__mono">{row.pid ?? UNAVAILABLE_LABEL}</td>
+                        <td className={fieldClass(pidLabel(row.pid))}>{pidLabel(row.pid)}</td>
+                        <td
+                          className={`${fieldClass(pathLabel(row.programPath))} ports-table__path`}
+                        >
+                          {pathLabel(row.programPath)}
+                        </td>
                         <td>
                           <Owner row={row} />
                         </td>
@@ -121,6 +127,10 @@ export default function PortsWorkspace({
   );
 }
 
+function fieldClass(label: string): string {
+  return label === UNAVAILABLE_LABEL ? "ports-table__neutral" : "ports-table__mono";
+}
+
 function Owner({ row }: { row: ListedPort }) {
   const label = ownerLabel(row);
   if (row.attribution === "session") {
@@ -140,16 +150,40 @@ function OwnerCard({
 }) {
   const note = udpNote(row.protocol);
   const who = ownerLabel(row);
+  const process = processLabel(row.processName);
+  const pid = pidLabel(row.pid);
+  const path = pathLabel(row.programPath);
   return (
     <article className="ports-card">
       <p className="ports-card__eyebrow">占用者</p>
-      <h3 className={row.processName ? "ports-card__who" : "ports-card__who ports-owner--neutral"}>
-        {processLabel(row.processName)}
+      <h3
+        className={
+          process === UNAVAILABLE_LABEL ? "ports-card__who ports-owner--neutral" : "ports-card__who"
+        }
+      >
+        {process}
       </h3>
       <p className="ports-card__identity">
-        {row.address}:{row.port} · {row.protocol} · PID {row.pid ?? UNAVAILABLE_LABEL}
+        {row.address}:{row.port} · {row.protocol}
       </p>
-      <p className="ports-card__identity">{row.programPath ?? UNAVAILABLE_LABEL}</p>
+      <p
+        className={
+          pid === UNAVAILABLE_LABEL
+            ? "ports-card__identity ports-owner--neutral"
+            : "ports-card__identity"
+        }
+      >
+        PID {pid}
+      </p>
+      <p
+        className={
+          path === UNAVAILABLE_LABEL
+            ? "ports-card__identity ports-owner--neutral"
+            : "ports-card__identity"
+        }
+      >
+        路径 {path}
+      </p>
       <div className="ports-card__who-row">
         {sessionId !== null ? (
           <>
@@ -163,16 +197,14 @@ function OwnerCard({
             </button>
           </>
         ) : (
-          <span className="ports-owner--neutral">
-            {who === EXTERNAL_LABEL ? EXTERNAL_LABEL : who}
-          </span>
+          <span className="ports-owner--neutral">{who}</span>
         )}
       </div>
       {note && <p className="ports-card__note">{note}</p>}
       {row.attribution !== "session" && (
         <p className="ports-card__note">
           {row.attribution === "external"
-            ? "没有对上受管会话。外部进程只展示，不会被结束。"
+            ? "没有对上受管会话。这是外部进程，不是当前会话，只展示，不会被结束。"
             : "这一行的归属读不到，不把它当成外部，也不把它当成某个会话。"}
         </p>
       )}
