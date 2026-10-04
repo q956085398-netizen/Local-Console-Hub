@@ -85,18 +85,39 @@ export interface SessionErrorInfoDto {
 }
 
 /**
+ * What one HTTP GET returned (`health::HttpProbe`).
+ *
+ * Present only when the session has an http(s) URL and the probe was issued.
+ * `ok: false` is that probe failing — a timeout, or a non-2xx status — which
+ * is not "nothing is listening" and not "the process belongs to this session".
+ */
+export interface HttpProbeDto {
+  /** True only when the response status was 2xx. */
+  ok: boolean;
+  /** Status code when a response arrived; null on timeout or transport failure. */
+  status?: number | null;
+}
+
+/**
  * One reading of a running service's health (`src-tauri/src/health/mod.rs`,
  * spec §12).
  *
- * Two facts from the moment of the probe, not a conclusion about the session:
- * whether the run's process was alive, and whether the port its config names
- * was accepting connections. They are separate on purpose — `docs/PRODUCT_SPEC.md`
+ * Facts from the moment of the probe, not a conclusion about the session:
+ * whether the run's process was alive, whether the port its config names was
+ * accepting connections, and — when an http(s) URL was configured — what one
+ * GET of that URL returned. They are separate on purpose — `docs/PRODUCT_SPEC.md`
  * §3 requires the UI to distinguish "the process is alive" from "the service is
  * available", and `docs/DECISIONS.md` D-008 forbids reducing one to the other.
+ * The HTTP result does not replace `portOpen`.
  */
 export interface ServiceHealthDto {
   processAlive: boolean;
   portOpen: boolean;
+  /**
+   * The HTTP GET, when the session has an http(s) URL. Null or absent means
+   * the probe was not issued.
+   */
+  http?: HttpProbeDto | null;
 }
 
 /** Everything the UI needs to render one session right now. */
@@ -298,13 +319,36 @@ export function isSessionRuntimeDto(value: unknown): value is SessionRuntimeDto 
   );
 }
 
+/** A status code an HTTP probe can report, or the null a timeout serializes. */
+function isHttpStatus(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599)
+  );
+}
+
+/** Runtime guard for one HTTP probe result. */
+function isHttpProbeDto(value: unknown): value is HttpProbeDto {
+  if (!isObject(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.ok === "boolean" && isHttpStatus(candidate.status);
+}
+
 /** Runtime guard for a health reading. */
 export function isServiceHealthDto(value: unknown): value is ServiceHealthDto {
   if (!isObject(value)) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  return typeof candidate.processAlive === "boolean" && typeof candidate.portOpen === "boolean";
+  const http = candidate.http;
+  return (
+    typeof candidate.processAlive === "boolean" &&
+    typeof candidate.portOpen === "boolean" &&
+    (http === undefined || http === null || isHttpProbeDto(http))
+  );
 }
 
 /**

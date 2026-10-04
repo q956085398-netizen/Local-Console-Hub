@@ -137,6 +137,47 @@ describe("isServiceHealthDto", () => {
   it("rejects a snapshot whose reading is malformed", () => {
     expect(isSessionRuntimeDto(wireSnapshot({ health: { portOpen: true } }))).toBe(false);
   });
+
+  it("keeps an HTTP result beside the TCP facts", () => {
+    expect(
+      isServiceHealthDto({
+        processAlive: true,
+        portOpen: true,
+        http: null,
+      }),
+    ).toBe(true);
+    expect(
+      isServiceHealthDto({
+        processAlive: false,
+        portOpen: false,
+        http: { ok: true, status: 200 },
+      }),
+    ).toBe(true);
+    expect(
+      isServiceHealthDto({
+        processAlive: true,
+        portOpen: true,
+        http: { ok: false, status: null },
+      }),
+    ).toBe(true);
+    expect(
+      isServiceHealthDto({
+        processAlive: true,
+        portOpen: true,
+        http: { ok: false, status: 503 },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects an HTTP result that is not a probe", () => {
+    expect(isServiceHealthDto({ processAlive: true, portOpen: true, http: true })).toBe(false);
+    expect(isServiceHealthDto({ processAlive: true, portOpen: true, http: { status: 200 } })).toBe(
+      false,
+    );
+    expect(
+      isServiceHealthDto({ processAlive: true, portOpen: true, http: { ok: false, status: "no" } }),
+    ).toBe(false);
+  });
 });
 
 describe("isSessionRuntimeDto", () => {

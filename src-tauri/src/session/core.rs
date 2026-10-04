@@ -1184,7 +1184,9 @@ impl SessionCore {
     /// Read a running service's health and publish it if the reading moved.
     ///
     /// Only the *changes* go out: a steady service costs one loopback connect
-    /// per interval and no UI work at all, which is what §14 asks for. The
+    /// per interval and no UI work at all, which is what §14 asks for. When
+    /// the session names an http(s) URL, the same pass also GETs that URL and
+    /// stores the result beside the TCP reading; it does not replace it. The
     /// reading is stored on the snapshot before anything is published, so a
     /// listener that reacts to the event and re-reads the snapshot sees the
     /// reading the event was about.
@@ -1196,7 +1198,12 @@ impl SessionCore {
         port: u16,
         generation: u64,
     ) {
-        let reading = health::ServiceHealth::read(run.exit_status().is_none(), port);
+        // Copy the URL and drop the lock before either probe. Both can wait
+        // out `health::PROBE_TIMEOUT`, and this thread must not hold the
+        // session lock across that.
+        let url = lock(handle).config.url.clone();
+        let reading =
+            health::ServiceHealth::read(run.exit_status().is_none(), port, url.as_deref());
         // The probe takes time and holds no lock, so the session may have moved
         // on while it was in flight; recording it under the session's own lock
         // is what decides whether this reading is still about anything.

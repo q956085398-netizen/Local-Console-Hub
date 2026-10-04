@@ -12,6 +12,7 @@
 
 import type { EffectiveLoggingDto, SessionConfigDto } from "../types/config";
 import type {
+  HttpProbeDto,
   RunRecordDto,
   RuntimeEffectiveLoggingDto,
   SessionRuntimeDto,
@@ -96,24 +97,41 @@ export function isReady(runtime: SessionRuntimeDto): boolean {
 /**
  * The Details tab's one-line health reading, or `undefined` when there is none.
  *
- * The two facts are worded separately, because the product separates them: a
- * service that is up, one that is still booting, and one whose process has gone
- * must not read the same. A session nothing has probed gets no line at all —
- * the row disappears rather than claiming a port is closed (spec §12: "we did
- * not check" is not a reading).
+ * TCP reachability and the process are worded separately, because the product
+ * separates them: a service that is up, one that is still booting, and one
+ * whose process has gone must not read the same. When an HTTP probe was
+ * issued, its result is a further clause on the same line. A 2xx status is
+ * reported as that status; a timeout or a non-success status is a failed
+ * probe. That clause does not replace "未监听" or "本会话进程已退出".
+ *
+ * A session nothing has probed gets no line at all — the row disappears
+ * rather than claiming a port is closed (spec §12: "we did not check" is not
+ * a reading). A session with no http(s) URL has no HTTP clause, and the TCP
+ * wording is unchanged.
  *
  * This is the only place a reading is shown, and it names the *port* only by
  * implication: the number is already in the header's metadata line, and §6 says
  * Details carries the low-frequency fields only, "values already live in the
  * header metadata line — PID, port, uptime, cwd, effective log policy — are not
- * repeated here". The header's status badge states the conclusion the reading
- * earns (`Ready`).
+ * repeated here". The header's status badge states the conclusion the TCP
+ * reading earns (`Ready`); the HTTP clause does not change that badge.
  */
 export function healthReading(runtime: SessionRuntimeDto): string | undefined {
   const health = runtime.health;
   if (!isPresent(health)) return undefined;
   const listening = health.portOpen ? "监听中" : "未监听";
-  return health.processAlive ? listening : `${listening} · 本会话进程已退出`;
+  const tcp = health.processAlive ? listening : `${listening} · 本会话进程已退出`;
+  const http = httpClause(health.http);
+  return http === undefined ? tcp : `${tcp} · ${http}`;
+}
+
+/** The HTTP half of a health line, absent when that probe was not issued. */
+function httpClause(http: HttpProbeDto | null | undefined): string | undefined {
+  if (!isPresent(http)) return undefined;
+  if (http.ok) {
+    return typeof http.status === "number" ? `HTTP ${http.status}` : "HTTP 正常";
+  }
+  return typeof http.status === "number" ? `HTTP ${http.status} 探测失败` : "HTTP 探测失败";
 }
 
 /** Elapsed run duration in the reference's vocabulary. */
