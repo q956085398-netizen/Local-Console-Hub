@@ -125,8 +125,11 @@ mod tests {
         impl Sleeper {
             fn spawn() -> Self {
                 use std::os::windows::process::CommandExt;
-                let child = std::process::Command::new("cmd.exe")
-                    .args(["/c", "ping -n 60 127.0.0.1 > NUL"])
+                // `ping` can exit immediately on a runner that blocks it. The
+                // pid would then be free for the next spawn, and a later
+                // creation-time read would describe that new process.
+                let child = std::process::Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 120"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .creation_flags(0x0800_0000)
@@ -139,9 +142,17 @@ mod tests {
                 self.0.id()
             }
 
-            fn identity(&self) -> ProcessIdentity {
+            fn identity(&mut self) -> ProcessIdentity {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                 loop {
+                    let still_ours = self
+                        .0
+                        .try_wait()
+                        .expect("the process is waitable")
+                        .is_none();
+                    if !still_ours {
+                        panic!("pid {} exited before its creation time was read", self.pid());
+                    }
                     if let Some(created) = creation_time_of(self.pid()) {
                         let identity = ProcessIdentity::recorded(self.pid(), created);
                         if identity.matches() {
@@ -222,7 +233,14 @@ mod tests {
 
             let mut target = Sleeper::spawn();
             let mut kept = Sleeper::spawn();
-            let managed = Sleeper::spawn();
+            let mut managed = Sleeper::spawn();
+            assert!(
+                target.alive() && kept.alive() && managed.alive(),
+                "a sleeper exited before the confirm"
+            );
+            assert_ne!(target.pid(), kept.pid());
+            assert_ne!(target.pid(), managed.pid());
+            assert_ne!(kept.pid(), managed.pid());
             let managed_identity = managed.identity();
             let process =
                 ExternalProcess::open(managed_identity).expect("open the managed process");
