@@ -313,14 +313,27 @@
   padding: 8px;
 }
 
+/* The two creation entries share this row. Each grows from a zero basis so
+ * the pair splits the footer in half; a column of width:100% buttons left the
+ * labels on the left and the rest of the rail empty. */
+.sidebar__actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .sidebar__add {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   height: 40px;
   padding: 0 8px;
+  overflow: hidden;
   font: inherit;
   font-size: 12px;
   color: var(--muted-fg);
@@ -334,10 +347,18 @@
   color: var(--fg);
 }
 
-/* The secondary entry: quieter than the quick one above it, because it is the
- * one that asks for something before it does anything. */
-.sidebar__add--secondary {
-  height: 32px;
+.sidebar__add > svg {
+  flex: none;
+}
+
+/* A flex item's min-width defaults to auto, which floors the label at the
+ * full string. Zero lets the label shrink so a narrow rail ellipsizes the
+ * text and leaves the icon in place. */
+.sidebar__add-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Port rows name the listener. They do not use a status pip: a green dot
