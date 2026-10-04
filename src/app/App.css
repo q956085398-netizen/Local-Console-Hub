@@ -14,12 +14,17 @@
 .app-main__rail {
   display: flex;
   min-height: 0;
-  width: 280px;
+  width: 360px;
   flex: none;
   border-right: 1px solid var(--border);
-  /* The rail is a fixed 280px pane, so nothing inside it may paint past that.
+  /* The rail is the whole column left of the divider. Its child sizes to its
+   * content, so a short list used to leave a strip of the window color (--bg)
+   * inside this border. Painting the rail itself closes that gap: sidebar gray
+   * (--card) runs up to the divider, and window dark starts only to its right. */
+  background: var(--card);
+  /* The rail is a fixed 360px pane, so nothing inside it may paint past that.
    * Without this the rail's children size themselves to their content: a
-   * session name wide enough would grow the rail's contents past 280 and draw
+   * session name wide enough would grow the rail's contents past 360 and draw
    * over the workspace, which is the pane the terminal is supposed to keep
    * (UI_STYLE_GUIDE §11). The rows ellipsize their names — see
    * `.session-row__name` — so this is the guard, not the mechanism: it makes a
@@ -34,6 +39,24 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+
+.workspace__session {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace__session--empty {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.workspace__session[hidden] {
+  display: none;
 }
 
 .workspace__content {

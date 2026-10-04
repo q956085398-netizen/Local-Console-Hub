@@ -2,6 +2,53 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowHost } from "../state/window-controls";
 
 /**
+ * Whether the main window is visible, including after the Hub hides it on close.
+ *
+ * The browser preview has no Tauri window, so the page's own visibility is the
+ * reading. A desktop window asks `isVisible` and also follows focus, because
+ * hiding to the tray is not a minimize. The caller decides what to pause.
+ */
+export function watchMainWindowVisible(receive: (visible: boolean) => void): () => void {
+  if (typeof document === "undefined") {
+    receive(true);
+    return () => {};
+  }
+  if (!("__TAURI_INTERNALS__" in window)) {
+    const read = () => receive(document.visibilityState !== "hidden");
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }
+
+  const current = getCurrentWindow();
+  let stopped = false;
+  let unlisten: (() => void) | null = null;
+  const read = () => {
+    void current
+      .isVisible()
+      .then((visible) => {
+        if (!stopped) receive(visible && document.visibilityState !== "hidden");
+      })
+      .catch(() => {
+        if (!stopped) receive(document.visibilityState !== "hidden");
+      });
+  };
+  read();
+  document.addEventListener("visibilitychange", read);
+  void current
+    .onFocusChanged(() => read())
+    .then((registered) => {
+      if (stopped) registered();
+      else unlisten = registered;
+    });
+  return () => {
+    stopped = true;
+    document.removeEventListener("visibilitychange", read);
+    unlisten?.();
+  };
+}
+
+/**
  * The main window as the desktop app reaches it.
  *
  * The only place that knows both sides: `state/window-controls.ts` decides what a

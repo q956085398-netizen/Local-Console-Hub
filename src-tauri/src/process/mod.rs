@@ -230,6 +230,17 @@ impl ProcessIdentity {
         }
     }
 
+    /// Record a pid and the creation time just observed for it.
+    ///
+    /// This does not ask Windows whether the pair is still current.
+    /// [`Self::matches`] is that question for the process this identity names.
+    /// A tree member is remembered this way so a later reading can require the
+    /// same creation time, instead of trusting the pid after Windows has
+    /// reused it.
+    pub(crate) fn recorded(pid: u32, created_at: u64) -> Self {
+        ProcessIdentity { pid, created_at }
+    }
+
     /// The process id, as Windows reported it when this identity was taken.
     pub fn pid(&self) -> u32 {
         self.pid
@@ -340,6 +351,17 @@ pub fn processes_named(names: &[String]) -> Option<Vec<ProcessReading>> {
 /// without a name — never by title, and never by executable name.
 pub fn descendants(pid: u32) -> Vec<u32> {
     backend::descendants(pid)
+}
+
+/// When the process currently reported under `pid` was created.
+///
+/// The same clock [`ProcessIdentity::matches`] compares against, read for a
+/// pid this layer did not start. `None` means the process could not be opened
+/// or its creation time could not be read — the identity cannot be confirmed.
+/// It does not mean the pid is free, and it is not a reason to signal or
+/// terminate anything: this only queries the process.
+pub fn creation_time_of(pid: u32) -> Option<u64> {
+    backend::creation_time_of(pid)
 }
 
 /// A handle on a process the Hub did not start (#67).

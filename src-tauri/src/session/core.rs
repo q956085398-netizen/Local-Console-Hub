@@ -818,6 +818,88 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// What a running session is holding, copied out so the process tree can be
+/// listed without the session lock.
+enum ListeningHold {
+    Run(Run),
+    /// An instance the Hub did not start. There is no job to ask (#67).
+    Adopted(ProcessIdentity),
+}
+
+/// One running session, as [`crate::listen::attribute`] wants it.
+///
+/// The run's own identity is the one the run already stores when it has one.
+/// A supervised process and a terminal only store a pid, and the identity is
+/// that pid plus the creation time read now — safe while the run still holds
+/// the process, which is what `Running` means here. `None` from
+/// [`tree_pids`](crate::process::ManagedProcess::tree_pids) stays `None`.
+fn listening_process(id: String, hold: ListeningHold) -> Option<crate::listen::SessionProcess> {
+    match hold {
+        ListeningHold::Adopted(identity) => {
+            // No job. The parent-pid walk is the tree attribution already
+            // accepts for a process the Hub did not start. `descendants`
+            // cannot tell a failed table from an empty one, so a walk that
+            // comes back empty is recorded as an empty list — the same answer
+            // the window lookup uses — and the session's own process is still
+            // recognized from `identity`. A member whose creation time cannot
+            // be read makes the whole tree `None`, not a shorter list.
+            let tree = recorded_members(crate::process::descendants(identity.pid()));
+            Some(crate::listen::SessionProcess { id, identity, tree })
+        }
+        ListeningHold::Run(Run::Standalone(process)) => {
+            let identity = process.identity();
+            let tree = match process.tree_pids() {
+                Ok(pids) => recorded_members(pids),
+                Err(_) => None,
+            };
+            Some(crate::listen::SessionProcess { id, identity, tree })
+        }
+        ListeningHold::Run(Run::Process(process)) => {
+            from_pid(id, process.pid(), process.tree_pids().ok())
+        }
+        ListeningHold::Run(Run::Terminal(pty)) => from_pid(id, pty.pid(), pty.tree_pids().ok()),
+    }
+}
+
+/// `listed` is `None` when the tree could not be read. A listed tree whose
+/// members cannot all be recorded is `None` as well, not a shorter `Some`.
+fn from_pid(
+    id: String,
+    pid: u32,
+    listed: Option<Vec<u32>>,
+) -> Option<crate::listen::SessionProcess> {
+    let created = crate::process::creation_time_of(pid)?;
+    Some(crate::listen::SessionProcess {
+        id,
+        identity: ProcessIdentity::recorded(pid, created),
+        tree: listed.and_then(recorded_members),
+    })
+}
+
+/// `None` when any listed pid cannot be recorded.
+///
+/// Dropping that pid and returning the rest would let attribution call a
+/// listener on the dropped pid external. An empty input is a listed tree with
+/// no members, which is `Some([])`, not an unread tree.
+fn recorded_members(pids: Vec<u32>) -> Option<Vec<ProcessIdentity>> {
+    record_known(
+        pids.into_iter()
+            .map(|pid| crate::process::creation_time_of(pid).map(|created| (pid, created))),
+    )
+}
+
+/// The same rule as [`recorded_members`], with the OS read already done.
+fn record_known(
+    members: impl IntoIterator<Item = Option<(u32, u64)>>,
+) -> Option<Vec<ProcessIdentity>> {
+    let mut recorded = Vec::new();
+    for member in members {
+        let (pid, created) = member?;
+        recorded.push(ProcessIdentity::recorded(pid, created));
+    }
+    Some(recorded)
+}
+
 impl SessionCore {
     /// A core that publishes to `sink`, with nowhere to write logs.
     ///
@@ -955,6 +1037,42 @@ impl SessionCore {
             .values()
             .map(|state| lock(state).runtime.clone())
             .collect()
+    }
+
+    /// Running sessions as listener attribution sees them (#98).
+    ///
+    /// A reading only. It does not start, stop, signal, or replace a run.
+    /// Each entry is the session id, the process identity already held for
+    /// that run, and the tree listed at this moment. A tree that cannot be
+    /// listed is `None`, which attribution treats as unchecked rather than
+    /// empty. Members are recorded with the creation time observed now, not
+    /// as bare pids.
+    pub fn listening_processes(&self) -> Vec<crate::listen::SessionProcess> {
+        let handles: Vec<(String, Arc<Mutex<SessionState>>)> = lock(&self.sessions)
+            .iter()
+            .map(|(id, handle)| (id.clone(), Arc::clone(handle)))
+            .collect();
+
+        let mut listed = Vec::new();
+        for (id, handle) in handles {
+            let hold = {
+                let state = lock(&handle);
+                if state.runtime.status != SessionStatus::Running {
+                    continue;
+                }
+                if let Some(adopted) = &state.adopted {
+                    ListeningHold::Adopted(adopted.identity)
+                } else if let Some(run) = state.run.clone() {
+                    ListeningHold::Run(run)
+                } else {
+                    continue;
+                }
+            };
+            if let Some(process) = listening_process(id, hold) {
+                listed.push(process);
+            }
+        }
+        listed
     }
 
     /// App-wide counts. Derived from the same state the snapshots come from,
@@ -3881,6 +3999,89 @@ mod tests {
         assert_eq!(summary.error, 0);
 
         core.force_stop("svc").expect("cleanup");
+    }
+
+    #[test]
+    fn a_member_without_a_creation_time_leaves_the_tree_unread() {
+        assert!(super::record_known([Some((1, 10)), None, Some((3, 30))]).is_none());
+        let complete = super::record_known([Some((1, 10)), Some((2, 20))]).expect("both recorded");
+        assert_eq!(
+            complete,
+            vec![
+                ProcessIdentity::for_test(1, 10),
+                ProcessIdentity::for_test(2, 20),
+            ]
+        );
+        assert_eq!(
+            super::record_known(std::iter::empty::<Option<(u32, u64)>>()),
+            Some(vec![])
+        );
+    }
+
+    /// The port page reads running sessions and nothing else (#98).
+    ///
+    /// A registered session that has not been started is not a process. A
+    /// running one is its pid plus the creation time observed now, and every
+    /// tree member is recorded the same way. Stopping it drops the snapshot.
+    /// The sleeper is the same `ping` the other lifecycle tests use, and it
+    /// is force-stopped on the way out — including when an assertion fails.
+    #[test]
+    fn listening_processes_follow_the_running_session_only() {
+        let idle = SessionCore::without_listener();
+        assert!(
+            idle.listening_processes().is_empty(),
+            "a core with no sessions has nothing to attribute"
+        );
+
+        let (core, _sink) = core_with_command("svc", LONG_RUNNING);
+        assert!(
+            core.listening_processes().is_empty(),
+            "a registered session that is not running is not a listener owner"
+        );
+
+        let runtime = core.start("svc").expect("start succeeds");
+        let pid = runtime.pid.expect("a running session has a pid");
+
+        struct StopOnDrop<'a>(&'a SessionCore);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                let _ = self.0.force_stop("svc");
+            }
+        }
+        let guard = StopOnDrop(&core);
+
+        let listed = core.listening_processes();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "svc");
+        assert_eq!(listed[0].identity.pid(), pid);
+        assert!(
+            listed[0].identity.matches(),
+            "the snapshot's identity is the process the run is holding"
+        );
+        let tree = listed[0]
+            .tree
+            .as_ref()
+            .expect("the managed job can be listed; a failure would be None");
+        assert!(
+            tree.iter().any(|member| member.pid() == pid),
+            "the job lists the run's own process"
+        );
+        for member in tree {
+            let Some(created) = crate::process::creation_time_of(member.pid()) else {
+                continue;
+            };
+            assert_eq!(
+                member.created_at(),
+                created,
+                "a member stores the creation time captured at listing"
+            );
+        }
+
+        drop(guard);
+        assert!(
+            core.listening_processes().is_empty(),
+            "a stopped session is not still offered as an owner"
+        );
     }
 
     /// The listener has to see `Starting` before `Running`: a UI that only

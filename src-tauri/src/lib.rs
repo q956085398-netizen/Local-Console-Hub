@@ -34,6 +34,10 @@ mod dialog;
 mod health;
 mod instance;
 mod ipc;
+/// Listening ports on this machine and the process that owns each one (#96).
+/// A read of the OS tables, not the configured-port TCP reachability probe
+/// (`health`).
+pub mod listen;
 pub mod logging;
 pub mod process;
 pub mod pty;
@@ -184,6 +188,8 @@ pub fn run() {
             ipc::logs::open_log_folder,
             ipc::logs::preview_log_cleanup,
             ipc::logs::cleanup_logs,
+            ipc::listen::list_listeners,
+            ipc::listen::port_occupancy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Local Console Hub");
