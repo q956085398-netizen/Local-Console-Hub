@@ -138,7 +138,7 @@
 
 .sidebar__group-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 8px 8px 4px;
@@ -152,6 +152,42 @@
   letter-spacing: 0.12em;
   color: var(--muted-fg);
   white-space: nowrap;
+}
+
+.sidebar__group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sidebar__group-toggle:hover {
+  color: var(--fg);
+}
+
+/* Disclosure only. A status color would read as running or failed. */
+.sidebar__group-chevron {
+  flex: none;
+  color: var(--muted-fg);
+  transition: transform 150ms ease-out;
+}
+
+.sidebar__group-toggle:hover .sidebar__group-chevron {
+  color: var(--fg);
+}
+
+.sidebar__group-chevron--open {
+  transform: rotate(90deg);
 }
 
 .sidebar__group-hint {
