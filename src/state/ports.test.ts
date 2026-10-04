@@ -240,10 +240,10 @@ function detailCard(markup: string): string {
 }
 
 function groupSection(markup: string, title: string): string {
-  const marker = `sidebar__group-title">${title}</h2>`;
+  const marker = `>${title}</button></h2>`;
   const start = markup.indexOf(marker);
   const rest = markup.slice(start + marker.length);
-  const next = rest.indexOf('sidebar__group-title">');
+  const next = rest.indexOf("sidebar__group-title");
   return next === -1 ? rest : rest.slice(0, next);
 }
 
@@ -410,11 +410,12 @@ describe("listeners outside the Hub", () => {
     );
     expect(markup).toContain("Hub 以外");
     expect(markup).toContain(EXTERNAL_LABEL);
+    expect(markup).toContain('aria-label="外部，已折叠"');
     expect(markup).toContain("PowerShell");
     expect(markup).toContain(UNAVAILABLE_LABEL);
-    expect(markup).toContain("nginx.exe");
-    expect(markup).toContain("PID 77");
-    expect(markup).toContain("D:\\tools\\nginx.exe");
+    expect(markup).not.toContain("nginx.exe");
+    expect(markup).not.toContain("PID 77");
+    expect(markup).not.toContain("D:\\tools\\nginx.exe");
     expect(markup).not.toContain("ComfyUI");
     expect(markup).not.toContain("pip");
     expect(groupSection(markup, EXTERNAL_LABEL)).not.toContain(">12<");
