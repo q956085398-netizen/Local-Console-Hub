@@ -1,4 +1,5 @@
-import { FolderPlus, Plus, Search, Terminal } from "lucide-react";
+import { useState } from "react";
+import { ChevronRight, FolderPlus, Plus, Search, Terminal } from "lucide-react";
 import {
   formatDuration,
   isReady,
@@ -19,6 +20,49 @@ import {
 import type { SessionView } from "../../state/session-view";
 import { isPresent } from "../../types/runtime";
 import "./Sidebar.css";
+
+/**
+ * Whether a session group shows its rows (#113).
+ *
+ * `collapsed` is the groups the user folded. An id that is absent is expanded,
+ * which is how the rail starts. Search is applied before these groups arrive,
+ * so a group that still has rows under a non-empty query contains a match and
+ * opens for that search only. The set is not rewritten; an empty query reads
+ * it again, and a query that matches nothing in the group leaves it folded.
+ */
+export function sessionGroupExpanded(
+  collapsed: ReadonlySet<string>,
+  groupId: string,
+  query: string,
+  rowCount: number,
+): boolean {
+  if (query.trim() !== "" && rowCount > 0) return true;
+  return !collapsed.has(groupId);
+}
+
+/**
+ * The collapse set after the group title is activated.
+ *
+ * The choice follows the rows on screen. A search can hold a folded group
+ * open; the title then already reads as expanded, so activating it records
+ * collapsed instead of toggling the stored choice back to expanded.
+ */
+export function sessionGroupAfterTitleToggle(
+  collapsed: ReadonlySet<string>,
+  groupId: string,
+  query: string,
+  rowCount: number,
+): Set<string> {
+  const next = new Set(collapsed);
+  if (sessionGroupExpanded(collapsed, groupId, query, rowCount)) next.add(groupId);
+  else next.delete(groupId);
+  return next;
+}
+
+/** Accessible name for a session-group title: the group, and whether it is open. */
+export function sessionGroupToggleName(label: string, expanded: boolean): string {
+  return `${label}，${expanded ? "已展开" : "已折叠"}`;
+}
 
 export interface SidebarProps {
   groups: SessionGroup[];
@@ -66,6 +110,7 @@ export default function Sidebar({
   portEmpty = null,
 }: SidebarProps) {
   const ports = view === "ports";
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
   return (
     <div className="sidebar">
       <div className="sidebar__head">
@@ -180,25 +225,61 @@ export default function Sidebar({
         </div>
       ) : (
         <div className="sidebar__groups">
-          {groups.map((group) => (
-            <section key={group.group.id} className="sidebar__group">
-              <header className="sidebar__group-head">
-                <h2 className="sidebar__group-title">{group.group.label}</h2>
-                <span className="sidebar__group-hint">{group.group.hint}</span>
-              </header>
-              <ul className="sidebar__rows">
-                {group.items.map((item) => (
-                  <SessionRow
-                    key={item.config.id}
-                    item={item}
-                    selected={item.config.id === selectedId}
-                    now={now}
-                    onSelect={onSelect}
-                  />
-                ))}
-              </ul>
-            </section>
-          ))}
+          {groups.map((group) => {
+            const expanded = sessionGroupExpanded(
+              collapsedGroups,
+              group.group.id,
+              query,
+              group.items.length,
+            );
+            return (
+              <section key={group.group.id} className="sidebar__group">
+                <header className="sidebar__group-head">
+                  <h2 className="sidebar__group-title">
+                    <button
+                      type="button"
+                      className="sidebar__group-toggle"
+                      aria-expanded={expanded}
+                      aria-label={sessionGroupToggleName(group.group.label, expanded)}
+                      onClick={() =>
+                        setCollapsedGroups((current) =>
+                          sessionGroupAfterTitleToggle(
+                            current,
+                            group.group.id,
+                            query,
+                            group.items.length,
+                          ),
+                        )
+                      }
+                    >
+                      <ChevronRight
+                        size={12}
+                        className={`sidebar__group-chevron${
+                          expanded ? " sidebar__group-chevron--open" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                      {group.group.label}
+                    </button>
+                  </h2>
+                  <span className="sidebar__group-hint">{group.group.hint}</span>
+                </header>
+                {expanded && (
+                  <ul className="sidebar__rows">
+                    {group.items.map((item) => (
+                      <SessionRow
+                        key={item.config.id}
+                        item={item}
+                        selected={item.config.id === selectedId}
+                        now={now}
+                        onSelect={onSelect}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </section>
+            );
+          })}
           {groups.length === 0 && (
             <p className="sidebar__empty">{query.trim() ? "没有匹配的受管会话。" : "还没有会话"}</p>
           )}
