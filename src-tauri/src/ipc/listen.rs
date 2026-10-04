@@ -551,7 +551,12 @@ mod tests {
             tree: Some(Vec::new()),
         };
 
-        let only_self = decide_occupancy(9, Ok(vec![record.clone()]), std::slice::from_ref(&next), "next");
+        let only_self = decide_occupancy(
+            9,
+            Ok(vec![record.clone()]),
+            std::slice::from_ref(&next),
+            "next",
+        );
         assert!(only_self.prompt);
         assert_eq!(only_self.rows.len(), 1);
         assert_eq!(only_self.rows[0].address, "0.0.0.0");
