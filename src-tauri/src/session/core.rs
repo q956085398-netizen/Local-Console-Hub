@@ -4198,6 +4198,348 @@ mod tests {
         assert_eq!(error.kind, SessionErrorKind::UnknownSession);
     }
 
+    /// A process this test started, listening on a port no session owns (#106).
+    ///
+    /// Restart must not end it. The guard kills it on the way out, including
+    /// when an assertion fails, so a failed run does not leave the listener up.
+    struct ExternalListener {
+        child: std::process::Child,
+        port: u16,
+        pid: u32,
+    }
+
+    impl ExternalListener {
+        fn start() -> Self {
+            let port = reserve_local_port();
+            let child = std::process::Command::new(windows_powershell())
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &listen_script(port),
+                ])
+                .spawn()
+                .expect("the external listener starts");
+            let pid = child.id();
+            let listener = Self { child, port, pid };
+            wait_for_tcp_pid("the external listener to bind", port, pid);
+            listener
+        }
+    }
+
+    impl Drop for ExternalListener {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    struct StopSessions<'a> {
+        core: &'a SessionCore,
+        ids: &'a [&'a str],
+    }
+
+    impl Drop for StopSessions<'_> {
+        fn drop(&mut self) {
+            for id in self.ids {
+                let Some(runtime) = self.core.snapshot(id) else {
+                    continue;
+                };
+                if matches!(
+                    runtime.status,
+                    SessionStatus::Running | SessionStatus::Starting | SessionStatus::Stopping
+                ) {
+                    let _ = self.core.force_stop(id);
+                }
+            }
+        }
+    }
+
+    fn reserve_local_port() -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind an ephemeral port");
+        listener.local_addr().expect("the bound address").port()
+    }
+
+    fn listen_script(port: u16) -> String {
+        format!(
+            "$l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, {port}); $l.Start(); Start-Sleep -Seconds 180"
+        )
+    }
+
+    /// The managed command whose own process listens on `port`.
+    fn listening_service_command(port: u16) -> String {
+        format!(
+            "\"{}\" -NoProfile -NonInteractive -Command \"{}\"",
+            windows_powershell().display(),
+            listen_script(port)
+        )
+    }
+
+    fn register_service(core: &SessionCore, id: &str, command: &str, port: Option<u16>) {
+        let mut config = service(id);
+        config.command = Some(command.to_owned());
+        config.port = port;
+        core.register(config).expect("registration succeeds");
+    }
+
+    fn tcp_listener_pids(port: u16) -> Vec<u32> {
+        crate::listen::collect()
+            .expect("the listener table can be read")
+            .into_iter()
+            .filter(|row| row.protocol == crate::listen::Protocol::Tcp && row.port == port)
+            .filter_map(|row| row.pid.as_ref().copied())
+            .collect()
+    }
+
+    fn wait_for_tcp_pid(what: &str, port: u16, pid: u32) {
+        let timeout = std::time::Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let pids = tcp_listener_pids(port);
+            if pids.contains(&pid) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: port {port} was not owned by pid {pid} within {timeout:?}; last pids {pids:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn port_still_accepts(port: u16) -> bool {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            std::time::Duration::from_millis(500),
+        )
+        .is_ok()
+    }
+
+    fn assert_still_this_run(core: &SessionCore, id: &str, pid: u32) {
+        let runtime = core.snapshot(id).expect("the session is registered");
+        assert_eq!(runtime.status, SessionStatus::Running, "{id} was stopped");
+        assert_eq!(runtime.pid, Some(pid), "{id} was replaced");
+        assert!(!runtime.external, "{id} was turned into an external run");
+        assert!(pid_is_alive(pid), "{id} pid {pid} is gone");
+    }
+
+    /// Latest published record for each run, in the order the runs appeared.
+    fn latest_run_records(sink: &RecordingSink, session_id: &str) -> Vec<RunRecord> {
+        let mut records: Vec<RunRecord> = Vec::new();
+        for event in sink.events() {
+            let SessionEvent::RunRecordUpdated(update) = event else {
+                continue;
+            };
+            if update.session_id != session_id {
+                continue;
+            }
+            if let Some(slot) = records
+                .iter_mut()
+                .find(|record| record.run_id == update.run.run_id)
+            {
+                *slot = update.run;
+            } else {
+                records.push(update.run);
+            }
+        }
+        records
+    }
+
+    /// Port monitoring must not change what a restart is (#106): end this run,
+    /// then start the next one. The session's own listener is not an external
+    /// occupier, an external holder is not ended, and no other session moves.
+    #[test]
+    fn restarting_under_port_monitoring_replaces_one_run_and_leaves_other_holders() {
+        let external = ExternalListener::start();
+        let own_port = reserve_local_port();
+
+        let sink = Arc::new(RecordingSink::default());
+        let core = SessionCore::new(sink.clone())
+            .with_health_interval(std::time::Duration::from_millis(200));
+        let ids = ["plain", "neighbour", "own", "blocked", "held"];
+        register_service(&core, "plain", LONG_RUNNING, None);
+        register_service(&core, "neighbour", LONG_RUNNING, None);
+        register_service(
+            &core,
+            "own",
+            &listening_service_command(own_port),
+            Some(own_port),
+        );
+        register_service(&core, "blocked", LONG_RUNNING, Some(external.port));
+        register_service(&core, "held", LONG_RUNNING, Some(external.port));
+        let _stop = StopSessions {
+            core: &core,
+            ids: &ids,
+        };
+
+        let plain_first = core.start("plain").expect("the no-port session starts");
+        let plain_first_pid = plain_first.pid.expect("a running session has a pid");
+        let neighbour = core.start("neighbour").expect("the neighbour starts");
+        let neighbour_pid = neighbour.pid.expect("a running session has a pid");
+        let own_first = core.start("own").expect("the listening session starts");
+        let own_first_pid = own_first.pid.expect("a running session has a pid");
+        let own_first_run = own_first.run_id.clone().expect("the run has an id");
+        let blocked_first = core.start("blocked").expect("the blocked session starts");
+        let blocked_first_pid = blocked_first.pid.expect("a running session has a pid");
+        wait_for_tcp_pid(
+            "the session's own process to listen on its configured port",
+            own_port,
+            own_first_pid,
+        );
+
+        // No configured port: the old process is gone, a new run is up, and
+        // the neighbour is the same process it was.
+        let plain_second = core.restart("plain").expect("a no-port session restarts");
+        let plain_pid = plain_second.pid.expect("the new run has a pid");
+        assert_eq!(plain_second.status, SessionStatus::Running);
+        assert_ne!(plain_second.run_id, plain_first.run_id);
+        assert_ne!(plain_pid, plain_first_pid);
+        assert!(
+            !pid_is_alive(plain_first_pid),
+            "the replaced no-port run (pid {plain_first_pid}) outlived the restart"
+        );
+        assert_still_this_run(&core, "neighbour", neighbour_pid);
+        assert_still_this_run(&core, "own", own_first_pid);
+        assert_still_this_run(&core, "blocked", blocked_first_pid);
+        assert!(
+            pid_is_alive(external.pid) && port_still_accepts(external.port),
+            "restarting a no-port session ended the external holder"
+        );
+
+        // The listener is this session's own process. Restart stops that run
+        // and starts the next one; it does not stop on an occupancy refusal,
+        // and it does not leave the previous run's record open.
+        let own_second = core
+            .restart("own")
+            .expect("a session listening on its own port restarts");
+        let own_pid = own_second.pid.expect("the replacement run has a pid");
+        assert_eq!(own_second.status, SessionStatus::Running);
+        assert!(!own_second.external);
+        assert_ne!(own_second.run_id.as_ref(), Some(&own_first_run));
+        assert_ne!(own_pid, own_first_pid);
+        assert!(
+            !pid_is_alive(own_first_pid),
+            "the replaced listener (pid {own_first_pid}) outlived the restart"
+        );
+        wait_for_tcp_pid(
+            "the replacement run to listen on the configured port",
+            own_port,
+            own_pid,
+        );
+        assert!(
+            !tcp_listener_pids(own_port).contains(&own_first_pid),
+            "the old listener is still treated as holding the port"
+        );
+        let own_records = latest_run_records(&sink, "own");
+        let own_open: Vec<_> = own_records
+            .iter()
+            .filter(|record| record.ended_at.is_none())
+            .collect();
+        assert_eq!(
+            own_open.len(),
+            1,
+            "restart left an extra open run record: {own_records:?}"
+        );
+        assert_eq!(own_open[0].pid, Some(own_pid));
+        assert_eq!(own_second.run_id.as_ref(), Some(&own_open[0].run_id));
+        assert!(
+            own_records
+                .iter()
+                .any(|record| record.run_id == own_first_run && record.ended_at.is_some()),
+            "the replaced run's record was not closed: {own_records:?}"
+        );
+        let reading = wait_for_health(
+            &core,
+            "own",
+            |reading| reading.port_open && reading.process_alive,
+            std::time::Duration::from_secs(10),
+        );
+        assert!(reading.process_alive && reading.port_open);
+        let logs = core
+            .log_status("own")
+            .expect("logs still answer after restart");
+        assert_eq!(logs.session_id, "own");
+        assert_eq!(logs.source, LogSource::Captured);
+        let details = core.snapshot("own").expect("details still answer");
+        assert_eq!(details.status, SessionStatus::Running);
+        assert_eq!(details.pid, Some(own_pid));
+        assert_eq!(details.run_id, own_second.run_id);
+        assert_eq!(core.summary().running, 4);
+        assert_still_this_run(&core, "plain", plain_pid);
+        assert_still_this_run(&core, "neighbour", neighbour_pid);
+        assert_still_this_run(&core, "blocked", blocked_first_pid);
+        assert!(
+            pid_is_alive(external.pid) && port_still_accepts(external.port),
+            "restarting the listening session ended the external holder"
+        );
+        let listed = core.listening_processes();
+        assert!(listed
+            .iter()
+            .any(|session| session.id == "own" && session.identity.pid() == own_pid));
+        assert!(!listed
+            .iter()
+            .any(|session| session.identity.pid() == external.pid));
+        assert!(!listed
+            .iter()
+            .any(|session| session.identity.pid() == own_first_pid));
+
+        // An external program holds the configured port. Restart replaces this
+        // session's run and does not end that program or the neighbour.
+        let blocked_second = core
+            .restart("blocked")
+            .expect("restart does not refuse because an external program holds the port");
+        let blocked_pid = blocked_second.pid.expect("the replacement run has a pid");
+        assert_eq!(blocked_second.status, SessionStatus::Running);
+        assert_ne!(blocked_pid, external.pid);
+        assert_ne!(blocked_pid, blocked_first_pid);
+        assert!(!pid_is_alive(blocked_first_pid));
+        assert!(
+            pid_is_alive(external.pid) && port_still_accepts(external.port),
+            "restart ended the external program that holds the configured port"
+        );
+        assert!(
+            tcp_listener_pids(external.port).contains(&external.pid),
+            "the external holder no longer owns its port"
+        );
+        assert!(!tcp_listener_pids(external.port).contains(&blocked_pid));
+        assert_still_this_run(&core, "plain", plain_pid);
+        assert_still_this_run(&core, "neighbour", neighbour_pid);
+        assert_still_this_run(&core, "own", own_pid);
+
+        // The same holder, for a session that was not running. Restart starts
+        // it. The holder stays, and the open record is this run's process.
+        let held = core
+            .restart("held")
+            .expect("restarting a stopped session does not refuse on the external holder");
+        let held_pid = held.pid.expect("the new run has a pid");
+        assert_eq!(held.status, SessionStatus::Running);
+        assert_ne!(held_pid, external.pid);
+        assert!(pid_is_alive(held_pid));
+        let held_open: Vec<_> = latest_run_records(&sink, "held")
+            .into_iter()
+            .filter(|record| record.ended_at.is_none())
+            .collect();
+        assert_eq!(
+            held_open.len(),
+            1,
+            "restart of a stopped session should publish exactly one open run: {held_open:?}"
+        );
+        assert_eq!(held_open[0].pid, Some(held_pid));
+        assert_ne!(held_open[0].pid, Some(external.pid));
+        assert!(
+            pid_is_alive(external.pid) && port_still_accepts(external.port),
+            "starting through restart ended the external holder"
+        );
+        assert_still_this_run(&core, "plain", plain_pid);
+        assert_still_this_run(&core, "neighbour", neighbour_pid);
+        assert_still_this_run(&core, "own", own_pid);
+        assert_still_this_run(&core, "blocked", blocked_pid);
+        let held_details = core.snapshot("held").expect("details still answer");
+        assert_eq!(held_details.status, SessionStatus::Running);
+        assert_eq!(held_details.pid, Some(held_pid));
+        assert_eq!(core.summary().running, 5);
+    }
+
     /// A long-running service that names `port`, with health polls at
     /// `interval` so a test does not wait out the product's own cadence.
     fn core_with_port(
@@ -6964,6 +7306,25 @@ mod tests {
             assert_ne!(second.pid, first.pid, "a restart is a new shell");
             assert!(second.pty_attached);
             wait_until("the replaced shell to be gone", || !pid_is_alive(first_pid));
+
+            // The view, the log answer, the snapshot and the summary are the
+            // surfaces a restart must leave usable (#106): terminal, logs, details,
+            // status bar.
+            let attached = core
+                .terminal_attachment("term")
+                .expect("the terminal view still attaches after restart");
+            assert!(attached.pty_attached);
+            assert_eq!(attached.session_id, "term");
+            assert!(core.terminal_buffer("term").is_some());
+            core.terminal_write("term", b"\r")
+                .expect("the restarted terminal still accepts input");
+            let logs = core.log_status("term").expect("logs still answer");
+            assert_eq!(logs.session_id, "term");
+            let details = core.snapshot("term").expect("details still answer");
+            assert_eq!(details.status, SessionStatus::Running);
+            assert_eq!(details.pid, second.pid);
+            assert_eq!(details.run_id, second.run_id);
+            assert_eq!(core.summary().running, 1);
 
             core.stop("term").expect("cleanup");
         }
