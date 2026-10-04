@@ -742,4 +742,509 @@ mod tests {
         drop(tcp);
         drop(udp);
     }
+
+    /// A listener this test starts, the collection after it exits, and the
+    /// process Windows actually gives that pid to next (#105).
+    ///
+    /// The session snapshot keeps the creation time read while the first
+    /// process was alive. The second process is the one `spawn` returned when
+    /// its pid was that number, and every row passed to attribution is one
+    /// [`crate::listen::collect`] returned. A creation time this test invents
+    /// is not a stand-in for that.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_pid_reuse_is_not_the_old_session() {
+        reuse::a_listener_exits_and_a_reused_pid_is_not_the_old_session();
+    }
+
+    #[cfg(windows)]
+    mod reuse {
+        use std::fs;
+        use std::path::{Path, PathBuf};
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        use crate::listen::{
+            attribute, Attribution, ListenRecord, Protocol, Readable, SessionProcess,
+            EXTERNAL_LABEL, UNAVAILABLE_LABEL,
+        };
+        use crate::process::{creation_time_of, ProcessIdentity};
+
+        use super::decide_occupancy;
+
+        const HOLDER: &str = "holder";
+        /// Threads that only this test starts, so the pid hunt can finish
+        /// inside the bound without raising the suite-wide `--test-threads`.
+        const HUNTERS: usize = 8;
+        /// Long enough that a busy machine can recycle one pid, and short
+        /// enough that a run where Windows does not reuse it fails instead of
+        /// hanging. The hunt returns as soon as a spawned process receives it.
+        /// A quiet run has finished well inside a minute; the extra room is
+        /// only for when this test shares the machine with the rest of the suite.
+        const REUSE_BOUND: Duration = Duration::from_secs(180);
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        const LISTENER_SOURCE: &str = r#"
+fn main() {
+    let path = std::env::args().nth(1).expect("port file");
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    std::fs::write(&path, port.to_string()).expect("write port");
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = listener.local_addr();
+    }
+}
+"#;
+
+        /// The process `spawn` returned. Drop terminates that process through
+        /// the handle, not through a pid lookup, so a number Windows has
+        /// already reused cannot be what gets killed.
+        struct OwnedProcess(Option<std::process::Child>);
+
+        impl OwnedProcess {
+            fn spawn(exe: &Path, port_file: &Path) -> Self {
+                use std::os::windows::process::CommandExt;
+
+                let child = Command::new(exe)
+                    .arg(port_file)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .expect("spawn a listener this test owns");
+                OwnedProcess(Some(child))
+            }
+
+            fn pid(&self) -> u32 {
+                self.0
+                    .as_ref()
+                    .expect("the owned process is still held")
+                    .id()
+            }
+
+            fn stop(&mut self) {
+                if let Some(mut child) = self.0.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        impl Drop for OwnedProcess {
+            fn drop(&mut self) {
+                self.stop();
+            }
+        }
+
+        struct TempTree(PathBuf);
+
+        impl TempTree {
+            fn new() -> Self {
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos())
+                    .unwrap_or(0);
+                let path = std::env::temp_dir()
+                    .join(format!("lch-pid-reuse-{}-{nanos}", std::process::id()));
+                fs::create_dir_all(&path).expect("create a temp dir for the listener helper");
+                TempTree(path)
+            }
+        }
+
+        impl Drop for TempTree {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        fn compile_listener(dir: &Path) -> PathBuf {
+            let source = dir.join("listener.rs");
+            let exe = dir.join("listener.exe");
+            fs::write(&source, LISTENER_SOURCE).expect("write the listener helper source");
+            let output = Command::new("rustc")
+                .args(["-O", "-o"])
+                .arg(&exe)
+                .arg(&source)
+                .output()
+                .expect("rustc is on PATH so the listener helper can be built");
+            assert!(
+                output.status.success(),
+                "the listener helper failed to compile: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            exe
+        }
+
+        fn wait_port(path: &Path) -> u16 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Ok(text) = fs::read_to_string(path) {
+                    if let Ok(port) = text.trim().parse::<u16>() {
+                        if port != 0 {
+                            return port;
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!(
+                        "the listener did not publish its port at {}",
+                        path.display()
+                    );
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn collected() -> Vec<ListenRecord> {
+            let mut last = None;
+            for _ in 0..10 {
+                match crate::listen::collect() {
+                    Ok(records) => return records,
+                    Err(error) => {
+                        last = Some(error.to_string());
+                        thread::sleep(Duration::from_millis(30));
+                    }
+                }
+            }
+            panic!(
+                "reading the owner tables failed: {}",
+                last.unwrap_or_else(|| "no attempt".to_owned())
+            );
+        }
+
+        fn lists(records: &[ListenRecord], pid: u32, port: u16) -> bool {
+            records.iter().any(|record| {
+                record.protocol == Protocol::Tcp
+                    && record.port == port
+                    && record.pid == Readable::Known(pid)
+            })
+        }
+
+        fn wait_until_listed(pid: u32, port: u16) -> Vec<ListenRecord> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let records = collected();
+                if lists(&records, pid, port) {
+                    return records;
+                }
+                if Instant::now() >= deadline {
+                    panic!("pid {pid} was not listening on {port}");
+                }
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+
+        fn wait_until_unlisted(pid: u32, port: u16) -> Vec<ListenRecord> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let records = collected();
+                if !lists(&records, pid, port) {
+                    return records;
+                }
+                if Instant::now() >= deadline {
+                    panic!("pid {pid} was still listed on {port} after it exited");
+                }
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+
+        fn wait_until_released(pid: u32, created: u64) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match creation_time_of(pid) {
+                    Some(live) if live == created => {
+                        if Instant::now() >= deadline {
+                            panic!(
+                                "pid {pid} still reports the exited process; its handle was not released"
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    _ => return,
+                }
+            }
+        }
+
+        fn holder(pid: u32, created: u64) -> SessionProcess {
+            let identity = ProcessIdentity::recorded(pid, created);
+            SessionProcess {
+                id: HOLDER.to_owned(),
+                identity,
+                tree: Some(vec![identity]),
+            }
+        }
+
+        fn ours<'a>(
+            records: &'a [crate::listen::AttributedRecord],
+            pid: u32,
+            port: u16,
+        ) -> Vec<&'a crate::listen::AttributedRecord> {
+            records
+                .iter()
+                .filter(|row| {
+                    row.record.protocol == Protocol::Tcp
+                        && row.record.port == port
+                        && row.record.pid == Readable::Known(pid)
+                })
+                .collect()
+        }
+
+        fn assert_held(records: &[ListenRecord], session: &SessionProcess, pid: u32, port: u16) {
+            let attributed = attribute(records, std::slice::from_ref(session));
+            let rows = ours(&attributed, pid, port);
+            assert!(
+                !rows.is_empty(),
+                "collect did not list the listener this test started"
+            );
+            assert!(
+                rows.iter().any(|row| matches!(
+                    &row.record.process_name,
+                    Readable::Known(name) if name.eq_ignore_ascii_case("listener.exe")
+                )),
+                "the collected row did not name the listener process: {rows:?}"
+            );
+            for row in &rows {
+                assert_eq!(row.attribution, Attribution::Session(HOLDER.to_owned()));
+                assert_eq!(row.attribution.label(), HOLDER);
+                assert_ne!(row.attribution, Attribution::External);
+                assert_ne!(row.attribution, Attribution::Unavailable);
+            }
+
+            let dto = decide_occupancy(
+                port,
+                Ok(records.to_vec()),
+                std::slice::from_ref(session),
+                "next",
+            );
+            assert!(dto.failure.is_none());
+            assert!(dto.prompt);
+            let listed: Vec<_> = dto.rows.iter().filter(|row| row.pid == Some(pid)).collect();
+            assert!(
+                !listed.is_empty(),
+                "occupancy dropped the listener: {dto:?}"
+            );
+            for row in listed {
+                assert_eq!(row.attribution, "session");
+                assert_eq!(row.session_id.as_deref(), Some(HOLDER));
+                assert_ne!(row.session_id.as_deref(), Some("next"));
+            }
+        }
+
+        fn assert_not_held(
+            records: &[ListenRecord],
+            session: &SessionProcess,
+            pid: u32,
+            port: u16,
+        ) {
+            assert!(
+                !lists(records, pid, port),
+                "the exited listener is still in the collection"
+            );
+            let attributed = attribute(records, std::slice::from_ref(session));
+            assert!(
+                attributed
+                    .iter()
+                    .all(|row| row.attribution != Attribution::Session(HOLDER.to_owned())),
+                "a collected row is still the old session: {attributed:?}"
+            );
+            let dto = decide_occupancy(
+                port,
+                Ok(records.to_vec()),
+                std::slice::from_ref(session),
+                "next",
+            );
+            assert!(dto.failure.is_none());
+            assert!(dto.rows.iter().all(|row| row.pid != Some(pid)));
+            assert!(dto
+                .rows
+                .iter()
+                .all(|row| row.session_id.as_deref() != Some(HOLDER)));
+        }
+
+        /// Spawn listeners until one receives `target`, or the bound elapses.
+        ///
+        /// Every child is one this function spawned. A miss is terminated
+        /// through its handle before the next spawn. `Err` is the number of
+        /// spawns when Windows did not reuse the pid inside the bound.
+        fn await_pid_reuse(
+            exe: &Path,
+            dir: &Path,
+            target: u32,
+        ) -> Result<(OwnedProcess, u16), u32> {
+            let found: Arc<Mutex<Option<(OwnedProcess, PathBuf)>>> = Arc::new(Mutex::new(None));
+            let stop = Arc::new(AtomicBool::new(false));
+            let attempts = Arc::new(AtomicU32::new(0));
+            let seq = Arc::new(AtomicU32::new(0));
+            let started = Instant::now();
+
+            thread::scope(|scope| {
+                for _ in 0..HUNTERS {
+                    let found = Arc::clone(&found);
+                    let stop = Arc::clone(&stop);
+                    let attempts = Arc::clone(&attempts);
+                    let seq = Arc::clone(&seq);
+                    scope.spawn(move || {
+                        while !stop.load(Ordering::Relaxed) && started.elapsed() < REUSE_BOUND {
+                            let n = seq.fetch_add(1, Ordering::Relaxed);
+                            let port_file = dir.join(format!("reuse-{n}.port"));
+                            let matched = {
+                                let child = OwnedProcess::spawn(exe, &port_file);
+                                attempts.fetch_add(1, Ordering::Relaxed);
+                                if child.pid() == target {
+                                    stop.store(true, Ordering::Relaxed);
+                                    let mut slot =
+                                        found.lock().expect("the reuse lock is not poisoned");
+                                    if slot.is_none() {
+                                        *slot = Some((child, port_file.clone()));
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            };
+                            if matched {
+                                return;
+                            }
+                            let _ = fs::remove_file(&port_file);
+                        }
+                    });
+                }
+            });
+
+            let spawned = attempts.load(Ordering::Relaxed);
+            let won = found.lock().expect("the reuse lock is not poisoned").take();
+            match won {
+                Some((child, port_file)) => {
+                    let port = wait_port(&port_file);
+                    let _ = fs::remove_file(&port_file);
+                    Ok((child, port))
+                }
+                None => Err(spawned),
+            }
+        }
+
+        pub(super) fn a_listener_exits_and_a_reused_pid_is_not_the_old_session() {
+            let tree = TempTree::new();
+            let exe = compile_listener(&tree.0);
+            let first_port_file = tree.0.join("first.port");
+            let mut listener = OwnedProcess::spawn(&exe, &first_port_file);
+            let pid = listener.pid();
+            let port = wait_port(&first_port_file);
+            let created = creation_time_of(pid).expect("the listener has a creation time");
+            let session = holder(pid, created);
+            assert!(
+                session.identity.matches(),
+                "the snapshot is the process that is listening"
+            );
+
+            let records = wait_until_listed(pid, port);
+            assert_held(&records, &session, pid, port);
+
+            listener.stop();
+            wait_until_released(pid, created);
+            let records = wait_until_unlisted(pid, port);
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.pid != Readable::Known(pid)),
+                "after exit, the next collection still lists pid {pid}"
+            );
+            assert!(
+                !session.identity.matches(),
+                "the exited process is still the pid's current identity"
+            );
+            assert_not_held(&records, &session, pid, port);
+
+            let (mut winner, reused_port) =
+                await_pid_reuse(&exe, &tree.0, pid).unwrap_or_else(|spawned| {
+                    panic!(
+                        "Windows did not reuse pid {pid} within {REUSE_BOUND:?} ({spawned} spawns). \
+                         The exit collection above no longer listed it and no longer \
+                         attributed it to {HOLDER}. No simulated listening row was used."
+                    );
+                });
+            assert_eq!(
+                winner.pid(),
+                pid,
+                "the kept process is the one that received the pid"
+            );
+            let live = creation_time_of(pid);
+            let records = wait_until_listed(pid, reused_port);
+            let attributed = attribute(&records, std::slice::from_ref(&session));
+            let rows = ours(&attributed, pid, reused_port);
+            assert!(
+                !rows.is_empty(),
+                "collect did not list the process that received the reused pid"
+            );
+            assert!(
+                rows.iter().any(|row| matches!(
+                    &row.record.process_name,
+                    Readable::Known(name) if name.eq_ignore_ascii_case("listener.exe")
+                )),
+                "the reused pid's collected row is not the process this test spawned: {rows:?}"
+            );
+
+            match live {
+                None => {
+                    for row in &rows {
+                        assert_eq!(row.attribution, Attribution::Unavailable);
+                        assert_eq!(row.attribution.label(), UNAVAILABLE_LABEL);
+                        assert_ne!(row.attribution, Attribution::Session(HOLDER.to_owned()));
+                        assert_ne!(row.attribution, Attribution::External);
+                    }
+                }
+                Some(live_created) => {
+                    assert_ne!(
+                        live_created, created,
+                        "the process now using pid {pid} is still the one that exited"
+                    );
+                    assert!(
+                        !session.identity.matches(),
+                        "the old session identity matches the process that reused the pid"
+                    );
+                    for row in &rows {
+                        assert_eq!(row.attribution, Attribution::External);
+                        assert_eq!(row.attribution.label(), EXTERNAL_LABEL);
+                        assert_ne!(row.attribution, Attribution::Session(HOLDER.to_owned()));
+                        assert_ne!(row.attribution, Attribution::Unavailable);
+                    }
+                }
+            }
+            assert!(
+                attributed
+                    .iter()
+                    .all(|row| row.attribution != Attribution::Session(HOLDER.to_owned())),
+                "a collected row is still the old session after the pid was reused"
+            );
+
+            let dto = decide_occupancy(
+                reused_port,
+                Ok(records),
+                std::slice::from_ref(&session),
+                "next",
+            );
+            assert!(dto.failure.is_none());
+            let listed: Vec<_> = dto.rows.iter().filter(|row| row.pid == Some(pid)).collect();
+            assert!(!listed.is_empty(), "occupancy dropped the reused listener");
+            for row in listed {
+                assert_ne!(row.attribution, "session");
+                assert_ne!(row.session_id.as_deref(), Some(HOLDER));
+                assert!(row.session_id.is_none());
+                match live {
+                    None => assert_eq!(row.attribution, "unavailable"),
+                    Some(_) => assert_eq!(row.attribution, "external"),
+                }
+            }
+
+            winner.stop();
+        }
+    }
 }
