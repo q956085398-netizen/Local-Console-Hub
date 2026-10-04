@@ -139,6 +139,9 @@ pub enum CollectError {
         protocol: Protocol,
         family: IpFamily,
     },
+    /// `LCH_LISTEN_FAIL` asked this check to fail before the owner tables were
+    /// read. Not a listener list, and not an empty success.
+    Forced,
 }
 
 impl std::fmt::Display for CollectError {
@@ -159,6 +162,9 @@ impl std::fmt::Display for CollectError {
                 f,
                 "the {protocol} {family} owner table was shorter than its row count"
             ),
+            CollectError::Forced => {
+                f.write_str("listening-port collection failed before the owner tables were read")
+            }
         }
     }
 }
@@ -269,8 +275,51 @@ impl RefreshState {
 ///
 /// On Windows this is the owner-PID tables. Elsewhere it is
 /// [`CollectError::Unsupported`], not an empty success.
+///
+/// `LCH_LISTEN_FAIL` is an acceptance seam read on every call, and only here.
+/// Unset, empty, or `0` keeps the real tables. `1` fails this check with no
+/// rows. Any other value is a path re-read each call: the file contains `1`
+/// to fail, and anything else, including a missing file, uses the real tables.
+/// The seam never invents a listener list. It is off unless that variable asks.
 pub fn collect() -> Result<Vec<ListenRecord>, CollectError> {
+    if failure_requested() {
+        return Err(CollectError::Forced);
+    }
     backend::collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_LISTEN_FAIL: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// Whether this check should fail before the owner tables are read.
+fn failure_requested() -> bool {
+    #[cfg(test)]
+    {
+        if FORCE_LISTEN_FAIL.with(|cell| cell.get()) {
+            return true;
+        }
+    }
+    match std::env::var("LCH_LISTEN_FAIL") {
+        Ok(value) => seam_value_requests_failure(&value),
+        Err(_) => false,
+    }
+}
+
+/// `1` fails the check. A path fails only when the file's contents are `1`.
+fn seam_value_requests_failure(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return false;
+    }
+    if trimmed == "1" {
+        return true;
+    }
+    match std::fs::read_to_string(trimmed) {
+        Ok(body) => body.trim() == "1",
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +389,99 @@ mod tests {
                 code: 5,
             })
         ));
+    }
+
+    /// Arms [`failure_requested`] on this thread only, so a parallel collect
+    /// still reads the real tables.
+    struct ArmForcedFailure;
+
+    impl ArmForcedFailure {
+        fn arm() -> Self {
+            FORCE_LISTEN_FAIL.with(|cell| cell.set(true));
+            Self
+        }
+    }
+
+    impl Drop for ArmForcedFailure {
+        fn drop(&mut self) {
+            FORCE_LISTEN_FAIL.with(|cell| cell.set(false));
+        }
+    }
+
+    #[test]
+    fn a_forced_collect_failure_has_no_success_time_and_no_rows() {
+        let _armed = ArmForcedFailure::arm();
+        let collected = collect();
+        assert!(
+            matches!(collected, Err(CollectError::Forced)),
+            "the seam returns an error, not an empty listener list: {collected:?}"
+        );
+        let mut state = RefreshState::new();
+        state.refresh();
+        assert!(
+            state.last_success().is_none(),
+            "a failed collect has no success time"
+        );
+        assert_eq!(state.failure(), Some(&CollectError::Forced));
+        assert!(!state.in_progress());
+    }
+
+    #[test]
+    fn the_failure_seam_is_off_unless_the_value_asks_for_it() {
+        assert!(!seam_value_requests_failure(""));
+        assert!(!seam_value_requests_failure("0"));
+        assert!(seam_value_requests_failure("1"));
+        assert!(seam_value_requests_failure(" 1 "));
+
+        let path = std::env::temp_dir().join(format!(
+            "lch-listen-fail-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(&path, "0").expect("write seam file");
+        assert!(!seam_value_requests_failure(&path.to_string_lossy()));
+        std::fs::write(&path, "1\n").expect("write seam file");
+        assert!(seam_value_requests_failure(&path.to_string_lossy()));
+        std::fs::remove_file(&path).expect("remove seam file");
+        assert!(
+            !seam_value_requests_failure(&path.to_string_lossy()),
+            "a missing file is not a failed collect"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_forced_failure_keeps_the_real_snapshot_time() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind tcp/ipv4");
+        let address = listener.local_addr().expect("bound address");
+
+        let mut state = RefreshState::new();
+        state.refresh();
+        assert!(state.failure().is_none());
+        let success = state.last_success().expect("the refresh collected");
+        expect_row(&success.records, Protocol::Tcp, &address);
+        let kept_at = success.at;
+        let kept_len = success.records.len();
+
+        {
+            let _armed = ArmForcedFailure::arm();
+            state.refresh();
+        }
+        assert_eq!(state.failure(), Some(&CollectError::Forced));
+        let kept = state.last_success().expect("the old list is still held");
+        assert_eq!(kept.at, kept_at);
+        assert_eq!(kept.records.len(), kept_len);
+        expect_row(&kept.records, Protocol::Tcp, &address);
+
+        state.refresh();
+        assert!(state.failure().is_none());
+        let fresh = state.last_success().expect("a later success");
+        assert_ne!(fresh.at, kept_at);
+        expect_row(&fresh.records, Protocol::Tcp, &address);
+        drop(listener);
     }
 
     #[cfg(not(windows))]
