@@ -178,6 +178,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+.ports-table__path {
+  max-width: 28rem;
+  overflow-wrap: anywhere;
+}
+
 .ports-table__neutral,
 .ports-owner--neutral {
   color: var(--muted-fg);
@@ -187,11 +192,6 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.ports-owner .pip {
-  width: 6px;
-  height: 6px;
 }
 
 .ports-workspace__note {

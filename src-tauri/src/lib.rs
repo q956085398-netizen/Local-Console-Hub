@@ -41,6 +41,10 @@ pub mod listen;
 pub mod logging;
 pub mod process;
 pub mod pty;
+/// CPU and memory of one managed session's own process, and of processes in
+/// its tree whose identity still matches (#108). A reading only: it does not
+/// look at arbitrary processes, and it does not end one.
+pub mod resources;
 // Release-manifest guards (T12, #13). Test-only: they pin facts about the
 // packaging that no production code reads, and they need `ipc::APP_NAME` and
 // `config::APP_DIR_NAME`, which are not public API.
@@ -190,6 +194,8 @@ pub fn run() {
             ipc::logs::cleanup_logs,
             ipc::listen::list_listeners,
             ipc::listen::port_occupancy,
+            ipc::confirm_end::confirm_end_occupant,
+            ipc::resources::session_resources,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Local Console Hub");

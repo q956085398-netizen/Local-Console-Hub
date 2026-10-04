@@ -2,11 +2,31 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowHost } from "../state/window-controls";
 
 /**
+ * How often a desktop window re-reads `isVisible`.
+ *
+ * Hiding to the tray does not minimize, and it does not reliably deliver a
+ * focus or page-visibility event, so a reading that only listens can keep
+ * polling a window the user has already closed. One second is inside the
+ * port list's own refresh period, which is what that pause has to beat.
+ */
+const WINDOW_VISIBILITY_SAMPLE_MS = 1_000;
+
+/**
+ * How long a close may keep the window "hidden" before `isVisible` agrees.
+ *
+ * The close handler hides the window, but the focus event can be sampled
+ * while the window is still visible, and that one `true` would undo the
+ * pause. After the window has actually gone, a later `true` is a show.
+ */
+const HIDE_SETTLE_MS = 2_000;
+
+/**
  * Whether the main window is visible, including after the Hub hides it on close.
  *
  * The browser preview has no Tauri window, so the page's own visibility is the
- * reading. A desktop window asks `isVisible` and also follows focus, because
- * hiding to the tray is not a minimize. The caller decides what to pause.
+ * reading. A desktop window asks `isVisible`. Focus is only a hint: hiding to
+ * the tray is not a minimize, and the close that hides is the moment the poll
+ * has to stop. The caller decides what to pause.
  */
 export function watchMainWindowVisible(receive: (visible: boolean) => void): () => void {
   if (typeof document === "undefined") {
@@ -22,29 +42,52 @@ export function watchMainWindowVisible(receive: (visible: boolean) => void): () 
 
   const current = getCurrentWindow();
   let stopped = false;
-  let unlisten: (() => void) | null = null;
+  let hideUntil = 0;
+  const unlistens: Array<() => void> = [];
+  const publish = (windowVisible: boolean) => {
+    if (stopped) return;
+    if (windowVisible && Date.now() < hideUntil) {
+      receive(false);
+      return;
+    }
+    if (!windowVisible) hideUntil = 0;
+    receive(windowVisible && document.visibilityState !== "hidden");
+  };
   const read = () => {
     void current
       .isVisible()
-      .then((visible) => {
-        if (!stopped) receive(visible && document.visibilityState !== "hidden");
+      .then((visible) => publish(visible))
+      .catch(() => publish(document.visibilityState !== "hidden"));
+  };
+  const keep = (registered: Promise<() => void>) => {
+    void registered
+      .then((unlisten) => {
+        if (stopped) unlisten();
+        else unlistens.push(unlisten);
       })
       .catch(() => {
-        if (!stopped) receive(document.visibilityState !== "hidden");
+        // Focus and close listeners are hints. The sample below still reads
+        // `isVisible` when the capability refuses one of them.
       });
   };
+
   read();
   document.addEventListener("visibilitychange", read);
-  void current
-    .onFocusChanged(() => read())
-    .then((registered) => {
-      if (stopped) registered();
-      else unlisten = registered;
-    });
+  keep(current.onFocusChanged(() => read()));
+  keep(
+    current.onCloseRequested(() => {
+      // Closing the main window hides it to the tray. Treat that as hidden
+      // now, before a late focus reading can call the window visible.
+      hideUntil = Date.now() + HIDE_SETTLE_MS;
+      if (!stopped) receive(false);
+    }),
+  );
+  const timer = window.setInterval(read, WINDOW_VISIBILITY_SAMPLE_MS);
   return () => {
     stopped = true;
     document.removeEventListener("visibilitychange", read);
-    unlisten?.();
+    window.clearInterval(timer);
+    for (const unlisten of unlistens) unlisten();
   };
 }
 

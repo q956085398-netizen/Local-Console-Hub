@@ -11,6 +11,7 @@ import LogsPanel from "../components/logs/LogsPanel";
 import DetailsPanel from "../components/details/DetailsPanel";
 import StatusBar from "../components/status-bar/StatusBar";
 import PortsWorkspace from "../components/ports/PortsWorkspace";
+import SessionResources from "../components/resources/SessionResources";
 import { usePortList } from "../components/ports/usePortList";
 import { openableSessionId, type SidebarView } from "../state/ports";
 import ConfigDiagnostics from "../components/config-diagnostics/ConfigDiagnostics";
@@ -704,6 +705,9 @@ export default function App() {
                   error={registry.configReportError}
                   sessionCount={diagnosticSessionCount}
                 />
+                {registry.live && selected.runtime.status === "running" && (
+                  <SessionResources key={selected.config.id} sessionId={selected.config.id} />
+                )}
                 <WorkspaceTabs active={tab} onChange={setTab} />
                 <div className="workspace__content">
                   {tab === "terminal" &&

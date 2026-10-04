@@ -436,6 +436,7 @@ mod tests {
         runtime.health = Some(ServiceHealth {
             process_alive: true,
             port_open: false,
+            http: None,
         });
 
         let value = serde_json::to_value(&runtime).expect("snapshot serializes");
@@ -443,6 +444,12 @@ mod tests {
         assert_eq!(value["status"], serde_json::json!("running"));
         assert_eq!(value["health"]["processAlive"], serde_json::json!(true));
         assert_eq!(value["health"]["portOpen"], serde_json::json!(false));
+        // The HTTP field rides beside the TCP facts. Null is "this probe was
+        // not issued", which is not a closed port and not a failed GET.
+        assert!(
+            value["health"]["http"].is_null(),
+            "http should be null when no URL was probed: {value}"
+        );
     }
 
     /// The id becomes a file-name component, so the function that actually

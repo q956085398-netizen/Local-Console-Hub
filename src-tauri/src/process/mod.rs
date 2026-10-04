@@ -364,6 +364,132 @@ pub fn creation_time_of(pid: u32) -> Option<u64> {
     backend::creation_time_of(pid)
 }
 
+/// What [`end_confirmed_tree`] did to the process it was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfirmedEnd {
+    /// The verified process was asked to end.
+    Ended,
+    /// The process had already exited, or the pid is no longer that process.
+    /// Nothing was signalled.
+    NothingEnded,
+}
+
+/// End the process tree `identity` names, after the creation time is read again.
+///
+/// The pid is not enough: Windows reuses it. When the process has exited, or
+/// the creation time now reported for that pid is different, this returns
+/// [`ConfirmedEnd::NothingEnded`] and does not signal whoever holds the number.
+/// It does not choose a process by port or by executable name, and it does not
+/// use the managed-session job. Only the verified process and descendants whose
+/// creation times still match the ones just read are signalled.
+pub(crate) fn end_confirmed_tree(identity: ProcessIdentity) -> ConfirmedEnd {
+    if !identity.matches() {
+        return ConfirmedEnd::NothingEnded;
+    }
+    #[cfg(windows)]
+    {
+        end_confirmed_tree_windows(identity)
+    }
+    #[cfg(not(windows))]
+    {
+        ConfirmedEnd::NothingEnded
+    }
+}
+
+/// Open `identity`, refuse it when the handle is not that process or it has
+/// already exited, then end the descendants that still match and the process
+/// itself. The handle is what keeps the pid from being reused underneath the
+/// call.
+#[cfg(windows)]
+fn end_confirmed_tree_windows(identity: ProcessIdentity) -> ConfirmedEnd {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    struct Opened(usize);
+
+    impl Drop for Opened {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                unsafe { CloseHandle(self.0 as _) };
+            }
+        }
+    }
+
+    fn open_process(pid: u32) -> Option<Opened> {
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid,
+            )
+        } as usize;
+        (handle != 0).then_some(Opened(handle))
+    }
+
+    fn creation_ticks(process: usize) -> Option<u64> {
+        let mut created: FILETIME = unsafe { std::mem::zeroed() };
+        let mut exited: FILETIME = unsafe { std::mem::zeroed() };
+        let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+        let mut user: FILETIME = unsafe { std::mem::zeroed() };
+        let read = unsafe {
+            GetProcessTimes(
+                process as _,
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        };
+        (read != 0)
+            .then_some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
+    }
+
+    fn still_running(process: usize) -> bool {
+        let mut code = 0u32;
+        let read = unsafe { GetExitCodeProcess(process as _, &mut code) };
+        read != 0 && code == STILL_ACTIVE as u32
+    }
+
+    fn terminate_if_same(member: ProcessIdentity) {
+        let Some(opened) = open_process(member.pid()) else {
+            return;
+        };
+        if creation_ticks(opened.0) != Some(member.created_at()) || !still_running(opened.0) {
+            return;
+        }
+        unsafe { TerminateProcess(opened.0 as _, 1) };
+    }
+
+    let Some(root) = open_process(identity.pid()) else {
+        return ConfirmedEnd::NothingEnded;
+    };
+    if creation_ticks(root.0) != Some(identity.created_at()) || !still_running(root.0) {
+        return ConfirmedEnd::NothingEnded;
+    }
+
+    let members: Vec<ProcessIdentity> = descendants(identity.pid())
+        .into_iter()
+        .filter(|pid| *pid != identity.pid())
+        .filter_map(|pid| {
+            creation_time_of(pid).map(|created| ProcessIdentity::recorded(pid, created))
+        })
+        .collect();
+    for member in members.into_iter().rev() {
+        terminate_if_same(member);
+    }
+
+    if creation_ticks(root.0) != Some(identity.created_at()) || !still_running(root.0) {
+        return ConfirmedEnd::NothingEnded;
+    }
+    if unsafe { TerminateProcess(root.0 as _, 1) } == 0 {
+        return ConfirmedEnd::NothingEnded;
+    }
+    ConfirmedEnd::Ended
+}
+
 /// A handle on a process the Hub did not start (#67).
 ///
 /// An application the user ran outside the Hub is not one the Hub may end, but
@@ -1531,5 +1657,184 @@ mod tests {
         }
 
         run.force_stop().expect("cleanup");
+    }
+
+    /// A process this test started, ended on drop so a failure cannot leave it.
+    #[cfg(windows)]
+    struct ConfirmEndSleeper(std::process::Child);
+
+    #[cfg(windows)]
+    impl ConfirmEndSleeper {
+        fn spawn() -> Self {
+            use std::os::windows::process::CommandExt;
+            let child = std::process::Command::new("cmd.exe")
+                .args(["/c", "ping -n 60 127.0.0.1 > NUL"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .expect("the test process starts");
+            ConfirmEndSleeper(child)
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+
+        fn identity(&self) -> ProcessIdentity {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                if let Some(created) = creation_time_of(self.pid()) {
+                    let identity = ProcessIdentity::recorded(self.pid(), created);
+                    if identity.matches() {
+                        return identity;
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    panic!("creation time of {} was not readable", self.pid());
+                }
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for ConfirmEndSleeper {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &self.0.id().to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    fn descendant_identities(root: u32) -> Vec<ProcessIdentity> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let found: Vec<_> = descendants(root)
+                .into_iter()
+                .filter_map(|pid| {
+                    creation_time_of(pid).map(|created| ProcessIdentity::recorded(pid, created))
+                })
+                .collect();
+            if !found.is_empty() || std::time::Instant::now() >= deadline {
+                return found;
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if done() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[cfg(windows)]
+    fn original_is_gone(identity: ProcessIdentity) -> bool {
+        !identity.matches() || !backend::is_process_alive(identity.pid())
+    }
+
+    #[cfg(windows)]
+    fn still_that_process(identity: ProcessIdentity) -> bool {
+        identity.matches() && backend::is_process_alive(identity.pid())
+    }
+
+    /// The process that is ended is the one just verified, and its tree.
+    /// Another process this test started, with the same executable name, stays.
+    #[cfg(windows)]
+    #[test]
+    fn confirm_end_stops_only_the_verified_tree() {
+        let target = ConfirmEndSleeper::spawn();
+        let other = ConfirmEndSleeper::spawn();
+        let target_identity = target.identity();
+        let other_identity = other.identity();
+        let members = descendant_identities(target.pid());
+        assert!(
+            !members.is_empty(),
+            "the sleeper is a tree, not a single process"
+        );
+        assert!(
+            members.iter().all(|member| member.pid() != other.pid()),
+            "the other process is not in the target tree"
+        );
+
+        assert_eq!(
+            super::end_confirmed_tree(target_identity),
+            super::ConfirmedEnd::Ended
+        );
+        assert!(
+            wait_until(|| original_is_gone(target_identity)),
+            "the verified process is gone"
+        );
+        for member in &members {
+            assert!(
+                wait_until(|| original_is_gone(*member)),
+                "a verified descendant is still the live process {}",
+                member.pid()
+            );
+        }
+        assert!(
+            still_that_process(other_identity),
+            "a different process was ended"
+        );
+    }
+
+    /// A creation time that is not the live process must not end that process.
+    #[cfg(windows)]
+    #[test]
+    fn confirm_end_refuses_a_different_creation_time() {
+        let sleeper = ConfirmEndSleeper::spawn();
+        let identity = sleeper.identity();
+        let reused =
+            ProcessIdentity::for_test(identity.pid(), identity.created_at().wrapping_add(1));
+        assert!(!reused.matches());
+
+        assert_eq!(
+            super::end_confirmed_tree(reused),
+            super::ConfirmedEnd::NothingEnded
+        );
+        assert!(
+            still_that_process(identity),
+            "the live process was ended on a creation time that was not its own"
+        );
+    }
+
+    /// A process that has already exited is not a reason to signal its pid.
+    #[cfg(windows)]
+    #[test]
+    fn confirm_end_refuses_an_already_exited_process() {
+        let mut sleeper = ConfirmEndSleeper::spawn();
+        let identity = sleeper.identity();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &sleeper.pid().to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = sleeper.0.wait();
+        assert!(
+            wait_until(|| !backend::is_process_alive(identity.pid())),
+            "the test process is still running"
+        );
+        assert!(
+            identity.matches(),
+            "the exited process object is still the one that was started"
+        );
+
+        assert_eq!(
+            super::end_confirmed_tree(identity),
+            super::ConfirmedEnd::NothingEnded
+        );
     }
 }

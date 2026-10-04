@@ -81,6 +81,10 @@ base64 = "0.22"
 # (`listen/`): `GetExtendedTcpTable` and `GetExtendedUdpTable` with the
 # owner-PID classes. Those calls only read. Enabling the feature downloads
 # nothing — windows-sys gates modules, not packages.
+#
+# Win32_System_ProcessStatus carries `GetProcessMemoryInfo`, the working-set
+# reading for a managed session (`resources/`). The call only reads. Enabling
+# the feature downloads nothing — windows-sys gates modules, not packages.
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.16", default-features = false }
 windows-sys = { version = "0.59", features = [
@@ -93,6 +97,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_UI_Shell",

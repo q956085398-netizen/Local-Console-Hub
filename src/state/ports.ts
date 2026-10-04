@@ -100,6 +100,18 @@ export function completeListenRefresh(
 }
 
 /**
+ * The window went away. The list and its time stay the last accepted check.
+ *
+ * An attempt still in flight is not a check that finished while the window
+ * was hidden, so it must not remain "in progress" either. The next accepted
+ * success is what clears `stale`.
+ */
+export function noteWindowHidden(state: ListenRefreshState): ListenRefreshState {
+  if (state.stale && !state.inProgress) return state;
+  return { ...state, inProgress: false, stale: true };
+}
+
+/**
  * Automatic polling runs only while the ports page is showing, the window is
  * visible, and a backend is answering. A manual refresh is a separate call.
  */
@@ -179,9 +191,22 @@ export function filterPorts(rows: readonly ListedPort[], query: string): ListedP
   });
 }
 
-export function processLabel(name: string | null): string {
-  const trimmed = name?.trim() ?? "";
+/** A text field from the listener. Blank is the same as not read. */
+export function readableText(value: string | null | undefined): string {
+  const trimmed = value?.trim() ?? "";
   return trimmed ? trimmed : UNAVAILABLE_LABEL;
+}
+
+export function processLabel(name: string | null): string {
+  return readableText(name);
+}
+
+export function pathLabel(path: string | null): string {
+  return readableText(path);
+}
+
+export function pidLabel(pid: number | null): string {
+  return pid === null ? UNAVAILABLE_LABEL : String(pid);
 }
 
 export function ownerLabel(
@@ -230,7 +255,7 @@ export function groupListedPorts(rows: readonly ListedPort[]): PortGroup[] {
     groups.push({ id: "managed", title: "受管", hint: "对上了会话", rows: managed });
   }
   if (external.length > 0) {
-    groups.push({ id: "external", title: "外部", hint: "不是受管会话", rows: external });
+    groups.push({ id: "external", title: "外部", hint: "Hub 以外", rows: external });
   }
   if (unavailable.length > 0) {
     groups.push({
@@ -245,7 +270,8 @@ export function groupListedPorts(rows: readonly ListedPort[]): PortGroup[] {
 
 export function portSummary(rows: readonly ListedPort[]): string {
   const managed = rows.filter((row) => row.attribution === "session").length;
-  return `${rows.length} 监听 · ${managed} 受管`;
+  const external = rows.filter((row) => row.attribution === "external").length;
+  return `${rows.length} 监听 · ${managed} 受管 · ${external} 外部`;
 }
 
 /**

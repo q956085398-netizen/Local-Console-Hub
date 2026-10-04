@@ -93,4 +93,18 @@ describe("PortOccupancyDialog", () => {
     expect(markup).not.toContain("pip--run");
     expect(buttonText(markup)).toEqual(["取消", "仍然启动"]);
   });
+
+  it("offers an explicit confirm for an external identity, and not for a session", () => {
+    const external = { ...row(), createdAt: "132" };
+    const session = {
+      ...row({ attribution: "session", sessionId: "holder" }),
+      createdAt: "132",
+    };
+    const markup = render("occupied", describeOccupants([external, session], sessions, "next"));
+
+    expect(markup).toContain("不会因此结束占用者");
+    expect(markup).toContain("需要再确认一次");
+    expect(markup).not.toContain("确认结束");
+    expect(buttonText(markup)).toEqual(["结束此进程", "取消", "仍然启动"]);
+  });
 });

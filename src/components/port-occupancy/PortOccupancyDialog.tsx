@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { OccupantLine } from "../../state/port-occupancy";
 import { UDP_SOCKET_NOTE } from "../../state/ports";
 import "../dialog/dialog.css";
+import ConfirmEndDialog from "./ConfirmEndDialog";
 import "./PortOccupancyDialog.css";
+import { useConfirmedEnd } from "./useConfirmedEnd";
 
 export interface PortOccupancyDialogProps {
   sessionName: string;
@@ -22,7 +24,8 @@ export interface PortOccupancyDialogProps {
  * The user sees who holds it — process, PID, path, protocol, address, and
  * whether that process is a managed session, external, or unread — and then
  * cancels or continues. Continuing is the ordinary start. Cancelling starts
- * nothing. There is no control that ends the occupying process.
+ * nothing. Ending an occupant is a separate confirm, and only that confirm
+ * asks to end the process it names.
  */
 export default function PortOccupancyDialog({
   sessionName,
@@ -33,8 +36,10 @@ export default function PortOccupancyDialog({
   onClose,
 }: PortOccupancyDialogProps) {
   const [submitting, setSubmitting] = useState(false);
+  const ending = useConfirmedEnd();
   const cancel = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
+  const locked = submitting || ending.pending !== null;
 
   useEffect(() => {
     const previous = document.activeElement;
@@ -45,7 +50,7 @@ export default function PortOccupancyDialog({
   }, []);
 
   const choose = (choice: "cancel" | "continue") => {
-    if (submitting) return;
+    if (locked) return;
     setSubmitting(true);
     if (choice === "continue") onContinue();
     else onClose();
@@ -61,7 +66,10 @@ export default function PortOccupancyDialog({
         aria-labelledby="port-occupancy-title"
         aria-describedby="port-occupancy-description"
         onKeyDown={(event) => {
-          if (event.key === "Escape" && !submitting) onClose();
+          if (event.key === "Escape" && !submitting) {
+            if (ending.pending) ending.cancel();
+            else onClose();
+          }
           if (event.key !== "Tab") return;
           const buttons =
             dialog.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
@@ -95,7 +103,7 @@ export default function PortOccupancyDialog({
           ) : (
             <>
               端口 {port} 上已经有程序在监听。下面是读到的占用者、PID、路径和归属。Hub
-              不会因此结束占用者，也不会停止其他会话，更不会把外部程序认成当前会话。取消则不会启动。
+              不会因此结束占用者，也不会停止其他会话，更不会把外部程序认成当前会话。取消则不会启动。要结束其中某一个，需要再确认一次。
             </>
           )}
         </p>
@@ -126,6 +134,18 @@ export default function PortOccupancyDialog({
                   {line.protocol === "UDP" && (
                     <span className="port-occupancy__neutral">{UDP_SOCKET_NOTE}</span>
                   )}
+                  {line.endTarget && (
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--sm port-occupancy__end"
+                      disabled={locked}
+                      onClick={() => {
+                        if (line.endTarget) ending.ask(line.endTarget);
+                      }}
+                    >
+                      结束此进程
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -136,7 +156,7 @@ export default function PortOccupancyDialog({
             ref={cancel}
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={submitting}
+            disabled={locked}
             onClick={() => choose("cancel")}
           >
             取消
@@ -144,13 +164,22 @@ export default function PortOccupancyDialog({
           <button
             type="button"
             className="btn btn--primary btn--sm"
-            disabled={submitting}
+            disabled={locked}
             onClick={() => choose("continue")}
           >
             仍然启动
           </button>
         </footer>
       </div>
+      {ending.pending && (
+        <ConfirmEndDialog
+          target={ending.pending}
+          busy={ending.busy}
+          message={ending.message}
+          onCancel={ending.cancel}
+          onConfirm={ending.confirm}
+        />
+      )}
     </div>
   );
 }
