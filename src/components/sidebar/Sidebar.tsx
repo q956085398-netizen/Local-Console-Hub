@@ -341,7 +341,7 @@ export default function Sidebar({
         {ports ? (
           <p className="sidebar__foot-note">只查看占用，不结束进程。</p>
         ) : (
-          <>
+          <div className="sidebar__actions">
             {/* Spec #59 decision 7 keeps the two entries apart, and this is where
             the difference is visible: the first creates a terminal on the
             click and asks nothing, the second opens a form. The reference's
@@ -349,7 +349,7 @@ export default function Sidebar({
             plain ones. */}
             <button type="button" className="sidebar__add" onClick={onAdd}>
               <Terminal size={14} />
-              新建 PowerShell
+              <span className="sidebar__add-label">新建 PowerShell</span>
             </button>
             <button
               type="button"
@@ -357,9 +357,9 @@ export default function Sidebar({
               onClick={onAddApplication}
             >
               <FolderPlus size={14} />
-              添加应用
+              <span className="sidebar__add-label">添加应用</span>
             </button>
-          </>
+          </div>
         )}
       </div>
     </div>

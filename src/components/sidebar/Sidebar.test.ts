@@ -123,6 +123,22 @@ describe("Sidebar", () => {
     expect(markup).not.toContain("新建 PowerShell / 服务");
   });
 
+  it("places the two footer actions on one row and keeps them off the ports view", () => {
+    const sessions = render();
+    const row = sessions.match(/<div class="sidebar__actions">([\s\S]*?)<\/div>/);
+
+    expect(row).not.toBeNull();
+    expect(row?.[1]).toContain("新建 PowerShell");
+    expect(row?.[1]).toContain("添加应用");
+    expect(row?.[1]?.match(/<button/g)).toHaveLength(2);
+
+    const ports = render({ view: "ports" });
+    expect(ports).toContain("只查看占用，不结束进程。");
+    expect(ports).not.toContain("sidebar__actions");
+    expect(ports).not.toContain("新建 PowerShell");
+    expect(ports).not.toContain("添加应用");
+  });
+
   it("names an expanded session group and still shows its rows, title, and hint", () => {
     const markup = render({
       groups: [
