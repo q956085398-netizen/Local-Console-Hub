@@ -9,6 +9,8 @@
 import type { SessionStatusValue } from "../types/runtime";
 import type { ListenerRowDto } from "../types/listen";
 import type { PortOccupancyDto } from "../types/port-occupancy";
+import { endTargetOf } from "./confirm-end";
+import type { EndTarget } from "../types/confirm-end";
 import {
   EXTERNAL_LABEL,
   nameListeners,
@@ -39,6 +41,8 @@ export interface OccupantLine {
   attribution: string;
   /** External and 信息不可用 stay neutral. A named session does not. */
   attributionNeutral: boolean;
+  /** Set only for an external process whose creation time was read. */
+  endTarget: EndTarget | null;
 }
 
 /**
@@ -96,20 +100,22 @@ export function describeOccupants(
   sessions: readonly SessionName[],
   startingId: string,
 ): OccupantLine[] {
-  return nameListeners(rows, sessions).map((row, index) => {
-    const self = row.attribution === "session" && row.sessionId === startingId;
-    const attribution = self ? UNAVAILABLE_LABEL : ownerLabel(row);
-    const processName = processLabel(row.processName);
+  return nameListeners(rows, sessions).map((named, index) => {
+    const source = rows[index];
+    const self = named.attribution === "session" && named.sessionId === startingId;
+    const attribution = self ? UNAVAILABLE_LABEL : ownerLabel(named);
+    const processName = processLabel(named.processName);
     return {
-      key: `${row.key}#${index}`,
+      key: `${named.key}#${index}`,
       processName,
       processNeutral: processName === UNAVAILABLE_LABEL,
-      pid: row.pid === null ? UNAVAILABLE_LABEL : String(row.pid),
-      path: shown(row.programPath),
-      protocol: row.protocol,
-      address: shown(row.address),
+      pid: named.pid === null ? UNAVAILABLE_LABEL : String(named.pid),
+      path: shown(named.programPath),
+      protocol: named.protocol,
+      address: shown(named.address),
       attribution,
       attributionNeutral: attribution === EXTERNAL_LABEL || attribution === UNAVAILABLE_LABEL,
+      endTarget: source ? endTargetOf(source) : null,
     };
   });
 }

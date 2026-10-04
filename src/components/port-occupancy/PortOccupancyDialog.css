@@ -40,3 +40,8 @@
   font-size: 12px;
   color: var(--fg);
 }
+
+.port-occupancy__end {
+  align-self: flex-start;
+  margin-top: 6px;
+}

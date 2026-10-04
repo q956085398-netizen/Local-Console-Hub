@@ -20,6 +20,7 @@ import {
   type SessionName,
   type SidebarView,
 } from "../../state/ports";
+import { createdAtFrom } from "../../state/confirm-end";
 import { isListenerListDto, LIST_LISTENERS } from "../../types/listen";
 
 /** Low-frequency while the page is up. Manual refresh does not wait for it. */
@@ -115,7 +116,14 @@ export function usePortList(
     return () => window.clearInterval(timer);
   }, [view, windowVisible, connected, run]);
 
-  const named = useMemo(() => nameListeners(state.rows, sessions), [state.rows, sessions]);
+  const named = useMemo(() => {
+    const listed = nameListeners(state.rows, sessions);
+    for (let index = 0; index < listed.length; index += 1) {
+      const createdAt = createdAtFrom(state.rows[index] ?? {});
+      if (createdAt !== null) Object.assign(listed[index], { createdAt });
+    }
+    return listed;
+  }, [state.rows, sessions]);
   const filtered = useMemo(() => filterPorts(named, query), [named, query]);
   const selected = selectedPort(filtered, selectedKey);
 

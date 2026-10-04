@@ -1,4 +1,7 @@
 import { RefreshCw } from "lucide-react";
+import ConfirmEndDialog from "../port-occupancy/ConfirmEndDialog";
+import { useConfirmedEnd } from "../port-occupancy/useConfirmedEnd";
+import { endTargetOf } from "../../state/confirm-end";
 import {
   ownerLabel,
   pathLabel,
@@ -25,8 +28,8 @@ export interface PortsWorkspaceProps {
 
 /**
  * The ports workspace: protocol, address, owner, pid, and attribution for the
- * real list. External and unavailable stay neutral, and nothing here ends a
- * process.
+ * real list. External and unavailable stay neutral. Refresh only reads again.
+ * Ending an external process is a separate confirm.
  */
 export default function PortsWorkspace({
   connected,
@@ -40,6 +43,7 @@ export default function PortsWorkspace({
   onOpenSession,
   openableSessionId,
 }: PortsWorkspaceProps) {
+  const ending = useConfirmedEnd(onRefresh);
   return (
     <div className="ports-workspace">
       <header className="ports-workspace__header">
@@ -59,10 +63,10 @@ export default function PortsWorkspace({
       </header>
       <div className="ports-workspace__body">
         <section className="ports-card">
-          <p className="ports-card__eyebrow">只查看</p>
+          <p className="ports-card__eyebrow">监听</p>
           <p className="ports-card__text">
             正在监听的端口，包括 Hub
-            以外的进程。对上了另一个受管会话就写那个会话的名字，对上了进程但不是受管会话就写外部，读不到的字段保持信息不可用。不会结束任何进程，也不会把外部程序收成当前会话。
+            以外的进程。对上了另一个受管会话就写那个会话的名字，对上了进程但不是受管会话就写外部，读不到的字段保持信息不可用。刷新只重新读取。结束外部进程要单独确认；取消则进程继续运行，会话状态不变。不会把外部程序收成当前会话。
           </p>
         </section>
         {!connected ? (
@@ -118,11 +122,21 @@ export default function PortsWorkspace({
                 row={selected}
                 sessionId={openableSessionId(selected)}
                 onOpenSession={onOpenSession}
+                onAskEnd={ending.ask}
               />
             )}
           </>
         )}
       </div>
+      {ending.pending && (
+        <ConfirmEndDialog
+          target={ending.pending}
+          busy={ending.busy}
+          message={ending.message}
+          onCancel={ending.cancel}
+          onConfirm={ending.confirm}
+        />
+      )}
     </div>
   );
 }
@@ -143,11 +157,14 @@ function OwnerCard({
   row,
   sessionId,
   onOpenSession,
+  onAskEnd,
 }: {
   row: ListedPort;
   sessionId: string | null;
   onOpenSession: (sessionId: string) => void;
+  onAskEnd: (target: NonNullable<ReturnType<typeof endTargetOf>>) => void;
 }) {
+  const endTarget = endTargetOf(row);
   const note = udpNote(row.protocol);
   const who = ownerLabel(row);
   const process = processLabel(row.processName);
@@ -199,12 +216,21 @@ function OwnerCard({
         ) : (
           <span className="ports-owner--neutral">{who}</span>
         )}
+        {endTarget && (
+          <button
+            type="button"
+            className="ports-workspace__refresh"
+            onClick={() => onAskEnd(endTarget)}
+          >
+            结束此进程
+          </button>
+        )}
       </div>
       {note && <p className="ports-card__note">{note}</p>}
       {row.attribution !== "session" && (
         <p className="ports-card__note">
           {row.attribution === "external"
-            ? "没有对上受管会话。这是外部进程，不是当前会话，只展示，不会被结束。"
+            ? "没有对上受管会话。这是外部进程，不是当前会话。要结束它，需要单独确认。"
             : "这一行的归属读不到，不把它当成外部，也不把它当成某个会话。"}
         </p>
       )}

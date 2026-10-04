@@ -194,6 +194,7 @@ pub fn run() {
             ipc::logs::cleanup_logs,
             ipc::listen::list_listeners,
             ipc::listen::port_occupancy,
+            ipc::confirm_end::confirm_end_occupant,
             ipc::resources::session_resources,
         ])
         .run(tauri::generate_context!())

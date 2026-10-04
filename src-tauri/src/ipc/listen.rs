@@ -39,6 +39,10 @@ pub struct ListenerRowDto {
     pub attribution: &'static str,
     /// Set only for [`Attribution::Session`]. The window looks the name up.
     pub session_id: Option<String>,
+    /// Decimal creation time of `pid`, in the 100-ns ticks Windows reports.
+    /// `None` when the pid or the time could not be read. A later confirm
+    /// repeats this value; reading it does not end the process.
+    pub created_at: Option<String>,
 }
 
 /// This attempt's outcome.
@@ -96,6 +100,10 @@ fn row_dto(record: ListenRecord, attribution: Attribution) -> ListenerRowDto {
         Attribution::External => ("external", None),
         Attribution::Unavailable => ("unavailable", None),
     };
+    let pid = known(record.pid);
+    let created_at = pid
+        .and_then(crate::process::creation_time_of)
+        .map(|ticks| ticks.to_string());
     ListenerRowDto {
         protocol: match record.protocol {
             Protocol::Tcp => "TCP".to_owned(),
@@ -103,11 +111,12 @@ fn row_dto(record: ListenRecord, attribution: Attribution) -> ListenerRowDto {
         },
         address: format_address(&record.address),
         port: record.port,
-        pid: known(record.pid),
+        pid,
         process_name: known(record.process_name),
         program_path: known(record.program_path).map(|path| path.to_string_lossy().into_owned()),
         attribution: kind,
         session_id,
+        created_at,
     }
 }
 
@@ -311,6 +320,7 @@ mod tests {
         assert!(dto.pid.is_none());
         assert!(dto.process_name.is_none());
         assert!(dto.program_path.is_none());
+        assert!(dto.created_at.is_none());
         assert_eq!(dto.attribution, "external");
         assert!(dto.session_id.is_none());
         assert_ne!(dto.attribution, "session");
@@ -355,6 +365,13 @@ mod tests {
         assert_eq!(udp_row.attribution, "external");
         assert_eq!(tcp_row.pid, Some(std::process::id()));
         assert!(tcp_row.process_name.is_some());
+        let created =
+            crate::process::creation_time_of(std::process::id()).map(|ticks| ticks.to_string());
+        assert_eq!(
+            tcp_row.created_at, created,
+            "the row carries the live process identity"
+        );
+        assert_eq!(udp_row.created_at, tcp_row.created_at);
 
         drop(tcp);
         drop(udp);
