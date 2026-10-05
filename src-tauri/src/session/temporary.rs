@@ -130,15 +130,15 @@ pub struct TemporaryTerminal {
     /// filesystem-safe because a session's log directory is named after it
     /// (`docs/LOGGING.md` §5) even though a temporary terminal writes none.
     pub id: String,
-    /// The display name, e.g. `PowerShell 3`.
+    /// An initial display name. Registration replaces its ordinal with the
+    /// smallest one that is not used by a row in the current registry.
     pub name: String,
 }
 
 /// Mint the identity of the next temporary terminal.
 ///
-/// The ordinal is the whole point of the name: a user who clicks the entry
-/// three times has three terminals, and three rows reading `PowerShell` would
-/// be indistinguishable in the rail. The id carries the same ordinal plus the
+/// The sequence belongs to the id, independently of the reusable display
+/// ordinal chosen at registration. The id carries the sequence plus the
 /// clock, for the reason [`crate::session::runtime::RunId::mint`] documents —
 /// the clock keeps a later app process from reusing an earlier one's ids, and
 /// the counter separates two terminals created inside the same millisecond.

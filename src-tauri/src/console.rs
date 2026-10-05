@@ -104,13 +104,23 @@ impl Console {
         }
 
         let route = route_back(self.own_pid, &members()?)?;
+        // Attaching a GUI process can replace even NULL standard handles with
+        // console handles. FreeConsole invalidates those handles but leaves
+        // their values in the process table, so the next Command::spawn tries
+        // to inherit a dead stdin and fails with ERROR_INVALID_HANDLE. A caller
+        // with no console must get its original handles (including redirects)
+        // back along with its original console state.
+        let handles = matches!(route, Route::NothingToLose).then(StandardHandles::read);
 
         unsafe {
             // A process is on one console at a time, so its own has to be let go
             // of before another can be attached — and from here until `Restore`
             // runs, this process is on nobody's.
             FreeConsole();
-            let mut restore = Restore(Some(route));
+            let mut restore = Restore {
+                route: Some(route),
+                handles,
+            };
             if AttachConsole(pid) == 0 {
                 // The run has no console, or ended while this was being asked.
                 // The drop guard still restores the caller.
@@ -194,23 +204,63 @@ fn route_back(own_pid: u32, members: &[u32]) -> Option<Route> {
 /// Puts this process back on the console it came from when it goes out of
 /// scope — including while a panic is unwinding.
 #[derive(Debug)]
-struct Restore(Option<Route>);
+struct Restore {
+    route: Option<Route>,
+    handles: Option<StandardHandles>,
+}
+
+/// Borrowed values in the process's standard-handle table, not owned handles.
+/// Only saved when the caller has no console: these are NULL or redirects,
+/// never console handles that FreeConsole would invalidate.
+#[derive(Debug)]
+struct StandardHandles([usize; 3]);
+
+impl StandardHandles {
+    const STREAMS: [u32; 3] = [
+        windows_sys::Win32::System::Console::STD_INPUT_HANDLE,
+        windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE,
+        windows_sys::Win32::System::Console::STD_ERROR_HANDLE,
+    ];
+
+    fn read() -> Self {
+        use windows_sys::Win32::System::Console::GetStdHandle;
+        Self(Self::STREAMS.map(|stream| unsafe { GetStdHandle(stream) as usize }))
+    }
+
+    fn restore(&self) -> bool {
+        use windows_sys::Win32::System::Console::SetStdHandle;
+        let mut restored = true;
+        for (stream, handle) in Self::STREAMS.into_iter().zip(self.0) {
+            restored &= unsafe { SetStdHandle(stream, handle as _) != 0 };
+        }
+        restored
+    }
+}
 
 impl Restore {
     fn finish(&mut self) -> bool {
         use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
 
-        let Some(route) = self.0.take() else {
+        let Some(route) = self.route.take() else {
             return true;
         };
         unsafe { FreeConsole() };
-        let restored = restore_via(&route, |pid| unsafe { AttachConsole(pid) != 0 });
-        if !restored {
+        let console_restored = restore_via(&route, |pid| unsafe { AttachConsole(pid) != 0 });
+        let handles_restored = self
+            .handles
+            .take()
+            .map_or(true, |handles| handles.restore());
+        let restored = console_restored && handles_restored;
+        if !console_restored {
             // All peers may exit or detach during a borrow. That destroys the
             // old console: it cannot be reconstructed by allocating a new one.
             use std::io::Write;
             // A closed stderr must not cause a second panic during unwinding.
             let _ = writeln!(std::io::stderr().lock(), "Local Console Hub: could not restore the caller's console after borrowing; no original console member could be attached");
+        }
+        if !handles_restored {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), "Local Console Hub: could not restore the caller's standard handles after borrowing a console");
         }
         restored
     }

@@ -93,6 +93,10 @@
   overflow: hidden;
 }
 
+.details-panel__save {
+  margin-top: 12px;
+}
+
 .details-panel__row {
   display: grid;
   grid-template-columns: 7.5rem 1fr;

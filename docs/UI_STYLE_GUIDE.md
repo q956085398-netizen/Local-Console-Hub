@@ -57,7 +57,11 @@ The workspace header contains:
 - lifecycle/readiness state;
 - one-line purpose;
 - Start/Stop, Restart and context-appropriate Open/Directory actions;
-- overflow menu for low-frequency and destructive actions.
+- a direct Close button for a temporary terminal, or Remove for a saved application.
+
+Close stops the temporary terminal and removes its row in one click, only after
+the backend confirms its process tree has ended. Remove opens the saved-application
+confirmation. The header has no overflow menu; duplicate path/log actions are omitted.
 
 For a running session, show a concise **close impact** callout. It must explain the practical consequence of stopping this session, not just repeat its state.
 
@@ -72,6 +76,9 @@ The normative tabs are:
 - **Details** — identity, close impact, dependencies and technical metadata.
 
 Details is allowed because it moves low-frequency information out of the terminal without creating a permanent side panel. It carries the *low-frequency* fields only (identity, close impact, dependencies, exit/PTY/buffer detail): values already live in the header metadata line — PID, port, uptime, cwd, effective log policy — are not repeated here (§13 forbids excessive duplication).
+
+A temporary terminal offers Save Launch Configuration in Details, using the existing
+save dialog. Saving preserves its current run and output.
 
 ## 7. Terminal
 

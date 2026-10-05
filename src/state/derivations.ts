@@ -456,7 +456,7 @@ const TERMINAL_TREE_NOTE = "停止该终端会同时结束它启动的子进程�
 export function closeMechanics(config: SessionConfigDto): string {
   return config.sessionType === "terminal"
     ? TERMINAL_TREE_NOTE
-    : "停止会尝试优雅结束；强制结束是单独动作，且只作用于本会话进程树。";
+    : "停止会先尝试优雅结束，超时后强制结束本会话的受管进程树。";
 }
 
 /** Pick and word the header callout for the current state. */

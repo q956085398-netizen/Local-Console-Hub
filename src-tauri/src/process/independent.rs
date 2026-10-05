@@ -447,21 +447,44 @@ impl Shared {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command as StdCommand;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     /// A run that stays alive far longer than any test needs: a shell whose own
     /// child does the waiting, so the run has a tree as well as a process.
-    fn long_running() -> ProcessSpec {
-        ProcessSpec::new("cmd.exe", std::env::temp_dir()).with_args(vec![
-            "/c".to_owned(),
-            "ping -n 120 127.0.0.1 > NUL".to_owned(),
-        ])
-    }
-
     fn start() -> IndependentProcess {
-        IndependentProcess::spawn(long_running()).expect("the standalone run starts")
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = format!("lch-independent-ready-{}-{nonce}.txt", std::process::id());
+        let cwd = std::env::temp_dir();
+        let ready = cwd.join(&marker);
+        // A relative, generated filename needs no nested cmd quoting, even
+        // when the user's temp directory contains spaces. No batch file or
+        // temporary working directory needs to outlive this function.
+        let spec = ProcessSpec::new("cmd.exe", cwd).with_args(vec![
+            "/d".to_owned(),
+            "/c".to_owned(),
+            format!("echo ready > {marker} & ping -n 120 127.0.0.1 > NUL"),
+        ]);
+        let run = IndependentProcess::spawn(spec).expect("the standalone run starts");
+        // CreateProcess returns before Windows Terminal has finished handing
+        // off the console. Do not terminate the fixture before its shell has
+        // actually started: that can leave a host's failed-launch error tab.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            if Instant::now() >= deadline {
+                let cleanup = run.force_stop();
+                panic!("the standalone shell did not become ready; cleanup={cleanup:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(ready);
+        run
     }
 
     fn stop_timeout() -> Duration {
@@ -551,6 +574,7 @@ mod tests {
     fn kill_tree(pid: u32) {
         let _ = StdCommand::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -656,6 +680,8 @@ mod tests {
         let run = start();
         let mut unrelated = StdCommand::new("cmd.exe")
             .args(["/c", "ping -n 120 127.0.0.1 > NUL"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -680,7 +706,9 @@ mod tests {
             unrelated.try_wait().expect("waitable").is_none(),
             "an unrelated process must survive a stop, even with the same executable"
         );
-        let _ = unrelated.kill();
+        // Kill the tree while its root is alive. Killing cmd first prevents
+        // the PID guard from finding its ping child and leaves an orphan.
+        kill_tree(unrelated.id());
         let _ = unrelated.wait();
     }
 

@@ -513,7 +513,7 @@ export default function App() {
         setRemoveApplicationTarget(selected.config);
         break;
       case "remove-session":
-        registry.removeSession(selected.config.id);
+        void registry.closeTerminal(selected.config.id);
         break;
       default:
         setNotice(`「${label}」尚未接入`);
@@ -697,8 +697,7 @@ export default function App() {
                   ready={isReady(selected.runtime)}
                   now={now}
                   onAction={onSessionAction}
-                  onFocusTerminal={() => setTab("terminal")}
-                  onOpenLogs={() => setTab("logs")}
+                  closing={registry.closingSessionIds.has(selected.config.id)}
                 />
                 <ConfigDiagnostics
                   report={registry.configReport}
@@ -736,7 +735,14 @@ export default function App() {
                   {tab === "logs" && (
                     <LogsPanel key={selected.config.id} session={selected} onNotice={setNotice} />
                   )}
-                  {tab === "details" && <DetailsPanel session={selected} sessions={sessions} />}
+                  {tab === "details" && (
+                    <DetailsPanel
+                      session={selected}
+                      sessions={sessions}
+                      onSaveTerminal={onOpenSaveTerminal}
+                      closing={registry.closingSessionIds.has(selected.config.id)}
+                    />
+                  )}
                 </div>
               </>
             )}
