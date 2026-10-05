@@ -37,7 +37,8 @@ beforeEach(() => {
     createTerminal: vi.fn(),
     addApplication: vi.fn(),
     saveTerminal: vi.fn(),
-    removeSession: vi.fn(),
+    closeTerminal: vi.fn(),
+    closingSessionIds: new Set(),
     removeApplication: vi.fn(),
   };
   vi.mocked(useSessionRegistry).mockReturnValue(registry);

@@ -1,0 +1,3 @@
+1ef62a57101ce3ceba27dd41f96cc0f5b488bd80b4a206c75ca062cf7a401ced *Local Console Hub_0.2.1_x64-setup.exe
+31b3668a185713ef058ec877800e16dda2cc2ad6e376e0f7ac84007a99d5e4b0 *Local Console Hub_0.2.1_x64_en-US.msi
+3b47c22b328e817fac72f4a78c16c2e42c5234c48b8b8147bb7371f3222c735b *local-console-hub.exe

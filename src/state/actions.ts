@@ -38,6 +38,6 @@ export const SESSION_ACTION_LABELS: Record<SessionAction, string> = {
   // Saving a temporary terminal's launch method (#65): the other half of the
   // quick entry — this one keeps the shell and directory for next time.
   "save-config": "保存启动配置",
-  "remove-session": "移除临时终端",
+  "remove-session": "关闭临时终端",
   "remove-application": "从受管名单移除",
 };

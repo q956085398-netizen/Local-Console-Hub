@@ -964,8 +964,8 @@ impl SessionCore {
     /// `Stopped`, and no process exists until [`SessionCore::start`]. Duplicate
     /// ids are refused rather than replaced — replacing a running session would
     /// drop the only handle accounting for its process.
-    pub fn register(&self, config: SessionConfig) -> Result<SessionRuntime, SessionError> {
-        self.register_with_provenance(config, false)
+    pub fn register(&self, mut config: SessionConfig) -> Result<SessionRuntime, SessionError> {
+        self.register_with_provenance(&mut config, false)
     }
 
     /// Register a session created from the window rather than read from the
@@ -976,13 +976,16 @@ impl SessionCore {
     /// differs, and only three things read that: the frontend's "remove this
     /// one" control, the create answer, and the fact that nothing ever writes
     /// it to a file.
-    fn register_temporary(&self, config: SessionConfig) -> Result<SessionRuntime, SessionError> {
+    fn register_temporary(
+        &self,
+        config: &mut SessionConfig,
+    ) -> Result<SessionRuntime, SessionError> {
         self.register_with_provenance(config, true)
     }
 
     fn register_with_provenance(
         &self,
-        config: SessionConfig,
+        config: &mut SessionConfig,
         temporary: bool,
     ) -> Result<SessionRuntime, SessionError> {
         let mut sessions = lock(&self.sessions);
@@ -996,12 +999,26 @@ impl SessionCore {
             });
         }
 
+        if temporary {
+            // Names follow the rows that still exist, while ids keep their
+            // unique sequence. Choose and reserve the first vacant ordinal
+            // under the registry lock so concurrent creations cannot collide.
+            let names: std::collections::BTreeSet<String> = sessions
+                .values()
+                .map(|state| lock(state).config.name.clone())
+                .collect();
+            config.name = (1u64..)
+                .map(|ordinal| format!("PowerShell {ordinal}"))
+                .find(|name| !names.contains(name))
+                .expect("a finite registry has an unused terminal name");
+        }
+
         let runtime = SessionRuntime::stopped(config.id.clone(), config.logging.clone());
         let id = config.id.clone();
         sessions.insert(
             id.clone(),
             Arc::new(Mutex::new(SessionState {
-                config,
+                config: config.clone(),
                 temporary,
                 runtime: runtime.clone(),
                 run: None,
@@ -2255,7 +2272,7 @@ impl SessionCore {
         let cwd = temporary::resolve_cwd(cwd, home)
             .map_err(|reason| SessionError::failed(&identity.id, OPERATION, reason, None))?;
 
-        let config = SessionConfig {
+        let mut config = SessionConfig {
             id: identity.id,
             name: identity.name,
             session_type: SessionType::Terminal,
@@ -2284,7 +2301,7 @@ impl SessionCore {
             },
         };
 
-        self.register_temporary(config.clone())?;
+        self.register_temporary(&mut config)?;
         // Announced before the start, never after it: every lifecycle event
         // the start publishes then belongs to a session listeners already know,
         // in the order the events were published (§9). An announcement sent
@@ -7925,8 +7942,39 @@ mod tests {
                 Some(SessionStatus::Running)
             );
 
+            assert_eq!(first.config.name, "PowerShell 1");
+            assert_eq!(second.config.name, "PowerShell 2");
             core.stop(&first.config.id).expect("cleanup");
+            core.remove_session(&first.config.id).expect("close first");
+            let replacement = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("a replacement terminal opens");
+            assert_eq!(
+                replacement.config.name, "PowerShell 1",
+                "reuse the vacant number"
+            );
+            assert_ne!(
+                replacement.config.id, first.config.id,
+                "a reused name is a new session"
+            );
+            assert_eq!(
+                core.session_entry(&second.config.id).unwrap().config.name,
+                "PowerShell 2"
+            );
             core.stop(&second.config.id).expect("cleanup");
+            core.remove_session(&second.config.id)
+                .expect("close second");
+            core.stop(&replacement.config.id).expect("cleanup");
+            core.remove_session(&replacement.config.id)
+                .expect("close replacement");
+            let fresh = core
+                .create_temporary_terminal_with(None, &machine(), Some(test_cwd()))
+                .expect("a fresh terminal opens");
+            assert_eq!(
+                fresh.config.name, "PowerShell 1",
+                "an empty list starts at one"
+            );
+            core.stop(&fresh.config.id).expect("cleanup");
         }
 
         /// A shell that cannot start leaves no row behind — the creation is

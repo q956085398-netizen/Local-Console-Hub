@@ -1,0 +1,29 @@
+﻿[
+    {
+        "test":  "process::independent::tests::the_run_survives_the_handle_being_dropped",
+        "newWindows":  [
+
+                       ],
+        "testProcesses":  [
+
+                          ]
+    },
+    {
+        "test":  "process::independent::tests::a_stop_ends_the_run_and_leaves_an_unrelated_process_alone",
+        "newWindows":  [
+
+                       ],
+        "testProcesses":  [
+
+                          ]
+    },
+    {
+        "test":  "process::independent::tests::an_identity_matches_the_process_it_was_taken_from",
+        "newWindows":  [
+
+                       ],
+        "testProcesses":  [
+
+                          ]
+    }
+]

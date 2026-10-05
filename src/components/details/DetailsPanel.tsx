@@ -1,3 +1,4 @@
+import { Save } from "lucide-react";
 import {
   closeMechanics,
   dependenciesOf,
@@ -19,6 +20,8 @@ export interface DetailsPanelProps {
    * rail is showing, so "depends on X" can never name a session the user
    * cannot see. */
   sessions: readonly SessionView[];
+  onSaveTerminal: () => void;
+  closing: boolean;
 }
 
 /**
@@ -33,7 +36,12 @@ export interface DetailsPanelProps {
  * TCP facts behind the header's badge are spelled out, with the HTTP probe
  * beside them when that probe was issued (`derivations.healthReading`).
  */
-export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
+export default function DetailsPanel({
+  session,
+  sessions,
+  onSaveTerminal,
+  closing,
+}: DetailsPanelProps) {
   const { config, runtime } = session;
   const deps = dependenciesOf(session, sessions);
   const health = healthReading(runtime);
@@ -115,6 +123,18 @@ export default function DetailsPanel({ session, sessions }: DetailsPanelProps) {
           </div>
         ))}
       </dl>
+      {config.temporary && (
+        <button
+          type="button"
+          className="btn btn--secondary btn--sm details-panel__save"
+          disabled={closing}
+          onClick={onSaveTerminal}
+          title="保存这个终端的 shell 和工作目录，下次打开 Hub 仍可用"
+        >
+          <Save size={14} />
+          保存启动配置
+        </button>
+      )}
     </div>
   );
 }

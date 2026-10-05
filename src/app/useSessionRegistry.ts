@@ -15,6 +15,7 @@ import {
   SESSION_STATE_CHANGED,
   isActivationOutcomeDto,
   isCreatedSessionDto,
+  isSessionRuntimeDto,
   sessionErrorMessage,
   type ActivationOutcomeDto,
   type OpenResolutionDto,
@@ -118,8 +119,9 @@ export interface SessionRegistry {
    * restart.
    */
   saveTerminal(sessionId: string, form: SaveTerminalFormDto): Promise<FormSaveOutcome>;
-  /** Remove a temporary session that has ended (#62). */
-  removeSession(sessionId: string): void;
+  /** Stop and remove a temporary terminal; retain it if stopping fails. */
+  closeTerminal(sessionId: string): Promise<void>;
+  closingSessionIds: ReadonlySet<string>;
   removeApplication(sessionId: string): Promise<FormSaveOutcome>;
 }
 
@@ -153,9 +155,11 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     snapshot: SessionRegistrySnapshot;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const closing = useRef(new Set<string>());
+  const [closingSessionIds, setClosingSessionIds] = useState<ReadonlySet<string>>(new Set());
   /**
    * The running watch, for the two commands whose answers the event stream may
-   * not have delivered yet (`createTerminal`, `removeSession`).
+   * not have delivered yet (`createTerminal`, `closeTerminal`).
    */
   const controller = useRef<SessionRegistryController | null>(null);
 
@@ -324,10 +328,26 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
     }
   }, []);
 
-  const removeSession = useCallback((sessionId: string) => {
-    invoke("remove_session", { sessionId })
-      .then(() => controller.current?.forget(sessionId))
-      .catch((cause) => setError(sessionErrorMessage(cause)));
+  const closeTerminal = useCallback(async (sessionId: string) => {
+    if (closing.current.has(sessionId)) return;
+    closing.current.add(sessionId);
+    setClosingSessionIds(new Set(closing.current));
+    try {
+      // The backend confirms the owned tree has ended before removal. A
+      // failed stop must leave the row and its process ownership intact.
+      const runtime = await invoke<unknown>("get_session", { sessionId });
+      if (!isSessionRuntimeDto(runtime)) throw new Error("无法读取终端状态，未关闭会话");
+      if (runtime.status !== "stopped" && runtime.status !== "exited") {
+        await invoke("stop_session", { sessionId });
+      }
+      await invoke("remove_session", { sessionId });
+      controller.current?.forget(sessionId);
+    } catch (cause) {
+      setError(sessionErrorMessage(cause));
+    } finally {
+      closing.current.delete(sessionId);
+      setClosingSessionIds(new Set(closing.current));
+    }
   }, []);
 
   /**
@@ -401,7 +421,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       createTerminal,
       addApplication,
       saveTerminal,
-      removeSession,
+      closeTerminal,
+      closingSessionIds,
       removeApplication,
     }),
     [
@@ -419,7 +440,8 @@ export function useSessionRegistry(connection: BackendConnection): SessionRegist
       createTerminal,
       addApplication,
       saveTerminal,
-      removeSession,
+      closeTerminal,
+      closingSessionIds,
       removeApplication,
     ],
   );

@@ -172,7 +172,7 @@ async function launch(name, config, applicationId) {
       ? [
           "-NoProfile",
           "-Command",
-          `$app = Start-Process -FilePath '${entry.replaceAll("'", "''")}' -PassThru; $app.WaitForExit(); exit $app.ExitCode`,
+          `$app = Start-Process -FilePath '${entry.replaceAll("'", "''")}' -WindowStyle Hidden -PassThru; $app.WaitForExit(); exit $app.ExitCode`,
         ]
       : [],
     {
@@ -367,6 +367,167 @@ async function typeCommand(page, command) {
   await page.keyboard.press("Enter");
 }
 
+async function verifyV02Regressions() {
+  const name = "v02-regressions";
+  const root = join(output, name);
+  await mkdir(root, { recursive: true });
+  const batch = join(root, "Start service.bat");
+  await writeFile(batch, "@echo off\r\necho v02-service-ready\r\nping -n 120 127.0.0.1 > NUL\r\n");
+  const config = `sessions:
+  - id: service
+    name: Restart probe
+    type: service
+    command: '"${batch.replaceAll("'", "''")}"'
+    cwd: '${root.replaceAll("'", "''")}'
+    logging:
+      mode: on_error
+      source: captured
+`;
+  // Launch through an actual .lnk, like the installed GUI. Direct Node spawn
+  // supplies standard handles and can conceal the consoleless-Hub defect.
+  const app = await launch(name, config, "service");
+  const page = app.page;
+  try {
+    await check(
+      "v0.2: batch service supports stop/start and restart from a GUI entry",
+      async () => {
+        let readyCount = 0;
+        for (let cycle = 0; cycle < 3; cycle++) {
+          await until(
+            () => terminalText(page, "service"),
+            (text) => text.split("v02-service-ready").length - 1 > readyCount,
+            "Service produced no fresh output",
+          );
+          readyCount++;
+          const before = await ipc(page, "get_session", { sessionId: "service" });
+          await page
+            .locator(".session-header")
+            .getByRole("button", { name: "停止", exact: true })
+            .click();
+          await until(
+            () => ipc(page, "get_session", { sessionId: "service" }),
+            (runtime) => ["stopped", "exited"].includes(runtime.status) && !isAlive(before.pid),
+            "Service did not stop",
+          );
+          await start(page);
+        }
+        await until(
+          () => terminalText(page, "service"),
+          (text) => text.split("v02-service-ready").length - 1 === readyCount + 1,
+          "The service did not start before the restart check",
+        );
+        await page
+          .locator(".session-header")
+          .getByRole("button", { name: "重启", exact: true })
+          .click();
+        await until(
+          () => terminalText(page, "service"),
+          (text) => text.split("v02-service-ready").length - 1 >= readyCount + 2,
+          "Restart did not produce fresh service output",
+        );
+        assert.equal((await ipc(page, "get_session", { sessionId: "service" })).lastError, null);
+        await screenshot(page, "v02-service-restarted");
+        return { stopStartCycles: 3, restarted: true };
+      },
+    );
+    let terminals;
+    await check(
+      "v0.2: new PowerShell accepts typing automatically and has a direct close button",
+      async () => {
+        for (let count = 1; count <= 2; count++) {
+          await page.getByRole("button", { name: "新建 PowerShell", exact: true }).last().click();
+          terminals = await until(
+            () => ipc(page, "list_session_configs"),
+            (rows) => rows.filter((row) => row.temporary).length === count,
+            "Temporary terminal did not appear",
+          );
+          await until(
+            () =>
+              page
+                .locator(".xterm-helper-textarea")
+                .evaluate((node) => node === document.activeElement),
+            Boolean,
+            "New PowerShell did not receive keyboard focus",
+          );
+        }
+        terminals = terminals.filter((row) => row.temporary);
+        assert.deepEqual(terminals.map((row) => row.name).sort(), ["PowerShell 1", "PowerShell 2"]);
+        const active = terminals.find((row) => row.name === "PowerShell 2");
+        // Do not click/focus the textarea: creation must have focused it.
+        await page.keyboard.type("Write-Output ('V02_' + 'AUTO_FOCUS_OK')");
+        await page.keyboard.press("Enter");
+        await until(
+          () => terminalText(page, active.id),
+          (text) => text.includes("V02_AUTO_FOCUS_OK"),
+          "New terminal did not accept typing automatically",
+        );
+        assert.equal(await page.getByRole("button", { name: "更多操作", exact: true }).count(), 0);
+        assert.ok(
+          await page
+            .locator(".session-header")
+            .getByRole("button", { name: "关闭", exact: true })
+            .isEnabled(),
+        );
+        await screenshot(page, "v02-terminal-actions");
+        await page.getByRole("tab", { name: "详情", exact: true }).click();
+        await page.getByRole("button", { name: "保存启动配置", exact: true }).click();
+        await page.getByRole("dialog").waitFor();
+        await page.getByRole("button", { name: "取消", exact: true }).click();
+        await page.getByRole("tab", { name: "终端", exact: true }).click();
+        return { executed: "V02_AUTO_FOCUS_OK", overflowRemoved: true, saveFromDetails: true };
+      },
+    );
+    await check(
+      "v0.2: temporary terminal names reuse vacant numbers and reset after closing all",
+      async () => {
+        async function close(row) {
+          await select(page, row.name);
+          const before = await ipc(page, "get_session", { sessionId: row.id });
+          await page
+            .locator(".session-header")
+            .getByRole("button", { name: "关闭", exact: true })
+            .click();
+          await until(
+            () => ipc(page, "list_session_configs"),
+            (rows) => !rows.some((entry) => entry.id === row.id),
+            "Terminal row survived closing",
+          );
+          if (before.pid != null) assert.equal(isAlive(before.pid), false);
+        }
+        async function createOne() {
+          const before = await ipc(page, "list_session_configs");
+          await page.getByRole("button", { name: "新建 PowerShell", exact: true }).last().click();
+          const rows = await until(
+            () => ipc(page, "list_session_configs"),
+            (rows) => rows.length === before.length + 1,
+            "New terminal did not appear",
+          );
+          return rows.find((row) => !before.some((entry) => entry.id === row.id));
+        }
+        const first = terminals.find((row) => row.name === "PowerShell 1");
+        const second = terminals.find((row) => row.name === "PowerShell 2");
+        await close(first);
+        assert.ok(isAlive((await ipc(page, "get_session", { sessionId: second.id })).pid));
+        const replacement = await createOne();
+        assert.equal(replacement.name, "PowerShell 1");
+        assert.notEqual(replacement.id, first.id);
+        assert.equal(
+          (await ipc(page, "list_session_configs")).find((row) => row.id === second.id).name,
+          "PowerShell 2",
+        );
+        await close(second);
+        await close(replacement);
+        const fresh = await createOne();
+        assert.equal(fresh.name, "PowerShell 1");
+        await screenshot(page, "v02-terminal-number-reused");
+        return { replacement: replacement.name, afterClosingAll: fresh.name };
+      },
+    );
+  } finally {
+    await app.stop();
+  }
+}
+
 async function verifyApplicationRemoval() {
   let app;
   try {
@@ -389,8 +550,10 @@ sessions:
     );
     const { page } = app;
     await page.locator(".session-row").filter({ hasText: "Remove Me" }).click();
-    await page.getByRole("button", { name: "更多操作" }).click();
-    await page.getByRole("menuitem", { name: "从受管名单移除", exact: true }).click();
+    await page
+      .locator(".session-header")
+      .getByRole("button", { name: "移除", exact: true })
+      .click();
     await page.getByRole("dialog").waitFor();
     await page.screenshot({ path: join(output, "confirmation.png") });
     await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -398,8 +561,10 @@ sessions:
     console.log("PASS cancel preserves configuration");
     await ipc(page, "start_session", { sessionId: "remove-me" });
     const before = await readFile(app.configPath, "utf8");
-    await page.getByRole("button", { name: "更多操作" }).click();
-    await page.getByRole("menuitem", { name: "从受管名单移除", exact: true }).click();
+    await page
+      .locator(".session-header")
+      .getByRole("button", { name: "移除", exact: true })
+      .click();
     await page.getByRole("button", { name: "确认移除", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "请先停止应用" }).waitFor();
     assert.equal(await readFile(app.configPath, "utf8"), before);
@@ -415,8 +580,10 @@ sessions:
         ),
       "Stop did not settle",
     );
-    await page.getByRole("button", { name: "更多操作" }).click();
-    await page.getByRole("menuitem", { name: "从受管名单移除", exact: true }).click();
+    await page
+      .locator(".session-header")
+      .getByRole("button", { name: "移除", exact: true })
+      .click();
     await page.getByRole("button", { name: "确认移除", exact: true }).click();
     await until(
       async () => {
@@ -786,8 +953,8 @@ async function verifyExistingFlows() {
       "H08: save terminal launch method without restarting or recording commands",
       async () => {
         const before = await ipc(page, "get_session", { sessionId: active.id });
-        await page.getByRole("button", { name: "更多操作" }).click();
-        await page.getByRole("menuitem", { name: "保存启动配置" }).click();
+        await page.getByRole("tab", { name: "详情", exact: true }).click();
+        await page.getByRole("button", { name: "保存启动配置", exact: true }).click();
         await page.getByRole("dialog").getByLabel(/名称/).fill("Daily Saved Shell");
         await page.getByRole("button", { name: "保存配置", exact: true }).click();
         await page.getByRole("dialog").waitFor({ state: "hidden" });
@@ -936,8 +1103,10 @@ async function verifyExistingFlows() {
           assert.equal(isAlive(survivor.pid), true);
           assert.ok((await terminalText(page, other.id)).length > 0);
           await screenshot(page, "daily-closed-tree");
-          await page.getByRole("button", { name: "更多操作" }).click();
-          await page.getByRole("menuitem", { name: /移除/ }).click();
+          await page
+            .locator(".session-header")
+            .getByRole("button", { name: "关闭", exact: true })
+            .click();
           await until(
             () => ipc(page, "list_sessions"),
             (rows) => !rows.some((row) => row.sessionId === other.id),
@@ -1304,12 +1473,17 @@ async function verifyExistingFlows() {
 }
 
 try {
-  await check(
-    "saved application removal: cancel, running refusal, persistence and restart",
-    verifyApplicationRemoval,
-  );
-  if (process.argv[3] !== "--removal-only") await verifyExistingFlows();
-} catch {
+  if (process.argv[3] !== "--removal-only") await verifyV02Regressions();
+  if (process.argv[3] !== "--v02-only") {
+    await check(
+      "saved application removal: cancel, running refusal, persistence and restart",
+      verifyApplicationRemoval,
+    );
+    if (process.argv[3] !== "--removal-only") await verifyExistingFlows();
+  }
+} catch (error) {
+  report.error = String(error.stack ?? error);
+  console.error(report.error);
   process.exitCode = 1;
 } finally {
   if (originalConfig) {

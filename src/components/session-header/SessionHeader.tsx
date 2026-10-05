@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import {
   AppWindow,
   ExternalLink,
   FolderOpen,
-  MoreHorizontal,
+  Trash2,
+  X,
   Play,
   RotateCw,
   Square,
@@ -29,8 +29,7 @@ export interface SessionHeaderProps {
   now: Date;
   /** What the control was asked for; the caller decides what it means. */
   onAction: (action: SessionAction) => void;
-  onFocusTerminal: () => void;
-  onOpenLogs: () => void;
+  closing: boolean;
 }
 
 /** Selected-session header: identity, state, close impact, metadata, actions. */
@@ -41,27 +40,12 @@ export default function SessionHeader({
   ready,
   now,
   onAction,
-  onFocusTerminal,
-  onOpenLogs,
+  closing,
 }: SessionHeaderProps) {
   const actions = availableActions(config, runtime);
   const callout = headerCallout(config, runtime);
   const metadata = metadataPairs(config, runtime, now);
   const tone = statusTone(runtime.status, busy);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [menuOpen]);
-
   return (
     <header className="session-header">
       <div className="session-header__top">
@@ -86,7 +70,7 @@ export default function SessionHeader({
             <button
               type="button"
               className="btn btn--primary btn--sm"
-              disabled={actions.stopDisabled}
+              disabled={closing || actions.stopDisabled}
               onClick={() => onAction("start")}
             >
               <Play size={14} />
@@ -96,7 +80,7 @@ export default function SessionHeader({
             <button
               type="button"
               className="btn btn--secondary btn--sm"
-              disabled={actions.stopDisabled}
+              disabled={closing || actions.stopDisabled}
               onClick={() => onAction("stop")}
             >
               <Square size={14} />
@@ -106,7 +90,7 @@ export default function SessionHeader({
             <button
               type="button"
               className="btn btn--primary btn--sm"
-              disabled={actions.stopDisabled}
+              disabled={closing || actions.stopDisabled}
               title="唤起应用的窗口"
               onClick={() => onAction("start")}
             >
@@ -117,7 +101,7 @@ export default function SessionHeader({
           <button
             type="button"
             className="btn btn--secondary btn--sm"
-            disabled={!actions.restart}
+            disabled={closing || !actions.restart}
             title={
               actions.associated
                 ? "这个实例是在 Hub 之外启动的；Hub 没有启动它，也不会重启或结束它"
@@ -154,125 +138,20 @@ export default function SessionHeader({
               目录
             </button>
           )}
-          <div className="session-header__more" ref={menuRef}>
-            <button
-              type="button"
-              className="btn btn--ghost btn--icon-sm"
-              aria-label="更多操作"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              <MoreHorizontal size={16} />
-            </button>
-            {menuOpen && (
-              <div className="more-menu" role="menu">
-                {actions.openUrl !== undefined && (
-                  <MenuItem
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("open-url");
-                    }}
-                  >
-                    打开网页
-                  </MenuItem>
-                )}
-                {actions.directory && (
-                  <MenuItem
-                    title={config.cwd}
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("open-directory");
-                    }}
-                  >
-                    打开目录
-                  </MenuItem>
-                )}
-                <MenuItem
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onFocusTerminal();
-                  }}
-                >
-                  聚焦终端
-                </MenuItem>
-                <MenuItem
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onOpenLogs();
-                  }}
-                >
-                  查看日志策略
-                </MenuItem>
-                {actions.copyPath && (
-                  <MenuItem
-                    title={config.cwd}
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("copy-path");
-                    }}
-                  >
-                    复制路径
-                  </MenuItem>
-                )}
-                {/* Saving belongs above the separator, with the context
-                    actions: it takes nothing away. The destructive tail below
-                    is removal and force-kill, and a neutral entry there would
-                    make the user read it as one of them (#65). */}
-                {actions.saveConfig && (
-                  <MenuItem
-                    title="把这个终端的 shell 和工作目录保存成一条配置，下次打开 Hub 仍可用"
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("save-config");
-                    }}
-                  >
-                    保存启动配置
-                  </MenuItem>
-                )}
-                <div className="more-menu__separator" role="separator" />
-                {config.temporary !== true && (
-                  <MenuItem
-                    destructive
-                    disabled={busy}
-                    title="移除已保存的启动配置，不删除应用文件"
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("remove-application");
-                    }}
-                  >
-                    从受管名单移除
-                  </MenuItem>
-                )}
-                {config.temporary === true && (
-                  <MenuItem
-                    destructive
-                    disabled={!actions.remove}
-                    title={
-                      actions.remove ? "从列表去掉这个临时终端及它保留的输出" : "先结束终端再移除"
-                    }
-                    onSelect={() => {
-                      setMenuOpen(false);
-                      onAction("remove-session");
-                    }}
-                  >
-                    移除临时终端
-                  </MenuItem>
-                )}
-                <MenuItem
-                  destructive
-                  disabled={!actions.forceStop}
-                  title={actions.forceStop ? "只作用于本会话的受管进程树" : "仅运行中的会话可用"}
-                  onSelect={() => {
-                    setMenuOpen(false);
-                    onAction("force-stop");
-                  }}
-                >
-                  强制结束进程树
-                </MenuItem>
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm session-header__remove"
+            disabled={closing || actions.stopDisabled || runtime.status === "starting"}
+            title={
+              config.temporary
+                ? "结束这个临时终端并从列表移除"
+                : "移除已保存的启动配置，不删除应用文件"
+            }
+            onClick={() => onAction(config.temporary ? "remove-session" : "remove-application")}
+          >
+            {config.temporary ? <X size={14} /> : <Trash2 size={14} />}
+            {config.temporary ? (closing ? "正在关闭…" : "关闭") : "移除"}
+          </button>
         </div>
       </div>
 
@@ -293,32 +172,5 @@ export default function SessionHeader({
         ))}
       </dl>
     </header>
-  );
-}
-
-function MenuItem({
-  children,
-  onSelect,
-  destructive,
-  disabled,
-  title,
-}: {
-  children: React.ReactNode;
-  onSelect: () => void;
-  destructive?: boolean;
-  disabled?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className={`more-menu__item${destructive ? " more-menu__item--destructive" : ""}`}
-      disabled={disabled}
-      title={title}
-      onClick={onSelect}
-    >
-      {children}
-    </button>
   );
 }
